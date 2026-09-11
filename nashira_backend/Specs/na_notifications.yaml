@@ -1,0 +1,458 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Notifications and reports
+  version: "1.0"
+  description: >
+    The outbound surface: SMTP relays, chat webhooks, and the persisted documents a run
+    or a conversation leaves behind.
+
+    Everything here leaves the system and cannot be recalled. Name the recipients or the
+    channel before sending, and treat approval for one message as approval for that
+    message only.
+
+    Both channel families are Admin throughout, including reads — for Slack and Teams
+    the webhook URL *is* the credential, and even the non-secret fields describe how to
+    reach an operations channel. Reports are Viewer to read, Operator to create, because
+    a report is normally a workflow's output.
+
+    Secret material is write-only: omit it on update to keep the stored value.
+
+tags:
+  - name: email
+  - name: messaging
+  - name: reports
+
+paths:
+  /api/email/channels:
+    get:
+      operationId: notifications_listEmailChannels
+      summary: List SMTP channels
+      tags: [email]
+      responses:
+        "200":
+          description: The channels. has_password stands in for the password.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/EmailChannel" }
+                  total: { type: integer }
+    post:
+      operationId: notifications_createEmailChannel
+      summary: Register an SMTP relay
+      tags: [email]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteEmailChannel" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmailChannel" }
+        "403": { description: Admin only. }
+
+  /api/email/channels/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: notifications_getEmailChannel
+      summary: Get one SMTP channel
+      tags: [email]
+      responses:
+        "200":
+          description: The channel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmailChannel" }
+        "404": { description: Not found. }
+    put:
+      operationId: notifications_updateEmailChannel
+      summary: Update an SMTP channel
+      description: >
+        Only provided fields change. Omit password to keep the stored one; send
+        clear_password to remove it.
+      tags: [email]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteEmailChannel" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EmailChannel" }
+    delete:
+      operationId: notifications_deleteEmailChannel
+      summary: Remove an SMTP channel
+      tags: [email]
+      responses:
+        "200": { description: Removed. }
+
+  /api/email/channels/{id}/test:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: notifications_testEmailChannel
+      summary: Send a probe message through the channel
+      description: >
+        This sends real mail. Omit `to` and it goes to the channel's default recipients
+        — say who that is before calling it.
+      tags: [email]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                to: { type: string, description: Falls back to default_recipients when omitted. }
+      responses:
+        "200":
+          description: The delivery outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  error: { type: [string, "null"] }
+
+  /api/notifications/channels:
+    get:
+      operationId: notifications_listNotificationChannels
+      summary: List chat webhook channels
+      tags: [messaging]
+      responses:
+        "200":
+          description: The channels. The webhook URL is never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/NotificationChannel" }
+                  total: { type: integer }
+    post:
+      operationId: notifications_createNotificationChannel
+      summary: Register a chat webhook
+      tags: [messaging]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteNotificationChannel" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationChannel" }
+        "403": { description: Admin only. }
+
+  /api/notifications/channels/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: notifications_getNotificationChannel
+      summary: Get one chat channel
+      tags: [messaging]
+      responses:
+        "200":
+          description: The channel.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationChannel" }
+        "404": { description: Not found. }
+    put:
+      operationId: notifications_updateNotificationChannel
+      summary: Update a chat channel
+      description: Only provided fields change. Omit webhook_url to keep the stored one.
+      tags: [messaging]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteNotificationChannel" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NotificationChannel" }
+    delete:
+      operationId: notifications_deleteNotificationChannel
+      summary: Remove a chat channel
+      tags: [messaging]
+      responses:
+        "200": { description: Removed. }
+
+  /api/notifications/channels/{id}/send:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: notifications_sendMessage
+      summary: Post a message to the channel
+      description: >
+        A message to an operations channel is seen by a team. Name the channel before
+        posting, never just "notifying the team".
+      tags: [messaging]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string }
+      responses:
+        "200":
+          description: The delivery record.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Delivery" }
+
+  /api/notifications/channels/{id}/check:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: notifications_checkNotificationChannel
+      summary: Probe the channel endpoint
+      tags: [messaging]
+      responses:
+        "200":
+          description: The probe result; also persisted onto the channel row.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [healthy, degraded, unreachable] }
+                  error: { type: [string, "null"] }
+
+  /api/notifications/channels/{id}/deliveries:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: notifications_listDeliveries
+      summary: The channel's delivery log
+      description: >
+        Where an unexplained chat message came from: workflow_run_id names the run that
+        posted it.
+      tags: [messaging]
+      responses:
+        "200":
+          description: Recent deliveries, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Delivery" }
+                  total: { type: integer }
+
+  /api/reports:
+    get:
+      operationId: notifications_listReports
+      summary: List generated reports
+      tags: [reports]
+      responses:
+        "200":
+          description: Report metadata, without the bodies.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Report" }
+                  total: { type: integer }
+    post:
+      operationId: notifications_createReport
+      summary: Persist a report
+      description: >
+        Operator. A report is a titled, attributable document, normally a workflow's
+        output — that is what separates it from an export, which is a file handed to
+        whoever asked. retain_days sets an expiry.
+      tags: [reports]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                description: { type: string }
+                content: { type: string }
+                content_type: { type: string }
+                file_name: { type: string }
+                workflow_run_id: { type: string, format: uuid }
+                retain_days: { type: integer }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Report" }
+
+  /api/reports/{id}/download:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: notifications_downloadReport
+      summary: Download a report's body
+      tags: [reports]
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404": { description: Not found, or expired. }
+
+  /api/reports/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      operationId: notifications_deleteReport
+      summary: Remove a report
+      tags: [reports]
+      responses:
+        "200": { description: Removed. }
+
+components:
+  schemas:
+    WriteEmailChannel:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        host: { type: string }
+        port: { type: integer }
+        security: { type: string, description: The transport security mode for the relay. }
+        username: { type: string }
+        password: { type: string, description: Write-only. Omit on update to keep the stored value. }
+        clear_password: { type: boolean }
+        from_address: { type: string }
+        from_name: { type: string }
+        default_recipients: { type: string, description: Used when a send names no recipient. }
+        enabled: { type: boolean }
+
+    EmailChannel:
+      type: object
+      properties:
+        email_channel_id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        description: { type: [string, "null"] }
+        host: { type: string }
+        port: { type: integer }
+        security: { type: string }
+        username: { type: [string, "null"] }
+        has_password: { type: boolean }
+        from_address: { type: string }
+        from_name: { type: [string, "null"] }
+        default_recipients: { type: [string, "null"] }
+        enabled: { type: boolean }
+        updated_at: { type: string, format: date-time }
+
+    WriteNotificationChannel:
+      type: object
+      properties:
+        name: { type: string }
+        kind: { type: string, description: slack, teams, or another webhook flavour. }
+        description: { type: string }
+        webhook_url:
+          type: string
+          description: >
+            Write-only, and for Slack/Teams this IS the credential. Omit on update to
+            keep the stored value.
+        headers: { type: string, description: JSON object of extra request headers. }
+        allow_private_network: { type: boolean }
+        enabled: { type: boolean }
+
+    NotificationChannel:
+      type: object
+      properties:
+        notification_channel_id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        kind: { type: string }
+        description: { type: [string, "null"] }
+        target_host:
+          type: [string, "null"]
+          description: The host the webhook points at — enough to identify it without revealing the URL.
+        has_webhook_url: { type: boolean }
+        headers: { type: [string, "null"] }
+        allow_private_network: { type: boolean }
+        status: { type: string, enum: [unknown, healthy, degraded, unreachable] }
+        last_check_error: { type: [string, "null"] }
+        last_checked_at: { type: [string, "null"], format: date-time }
+        enabled: { type: boolean }
+        updated_at: { type: string, format: date-time }
+
+    Delivery:
+      type: object
+      properties:
+        notification_delivery_id: { type: string, format: uuid }
+        preview: { type: string, description: The start of what was sent. }
+        success: { type: boolean }
+        status_code: { type: [integer, "null"] }
+        error: { type: [string, "null"] }
+        attempts: { type: integer }
+        elapsed_ms: { type: integer }
+        workflow_run_id:
+          type: [string, "null"]
+          format: uuid
+          description: The run that posted it, when it was not a person.
+        sent_at: { type: string, format: date-time }
+
+    Report:
+      type: object
+      properties:
+        report_artifact_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        content_type: { type: string }
+        file_name: { type: string }
+        size_bytes: { type: integer }
+        workflow_run_id: { type: [string, "null"], format: uuid }
+        expires_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }

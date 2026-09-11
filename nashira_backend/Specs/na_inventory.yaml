@@ -1,0 +1,539 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Inventory
+  version: "1.0"
+  description: >
+    Devices, the pools that group them, the credentials they authenticate with, and
+    the external sources that sync them in.
+
+    Note the singular path segments (/api/device, /api/credential) — they come from
+    the controller name and are not a typo.
+
+    Credential secret material is write-only: it goes in on create/update and is never
+    returned by any read.
+
+tags:
+  - name: devices
+  - name: pools
+  - name: credentials
+  - name: sources
+
+paths:
+  /api/device:
+    get:
+      operationId: inventory_listDevices
+      summary: List devices, ordered by name
+      tags: [devices]
+      parameters:
+        - name: site
+          in: query
+          schema: { type: string }
+        - name: role
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of devices.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Device" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: inventory_createDevice
+      summary: Register a device
+      description: Requires the Operator role. device_name is unique across the inventory.
+      tags: [devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceWrite" }
+      responses:
+        "201":
+          description: The created device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "400": { description: "Missing name/IP, or credential_id / source_id does not exist." }
+
+  /api/device/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: inventory_getDevice
+      summary: Get one device
+      tags: [devices]
+      responses:
+        "200":
+          description: The device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+        "404": { description: Not found. }
+    put:
+      operationId: inventory_updateDevice
+      summary: Update a device
+      description: >
+        Partial: only the fields present in the body are written. Requires Operator.
+      tags: [devices]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceWrite" }
+      responses:
+        "200":
+          description: The updated device.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Device" }
+    delete:
+      operationId: inventory_deleteDevice
+      summary: Soft-delete a device
+      tags: [devices]
+      responses:
+        "200": { description: The deactivated device. }
+
+  /api/credential:
+    get:
+      operationId: inventory_listCredentials
+      summary: List credentials (metadata only, never secret material)
+      tags: [credentials]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of credentials.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Credential" }
+                  total: { type: integer }
+
+  /api/credential/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: inventory_getCredential
+      summary: Get one credential's metadata
+      tags: [credentials]
+      responses:
+        "200":
+          description: The credential.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Credential" }
+
+  /api/inventory/sources:
+    get:
+      operationId: inventory_listSources
+      summary: List external inventory sources
+      tags: [sources]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of sources.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Source" }
+                  total: { type: integer }
+    post:
+      operationId: inventory_createSource
+      summary: Register an external inventory source
+      tags: [sources]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, base_url]
+              properties:
+                name: { type: string }
+                kind: { type: string, enum: [netbox], default: netbox }
+                base_url:
+                  type: string
+                  description: Absolute http(s) URL of the source's API root.
+                token_secret_ref:
+                  type: string
+                  description: >
+                    The name of a stored secret holding the API token, or a full
+                    ${secret:...} reference. Raw tokens are rejected — store the token
+                    as a secret first.
+                site_filter: { type: string }
+                allow_private_network:
+                  type: boolean
+                  description: >
+                    Permits the SSRF guard to reach RFC1918 addresses. Required for an
+                    on-prem NetBox; leave false for anything internet-facing.
+      responses:
+        "201":
+          description: The created source.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Source" }
+
+  /api/inventory/sources/{id}/sync:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: dryRun
+        in: query
+        description: Report what would change without writing anything.
+        schema: { type: boolean, default: false }
+    post:
+      operationId: inventory_syncSource
+      summary: Pull devices from an external source
+      description: >
+        Matches an incoming device against the row this source already created for the
+        same external id, falling back to device_name for rows that predate the link.
+        Fields the source omits are left alone, so manual edits survive a sync.
+      tags: [sources]
+      responses:
+        "200":
+          description: Counts of what the sync did.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  updated: { type: integer }
+                  unchanged: { type: integer }
+                  skipped:
+                    type: integer
+                    description: >
+                      Devices whose name is already taken by an unrelated row.
+                      Reported rather than failing the whole sync.
+                  total: { type: integer }
+                  dry_run: { type: boolean }
+
+  /api/device-pools:
+    get:
+      operationId: inventory_listDevicePools
+      summary: List device pools, ordered by name
+      description: >
+        member_count is resolved per pool, so a rule-defined pool reports what it
+        currently matches rather than what someone wrote down.
+      tags: [pools]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of pools.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/DevicePool" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: inventory_createDevicePool
+      summary: Create a device pool
+      description: >
+        Requires the Operator role - a pool decides what a workflow touches, so it is
+        authoring rather than administration. The name is unique among active pools.
+      tags: [pools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DevicePoolWrite" }
+      responses:
+        "201":
+          description: The created pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevicePool" }
+        "400": { description: "Unknown filter rule key, malformed filter_rules JSON, or a static member that is not a device." }
+        "409": { description: "pool_name_taken - another active pool already has this name." }
+
+  /api/device-pools/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: inventory_getDevicePool
+      summary: Get one pool
+      tags: [pools]
+      responses:
+        "200":
+          description: The pool, with its resolved member_count.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevicePool" }
+        "404": { description: Not found. }
+    put:
+      operationId: inventory_updateDevicePool
+      summary: Update a pool
+      description: >
+        Operator. Only the fields present in the body change. static_members is
+        replaced wholesale when supplied - send the full list, not the additions.
+      tags: [pools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DevicePoolWrite" }
+      responses:
+        "200":
+          description: The updated pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevicePool" }
+        "400": { description: "Unknown filter rule key, malformed filter_rules JSON, or an unknown static member." }
+        "409": { description: "pool_name_taken." }
+    delete:
+      operationId: inventory_deleteDevicePool
+      summary: Deactivate a pool
+      description: Operator. Soft delete - the devices themselves are untouched.
+      tags: [pools]
+      responses:
+        "200":
+          description: The deactivated pool.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevicePool" }
+
+  /api/device-pools/{id}/members:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: environment
+        in: query
+        description: >
+          draft | qa | production. Supplying it applies the environment gates and
+          returns what a run in that environment would actually touch; omitting it
+          returns the raw membership.
+        schema: { type: string, enum: [draft, qa, production] }
+    get:
+      operationId: inventory_devicePoolMembers
+      summary: Resolve what a pool currently contains
+      description: >
+        Static members plus everything filter_rules matches, deduplicated. Call this
+        before telling anyone what a run will touch: a rule-defined pool's contents are
+        a query result, not a stored list.
+      tags: [pools]
+      responses:
+        "200":
+          description: >
+            The membership. With ?environment, also pool_allows_environment and the
+            devices excluded by their own allow_draft / allow_qa / allow_production.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  environment: { type: string }
+                  pool_allows_environment:
+                    type: boolean
+                    description: >
+                      False means the pool itself bars that environment, so the run is
+                      refused before any device is considered.
+                  members:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        device_id: { type: string, format: uuid }
+                        name: { type: string }
+                        ip: { type: string }
+                  count: { type: integer }
+                  excluded:
+                    type: array
+                    items: { type: string }
+                    description: Devices dropped by their own environment trio, named.
+        "404": { description: Not found. }
+
+components:
+  schemas:
+    DevicePool:
+      type: object
+      properties:
+        device_pool_id: { type: string, format: uuid }
+        name: { type: string }
+        slug:
+          type: string
+          description: Stable identity, assigned once at creation. A rename does not change it.
+        description: { type: string }
+        filter_rules:
+          type: string
+          description: >
+            JSON object of rule -> value. Known keys: site, role, vendor, platform,
+            status. An unknown key is rejected rather than ignored, because a rule
+            nobody implements matches everything and reads like one that works.
+        static_members:
+          type: array
+          items: { type: string, format: uuid }
+        allow_draft: { type: boolean }
+        allow_qa: { type: boolean }
+        allow_production: { type: boolean }
+        member_count:
+          type: integer
+          description: Static members plus current filter_rules matches, deduplicated.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    DevicePoolWrite:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        filter_rules:
+          type: string
+          description: JSON object; keys limited to site, role, vendor, platform, status.
+        static_members:
+          type: array
+          items: { type: string, format: uuid }
+          description: Device ids. Every one must exist or the whole write is rejected.
+        allow_draft: { type: boolean, default: true }
+        allow_qa:
+          type: boolean
+          default: false
+          description: qa targeting is opt-in, on the pool as on the device.
+        allow_production: { type: boolean, default: true }
+      required: [name]
+
+    Device:
+      type: object
+      properties:
+        device_id: { type: string, format: uuid }
+        device_name: { type: string }
+        ip_address: { type: string }
+        platform:
+          type: string
+          description: Netmiko device_type — cisco_ios, juniper_junos, nokia_srl, ...
+        vendor: { type: string }
+        os_version: { type: string }
+        site: { type: string }
+        role: { type: string }
+        status: { type: string }
+        credential_id: { type: [string, "null"], format: uuid }
+        source_id:
+          type: [string, "null"]
+          format: uuid
+          description: The inventory source that produced this row; null if created by hand.
+        external_id:
+          type: [string, "null"]
+          description: The device's id in that source, which is what makes a re-sync idempotent.
+        last_sync_at: { type: [string, "null"], format: date-time }
+        properties:
+          type: object
+          description: Free-form attributes carried over from the source (custom fields, tags, serial).
+        allow_draft: { type: boolean }
+        allow_qa: { type: boolean }
+        allow_production: { type: boolean }
+        has_host_key_fingerprint:
+          type: boolean
+          description: Whether an SSH host key is pinned. The fingerprint itself is not returned.
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    DeviceWrite:
+      type: object
+      properties:
+        device_name: { type: string }
+        ip_address: { type: string }
+        platform: { type: string }
+        vendor: { type: string }
+        os_version: { type: string }
+        site: { type: string }
+        role: { type: string }
+        status: { type: string }
+        credential_id: { type: string, format: uuid }
+        source_id: { type: string, format: uuid }
+        external_id: { type: string }
+        properties: { type: object }
+        allow_draft:
+          type: boolean
+          description: May a draft-environment run target this device? Defaults to true.
+        allow_qa:
+          type: boolean
+          description: Defaults to false — qa targeting is opt-in.
+        allow_production:
+          type: boolean
+          description: Defaults to true.
+        expected_ssh_host_key_fingerprint:
+          type: string
+          description: >
+            "SHA256:<base64>". Once set, a host-key mismatch aborts the connection.
+            Left null, the first successful connect pins whatever it saw.
+
+    Credential:
+      type: object
+      properties:
+        credential_id: { type: string, format: uuid }
+        name: { type: string }
+        auth_method: { type: string, enum: [password, key, token, api_key, oauth2] }
+        username: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Source:
+      type: object
+      properties:
+        inventory_source_id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string }
+        base_url: { type: string }
+        token_secret_ref: { type: [string, "null"] }
+        site_filter: { type: [string, "null"] }
+        allow_private_network: { type: boolean }
+        last_synced_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

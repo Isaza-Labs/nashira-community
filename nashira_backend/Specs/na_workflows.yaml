@@ -1,0 +1,364 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Workflows
+  version: "1.0"
+  description: >
+    Authoring and promotion of workflow.v1 definitions. A workflow is a DAG of nodes
+    and edges; it is created in the `draft` environment and moves draft -> qa ->
+    production through /promote, which refuses to advance a definition that has not
+    been simulated against its current schema hash. Only draft workflows are editable.
+
+tags:
+  - name: workflows
+  - name: promotion
+
+paths:
+  /api/workflows:
+    get:
+      operationId: workflows_list
+      summary: List workflows, newest first
+      tags: [workflows]
+      parameters:
+        - name: environment
+          in: query
+          description: Filter by promotion stage.
+          schema:
+            type: string
+            enum: [draft, qa, production]
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of workflow summaries.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/WorkflowSummary" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+
+    post:
+      operationId: workflows_create
+      summary: Create a workflow in the draft environment
+      description: >
+        nodes and edges are validated against workflow.v1 and required to be acyclic
+        before the row is written; the canonical schema hash is computed here.
+      tags: [workflows]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, nodes, edges]
+              properties:
+                name: { type: string }
+                description: { type: string }
+                nodes:
+                  type: array
+                  description: workflow.v1 node objects.
+                  items: { type: object }
+                edges:
+                  type: array
+                  description: workflow.v1 edge objects.
+                  items: { type: object }
+                input_schema: { type: object }
+                metadata: { type: object }
+                change_summary: { type: string }
+                conversation_id:
+                  type: string
+                  format: uuid
+                  description: >
+                    Optional link to the AI conversation this definition came out of.
+                    Must name an existing conversation.
+      responses:
+        "201":
+          description: The created workflow.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workflow" }
+        "400": { description: "Schema validation failed, or the graph is cyclic." }
+
+  /api/workflows/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: workflows_get
+      summary: Get one workflow, including its nodes and edges
+      tags: [workflows]
+      responses:
+        "200":
+          description: The workflow.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workflow" }
+        "404": { description: Not found. }
+    put:
+      operationId: workflows_update
+      summary: Update a draft workflow
+      description: >
+        Rejected with 403 unless the workflow is still in `draft`. Editing nodes or
+        edges recomputes the schema hash, which invalidates the promotion gate until
+        the definition is simulated again.
+      tags: [workflows]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                nodes: { type: array, items: { type: object } }
+                edges: { type: array, items: { type: object } }
+                input_schema: { type: object }
+                metadata: { type: object }
+                change_summary: { type: string }
+      responses:
+        "200":
+          description: The updated workflow.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workflow" }
+        "403": { description: The workflow is not a draft. }
+    delete:
+      operationId: workflows_delete
+      summary: Soft-delete a workflow
+      tags: [workflows]
+      responses:
+        "200": { description: The deactivated workflow. }
+
+  /api/workflows/{id}/simulate:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: workflows_simulate
+      summary: Dry-run a workflow and record the result
+      description: >
+        Executes the DAG against simulated handlers, producing issues and warnings
+        without touching a device. The result is stamped with the definition's schema
+        hash, which is what the promotion gate compares — simulate again after any
+        structural edit or the gate reports simulation_stale.
+      tags: [promotion]
+      responses:
+        "200":
+          description: The simulation result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  simulation_result_id: { type: string, format: uuid }
+                  workflow_id: { type: string, format: uuid }
+                  ok: { type: boolean }
+                  node_count: { type: integer }
+                  issue_count: { type: integer }
+                  warning_count: { type: integer }
+                  schema_hash: { type: string }
+                  issues: { type: array, items: { type: object } }
+                  warnings: { type: array, items: { type: object } }
+                  simulated_at: { type: string, format: date-time }
+
+  /api/workflows/{id}/promote:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: workflows_promote
+      summary: Promote a workflow to the next environment
+      description: >
+        Copies the definition into the target environment as a new row (the source is
+        left untouched and linked through promoted_from). draft -> qa requires a
+        passing, non-stale simulation; qa -> production additionally requires an
+        approver different from the promoter.
+      tags: [promotion]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_environment]
+              properties:
+                target_environment:
+                  type: string
+                  enum: [qa, production]
+                change_summary: { type: string }
+                approved_by:
+                  type: string
+                  description: Required for qa -> production; must not be the promoter.
+      responses:
+        "200":
+          description: The newly promoted workflow.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workflow" }
+        "409": { description: "A promotion gate refused (unsimulated, stale, or unapproved)." }
+
+  /api/workflows/import:
+    post:
+      operationId: workflows_import
+      summary: Import a workflow as a new draft
+      description: >
+        Accepts either form. A portable bundle announces itself with a `kind` marker and
+        takes the deterministic path: dependencies are resolved against this instance,
+        the snippets it carries are created if absent, node references are rewritten to
+        the local ids, and the result goes through the same schema, acyclicity and
+        reference validation as POST /api/workflows. Anything else is treated as the
+        plain YAML/JSON artifact, which only imports when the snippet UUIDs it names
+        already exist here.
+
+        Always a new row in draft with no simulation link, whatever the document says:
+        importing onto an existing id would let a file overwrite an unrelated local
+        workflow, and importing into production would bypass the promotion gate.
+
+        A bundle is refused rather than partly applied when this instance is missing an
+        integration, an MCP server or a handler type it needs — the message lists each
+        one. Read `import_notes` on a success: it records what the translation cost.
+      tags: [workflows]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                  description: The exported document — a bundle (JSON) or the plain YAML artifact.
+                name:
+                  type: string
+                  description: Overrides the name in the document.
+                change_summary: { type: string }
+      responses:
+        "201":
+          description: The imported draft.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workflow" }
+        "400":
+          description: >
+            bundle_dependencies_missing (this instance lacks something the workflow
+            needs), bundle_incomplete, bundle_version_unsupported, or the ordinary
+            schema/reference refusals.
+
+  /api/workflows/{id}/yaml:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: workflows_yaml
+      summary: Render a workflow as its YAML source
+      tags: [workflows]
+      responses:
+        "200":
+          description: The YAML document.
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /api/workflows/{id}/bundle:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: workflows_bundle
+      summary: Export a workflow in the portable cross-instance format
+      description: >
+        The only export that survives crossing instances. /yaml carries the nodes
+        verbatim, which means it carries nothing but this installation's snippet UUIDs;
+        on another instance none of them resolve and the import is refused by the same
+        reference gate that protects POST /api/workflows.
+
+        A bundle adds the full definition of every snippet the nodes name, so the
+        receiving instance recreates what it lacks. Credentials never travel:
+        integrations and MCP servers are named, never described by auth config, and a
+        missing one is a hard error there rather than something the import invents.
+      tags: [workflows]
+      parameters:
+        - name: download
+          in: query
+          description: Adds a Content-Disposition so a browser saves the file. Default true.
+          schema: { type: boolean, default: true }
+      responses:
+        "200":
+          description: The bundle document.
+          content:
+            application/json:
+              schema: { type: object }
+        "404": { description: Not found. }
+
+  /api/workflows/{id}/plan:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: workflows_plan
+      summary: Preview the execution plan without running it
+      description: The topological node order and the rollback plan a failure would produce.
+      tags: [workflows]
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema: { type: object }
+
+components:
+  schemas:
+    WorkflowSummary:
+      type: object
+      properties:
+        workflow_id: { type: string, format: uuid }
+        name: { type: string }
+        version: { type: integer }
+        environment: { type: string, enum: [draft, qa, production] }
+        schema_hash:
+          type: string
+          description: Canonical fingerprint of (nodes, edges); the staleness gate compares it.
+        last_simulation_id: { type: [string, "null"], format: uuid }
+        conversation_id:
+          type: [string, "null"]
+          format: uuid
+          description: The AI conversation that authored this workflow, if any.
+        updated_at: { type: string, format: date-time }
+
+    Workflow:
+      allOf:
+        - $ref: "#/components/schemas/WorkflowSummary"
+        - type: object
+          properties:
+            description: { type: [string, "null"] }
+            schema_version: { type: string }
+            nodes: { type: array, items: { type: object } }
+            edges: { type: array, items: { type: object } }
+            input_schema: { type: [object, "null"] }
+            metadata: { type: [object, "null"] }
+            promoted_from: { type: [string, "null"], format: uuid }
+            change_summary: { type: string }
+            created_at: { type: string, format: date-time }

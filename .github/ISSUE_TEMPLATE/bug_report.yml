@@ -1,0 +1,62 @@
+name: Bug report
+description: Report reproducible behavior that differs from Nashira's documented or agreed behavior
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report security vulnerabilities, exposed secrets or active incidents here. Use the private process in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Provide the release, tag or commit where the issue occurred.
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment mode
+      options:
+        - Docker Compose
+        - Local development
+        - Other self-managed deployment
+        - Unknown
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use the smallest reproducible sequence. Remove tokens, credentials, personal data and customer data.
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Link the documentation or decision that establishes the expectation when available.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Include safe logs, request IDs, run IDs or screenshots. Never include secrets.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched for an existing issue.
+          required: true
+        - label: This report does not disclose a security vulnerability or secret.
+          required: true

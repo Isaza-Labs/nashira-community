@@ -1,0 +1,724 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Governance
+  version: "1.0"
+  description: >
+    The administrative surface: users, the personas assigned to them, per-user tool
+    permissions, corporate policies, credentials and the secret store.
+
+    Admin throughout, except reading profiles. Note the singular path segments
+    (/api/credential) — they come from the controller name and are not a typo. Reading
+    credentials is described in na_inventory; the writes live here because they are
+    admin acts.
+
+    Two postures worth stating before using any of it:
+
+    Permissions are default-allow, opt-in-deny. A row is a *restriction*: if none names
+    a resource, the role gate alone decides, and a user with no rows is unrestricted.
+
+    Policies fail closed. A rule that does not parse blocks rather than allows, and a
+    gate requirement this build cannot evaluate counts as unmet — a typo must not turn a
+    guardrail into no guardrail.
+
+tags:
+  - name: users
+  - name: profiles
+  - name: permissions
+  - name: policies
+  - name: credentials
+  - name: secrets
+
+paths:
+  /api/users:
+    get:
+      operationId: governance_listUsers
+      summary: List users in the company, ordered by username
+      tags: [users]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: The users. Password material is never returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/User" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        "403": { description: Admin only. }
+    post:
+      operationId: governance_createUser
+      summary: Create a user
+      description: The password is policy-checked and hashed; it is never returned.
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, email, password]
+              properties:
+                username: { type: string }
+                email: { type: string }
+                password: { type: string }
+                role: { type: string, enum: [admin, operator, viewer] }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "400": { description: The password failed policy, or the username is taken. }
+
+  /api/users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: governance_getUser
+      summary: Get one user
+      tags: [users]
+      responses:
+        "200":
+          description: The user.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "404": { description: Not found. }
+    put:
+      operationId: governance_updateUser
+      summary: Update a user
+      description: >
+        Only provided fields change. A new password is policy-checked and hashed.
+        Setting is_active false is the reversible way to stop access; deleting is not.
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                role: { type: string, enum: [admin, operator, viewer] }
+                is_active: { type: boolean }
+                password: { type: string }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+    delete:
+      operationId: governance_deleteUser
+      summary: Remove a user
+      description: You cannot delete your own account.
+      tags: [users]
+      responses:
+        "200": { description: Removed. }
+        "400": { description: Refused — this is the calling user. }
+
+  /api/profiles:
+    get:
+      operationId: governance_listProfiles
+      summary: List assistant profiles
+      description: >
+        Viewer. A profile is an agent persona (described skills, response style)
+        attached to a user; it shapes how the assistant answers, not what it may do.
+      tags: [profiles]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: The profiles, ordered by display_order then name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Profile" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: governance_createProfile
+      summary: Create a profile
+      description: Admin. name is unique within the company and cannot be changed afterwards.
+      tags: [profiles]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteProfile" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+
+  /api/profiles/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: governance_getProfile
+      summary: Get one profile
+      tags: [profiles]
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+        "404": { description: Not found. }
+    put:
+      operationId: governance_updateProfile
+      summary: Update a profile
+      description: Admin. The profile name itself cannot be changed.
+      tags: [profiles]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteProfile" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Profile" }
+    delete:
+      operationId: governance_deleteProfile
+      summary: Remove a profile
+      description: Admin. Detaches it from any user still using it.
+      tags: [profiles]
+      responses:
+        "200": { description: Removed. }
+
+  /api/profiles/users/{userId}/profile:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: governance_assignProfile
+      summary: Assign a profile to a user
+      description: >
+        Admin. Omit profile_id to clear the assignment. custom_profile_text replaces the
+        user's existing custom text; omit it to clear that too.
+      tags: [profiles]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profile_id: { type: [string, "null"], format: uuid }
+                custom_profile_text: { type: [string, "null"] }
+      responses:
+        "200":
+          description: The user's resulting assignment.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  profile_id: { type: [string, "null"], format: uuid }
+                  custom_profile_text: { type: [string, "null"] }
+
+  /api/permissions/users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: governance_setUserPermissions
+      summary: Grant or revoke a user's tool permissions
+      description: >
+        Admin, and the most misread endpoint here. A row is a RESTRICTION, not an
+        enablement: absent a row for a resource, the role gate alone decides. Both the
+        capability domain and the specific resource are evaluated, so "no NetBox for
+        this user" and "no MCP at all" are both expressible and the narrow grant cannot
+        be bypassed through the broad one.
+
+        Read the valid keys from admin_listPermissionDomains — capability domains
+        (device, mcp, api, workflow, git, knowledge, secret, …) plus integration:<slug>,
+        mcp:<server> and api:<api>.
+      tags: [permissions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [permissions]
+              properties:
+                permissions:
+                  type: array
+                  items:
+                    type: object
+                    required: [tool_domain]
+                    properties:
+                      tool_domain: { type: string }
+                      can_read: { type: boolean }
+                      can_write: { type: boolean }
+                      can_execute: { type: boolean }
+                      inherit:
+                        type: boolean
+                        description: Fall back to the broader scope instead of deciding here.
+      responses:
+        "200": { description: The stored grants. }
+        "403": { description: Admin only. }
+
+  /api/policies:
+    get:
+      operationId: governance_listPolicies
+      summary: List policies, ordered by name
+      description: >
+        Admin. This is display order. Evaluation walks the enabled policies oldest
+        first and short-circuits on the first match, so the listing order is not the
+        order a decision is made in.
+      tags: [policies]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of policies.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Policy" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        "403": { description: Admin only. }
+    post:
+      operationId: governance_createPolicy
+      summary: Create a policy
+      description: >
+        Admin. Dry-run the rule with governance_evaluatePolicy before enabling it — a
+        rule first exercised in production is a rule nobody has read carefully.
+      tags: [policies]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WritePolicy" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+
+  /api/policies/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: governance_getPolicy
+      summary: Get one policy
+      tags: [policies]
+      responses:
+        "200":
+          description: The policy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+        "404": { description: Not found. }
+    put:
+      operationId: governance_updatePolicy
+      summary: Update a policy
+      tags: [policies]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WritePolicy" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Policy" }
+    delete:
+      operationId: governance_deletePolicy
+      summary: Remove a policy
+      tags: [policies]
+      responses:
+        "200": { description: Removed. }
+
+  /api/policies/evaluate:
+    post:
+      operationId: governance_evaluatePolicy
+      summary: Dry-run the deny rules against a hypothetical run
+      description: >
+        Admin. Omit `rule` to evaluate the stored, enabled policies; supply one to test a
+        rule that is not saved yet. The response names the deciding policy, because
+        "denied by policy" without saying which is unactionable.
+      tags: [policies]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rule: { type: object, description: Omit to evaluate the stored policies. }
+                environment: { type: string, enum: [draft, qa, production] }
+                workflow_description: { type: string }
+                device_roles: { type: array, items: { type: string } }
+                device_pools: { type: array, items: { type: string } }
+                snippet_types: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: The decision.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  denied: { type: boolean }
+                  policy: { type: [string, "null"] }
+                  reason: { type: [string, "null"] }
+
+  /api/credential:
+    post:
+      operationId: governance_createCredential
+      summary: Create a credential
+      description: >
+        Admin. Secret fields are encrypted at rest and are never returned by any read —
+        the response carries has_password / has_private_key / has_token /
+        has_client_secret instead.
+      tags: [credentials]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteCredential" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Credential" }
+        "403": { description: Admin only. }
+
+  /api/credential/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: governance_updateCredential
+      summary: Update a credential
+      description: >
+        Admin. Only provided fields change; omitting a secret field keeps the stored
+        value rather than clearing it.
+      tags: [credentials]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteCredential" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Credential" }
+    delete:
+      operationId: governance_deleteCredential
+      summary: Remove a credential
+      description: >
+        Admin. Anything still pointing at it — a device, an integration, a git
+        repository — starts failing authentication, not failing loudly at delete time.
+      tags: [credentials]
+      responses:
+        "200": { description: Removed. }
+
+  /api/secrets:
+    get:
+      operationId: governance_listSecrets
+      summary: List secret-store entries
+      description: >
+        Admin. Values are never returned; has_value is the only fact about the value. A
+        secret is referenced from configuration as ${secret:secret:<name>:value} and
+        resolved at call time — storing one authenticates nothing by itself.
+      tags: [secrets]
+      responses:
+        "200":
+          description: Every live entry, ordered by name. A bare array, not a page.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Secret" }
+    post:
+      operationId: governance_createSecret
+      summary: Create a secret
+      description: >
+        Admin. The name is the lookup key templates reference and cannot be changed
+        afterwards, so that a reference written once keeps pointing at the same thing.
+        The value is never readable again — rotate by writing a new one.
+      tags: [secrets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                name:
+                  type: string
+                  description: >
+                    2–64 chars, lowercase letters/digits/hyphens/underscores. Referenced
+                    as ${secret:secret:<name>:value}.
+                description: { type: [string, "null"] }
+                value: { type: string, description: Write-only. }
+      responses:
+        "201":
+          description: The entry, without its value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "409": { description: A secret with that name already exists. }
+
+  /api/secrets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: governance_getSecret
+      summary: One secret's metadata
+      tags: [secrets]
+      responses:
+        "200":
+          description: The entry, without its value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "404": { description: No live secret with that id. }
+    put:
+      operationId: governance_updateSecret
+      summary: Update a secret's description, or rotate its value
+      description: >
+        Admin. Omit `value` to edit the description without touching the ciphertext;
+        send one to rotate, which takes effect on the next call that resolves it. The
+        name is immutable. An empty `value` is rejected — deleting the secret is how a
+        value is removed.
+      tags: [secrets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                description: { type: [string, "null"] }
+                value: { type: string, description: Write-only. Omit to keep the stored value. }
+      responses:
+        "200":
+          description: The entry, without its value.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Secret" }
+        "404": { description: No live secret with that id. }
+    delete:
+      operationId: governance_deleteSecret
+      summary: Delete a secret
+      description: >
+        Admin. Soft delete: the row stays so audit entries naming it still resolve, and
+        the name stays reserved. Every ${secret:secret:<name>:value} reference to it
+        stops resolving — which is the failure the caller will see.
+      tags: [secrets]
+      responses:
+        "204": { description: Deleted. }
+        "404": { description: No live secret with that id. }
+
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        user_id: { type: string, format: uuid }
+        username: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, operator, viewer] }
+        is_active: { type: boolean }
+        locked: { type: boolean, description: Locked out by failed sign-ins, distinct from is_active. }
+        profile_id: { type: [string, "null"], format: uuid }
+        password_changed_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WriteProfile:
+      type: object
+      properties:
+        name: { type: string, description: Create only — unique, and not renameable. }
+        display_name: { type: string }
+        description: { type: string }
+        skills: { type: array, items: { type: string } }
+        response_style: { type: string }
+        display_order: { type: integer }
+
+    Profile:
+      type: object
+      properties:
+        profile_id: { type: string, format: uuid }
+        name: { type: string }
+        display_name: { type: string }
+        description: { type: [string, "null"] }
+        skills: { type: array, items: { type: string } }
+        response_style: { type: [string, "null"] }
+        display_order: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WritePolicy:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        rule: { $ref: "#/components/schemas/PolicyRule" }
+        enabled: { type: boolean }
+
+    PolicyRule:
+      type: object
+      description: >
+        Two shapes, selected by `action`. An unrecognised action (someone typed "warn")
+        is not treated as a deny — blocking their work is not a reasonable reading of a
+        thing this build does not do.
+      properties:
+        action: { type: string, enum: [deny, gate] }
+        reason: { type: string, description: Reported verbatim when the policy fires. }
+        when:
+          type: object
+          description: >
+            deny only. Clauses AND together and values within a clause OR, so adding a
+            clause always narrows. An absent clause places no restriction; a present
+            clause against an empty context does NOT match, so a device-role policy
+            cannot fire on a run that targets no devices. No `when` at all denies
+            everything — a legitimate way to express a change freeze.
+          properties:
+            environment: { type: array, items: { type: string } }
+            device_role: { type: array, items: { type: string } }
+            device_pool: { type: array, items: { type: string } }
+            snippet_type: { type: array, items: { type: string } }
+            description_contains: { type: array, items: { type: string } }
+        on: { type: string, description: gate only — the transition, e.g. promote. }
+        from: { type: string, description: gate only. Absent means every source environment. }
+        to: { type: string, description: gate only. Absent means every target environment. }
+        require:
+          type: array
+          description: >
+            gate only, and required — a gate with no require list can never be
+            satisfied. Every unmet requirement is reported at once, not just the first.
+          items:
+            type: object
+            properties:
+              type: { type: string, enum: [successful_runs, last_successful_run_within] }
+              min: { type: integer, description: successful_runs. }
+              days: { type: integer, description: last_successful_run_within. }
+              scope: { type: string, enum: [this_workflow, any_workflow], default: this_workflow }
+
+    Policy:
+      type: object
+      properties:
+        policy_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        rule: { $ref: "#/components/schemas/PolicyRule" }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WriteCredential:
+      type: object
+      properties:
+        name: { type: string }
+        type: { type: string, default: ssh }
+        auth_method: { type: string, enum: [password, key, token, api_key, oauth2] }
+        username: { type: string }
+        password: { type: string, description: Write-only. }
+        private_key: { type: string, description: Write-only. }
+        key_passphrase: { type: string, description: Write-only. }
+        token: { type: string, description: Write-only. }
+        api_key_header: { type: string }
+        client_id: { type: string }
+        client_secret: { type: string, description: Write-only. }
+        token_url: { type: string }
+        scopes: { type: string }
+
+    Credential:
+      type: object
+      properties:
+        credential_id: { type: string, format: uuid }
+        name: { type: string }
+        type: { type: string }
+        username: { type: [string, "null"] }
+        auth_method: { type: string, enum: [password, key, token, api_key, oauth2] }
+        has_password: { type: boolean }
+        has_private_key: { type: boolean }
+        has_token: { type: boolean }
+        has_client_secret: { type: boolean }
+        api_key_header: { type: [string, "null"] }
+        client_id: { type: [string, "null"] }
+        token_url: { type: [string, "null"] }
+        scopes: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Secret:
+      type: object
+      properties:
+        secret_id: { type: string, format: uuid }
+        name:
+          type: string
+          description: Lookup key referenced as "${secret:secret:<name>:value}".
+        description: { type: [string, "null"] }
+        has_value: { type: boolean, description: The only fact exposed about the value. }
+        created_by: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

@@ -1,0 +1,15 @@
+# Build context is the repo root (see deploy/docker-compose.yml).
+**/bin/
+**/obj/
+**/node_modules/
+**/.git/
+**/.vs/
+**/.idea/
+**/.vscode/
+**/*.user
+frontend/build/
+frontend/dist/
+keyring/
+data/
+**/__pycache__/
+**/.pytest_cache/

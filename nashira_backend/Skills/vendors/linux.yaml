@@ -1,0 +1,39 @@
+platform: linux
+description: Linux shell. Servers and container hosts reached over plain SSH; there is no running/startup configuration split, so those intents are absent.
+commands:
+  - intent: show_version
+    command: uname -a
+    description: Kernel name, release, architecture and hostname.
+  - intent: show_interfaces
+    command: ip link
+    description: Network interfaces with state, MTU and MAC address.
+  - intent: show_ip_interfaces
+    command: ip addr
+    description: Network interfaces with their assigned addresses.
+  - intent: show_arp
+    command: ip neigh
+    description: Neighbour table — IP to MAC bindings with state.
+  - intent: show_route_table
+    command: ip route
+    description: Routing table with destination, gateway and source address.
+  - intent: show_inventory
+    command: lscpu
+    description: CPU architecture, cores, sockets and model.
+  - intent: show_cpu
+    command: top -bn1
+    description: One-shot process snapshot ordered by CPU consumption.
+  - intent: show_memory
+    command: free -h
+    description: Total, used and available memory and swap.
+  - intent: show_logs
+    command: journalctl -xe
+    description: Recent systemd journal entries with explanations.
+  - intent: show_uptime
+    command: uptime
+    description: Current time, uptime, logged-in users and load averages.
+  - intent: show_clock
+    command: date
+    description: Current system date and time.
+  - intent: show_users
+    command: whoami
+    description: The account the SSH session is authenticated as.

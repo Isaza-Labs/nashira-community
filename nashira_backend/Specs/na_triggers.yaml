@@ -1,0 +1,323 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Triggers and acceptance tests
+  version: "1.0"
+  description: >
+    The two things attached to a workflow that are not part of its graph: what makes it
+    run unattended, and what proves it behaves.
+
+    Both are Operator, not Admin — a trigger decides when a workflow runs and a test
+    proves it behaves, and both are authoring.
+
+    A simulation proves the graph is sound; only a test run proves the behaviour. Test
+    verdicts are therefore treated as evidence about one exact definition: editing the
+    workflow clears them outright, and result_is_current compares the verdict's schema
+    hash against the workflow's current one.
+
+tags:
+  - name: triggers
+  - name: tests
+
+paths:
+  /api/workflows/{workflowId}/triggers:
+    parameters:
+      - name: workflowId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: triggers_list
+      summary: List a workflow's triggers
+      description: >
+        Read last_run_at / last_run_status / last_run_id / last_error / fire_count here
+        before assuming a person launched an unexpected run.
+      tags: [triggers]
+      responses:
+        "200":
+          description: The triggers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Trigger" }
+                  total: { type: integer }
+    post:
+      operationId: triggers_create
+      summary: Create a trigger
+      description: >
+        Operator. A cron trigger needs cron_expression and interprets it in timezone. A
+        webhook trigger is given a route and a signing secret, and that secret is
+        returned in this response and nowhere else — there is no endpoint that reads it
+        back. If it was not recorded, rotate.
+      tags: [triggers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteTrigger" }
+      responses:
+        "201":
+          description: Created. Carries `secret` exactly once.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trigger" }
+        "400": { description: Missing cron_expression on a time-based trigger, or an unknown timezone. }
+
+  /api/workflows/{workflowId}/triggers/{id}:
+    parameters:
+      - name: workflowId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: triggers_update
+      summary: Update a trigger
+      description: >
+        Operator. Only provided fields change. `type` is NOT editable — a cron trigger
+        has no route or secret and a webhook has no schedule, so switching would leave
+        the row half-configured. Setting enabled false stops it firing without losing
+        its route, secret or history; re-enabling recomputes the schedule.
+      tags: [triggers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteTrigger" }
+      responses:
+        "200":
+          description: Updated. `secret` is absent — updating does not reveal it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trigger" }
+    delete:
+      operationId: triggers_delete
+      summary: Remove a trigger
+      tags: [triggers]
+      responses:
+        "200": { description: Removed. }
+
+  /api/workflows/{workflowId}/triggers/{id}/rotate-secret:
+    parameters:
+      - name: workflowId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: triggers_rotateSecret
+      summary: Issue a new webhook signing secret
+      description: >
+        Operator, webhook triggers only. The previous secret stops working immediately,
+        so every caller signing with it starts failing. Returns the new secret once.
+      tags: [triggers]
+      responses:
+        "200":
+          description: The trigger, carrying the new `secret`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trigger" }
+        "400": { description: Only webhook triggers have a secret. }
+
+  /api/workflows/{workflowId}/tests:
+    parameters:
+      - name: workflowId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: tests_list
+      summary: List a workflow's acceptance tests
+      tags: [tests]
+      responses:
+        "200":
+          description: The tests, with their last result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Test" }
+                  total: { type: integer }
+    post:
+      operationId: tests_create
+      summary: Create an acceptance test
+      tags: [tests]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteTest" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Test" }
+
+  /api/workflows/{workflowId}/tests/{id}:
+    parameters:
+      - name: workflowId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: tests_update
+      summary: Update an acceptance test
+      description: >
+        Operator. Changing `assertions` clears the stored verdict: it was measured
+        against different criteria. Editing the workflow's own nodes/edges clears every
+        verdict on every test for the same reason.
+      tags: [tests]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteTest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Test" }
+    delete:
+      operationId: tests_delete
+      summary: Remove an acceptance test
+      tags: [tests]
+      responses:
+        "200": { description: Removed. }
+
+  /api/workflows/{workflowId}/tests/{id}/run:
+    parameters:
+      - name: workflowId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: tests_run
+      summary: Run one acceptance test
+      description: >
+        Operator. This executes the workflow for real against target_devices — it is not
+        a simulation. Say what it will touch before calling it.
+      tags: [tests]
+      responses:
+        "200":
+          description: The test with its refreshed result.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Test" }
+
+components:
+  schemas:
+    WriteTrigger:
+      type: object
+      properties:
+        name: { type: string }
+        type:
+          type: string
+          enum: [cron, webhook]
+          description: cron is time-based and requires cron_expression; webhook gets a route.
+        description: { type: string }
+        cron_expression:
+          type: string
+          description: >
+            Standard cron, interpreted in timezone. Rejected if it has no future
+            occurrence.
+        timezone: { type: string, description: IANA name. Defaults to UTC. }
+        target_devices:
+          type: array
+          items: { type: string, format: uuid }
+          description: The devices runs from this trigger target.
+        input_defaults: { type: object, description: Payload defaults for the runs it fires. }
+        allow_unsigned:
+          type: boolean
+          description: >
+            Webhook only — turns off signature verification. Anyone who learns the route
+            can then start the run. Say that plainly before enabling it.
+        allow_target_override:
+          type: boolean
+          description: Whether an incoming payload may replace target_devices.
+        enabled: { type: boolean }
+
+    Trigger:
+      type: object
+      properties:
+        workflow_trigger_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        name: { type: string }
+        type: { type: string, enum: [cron, webhook] }
+        description: { type: [string, "null"] }
+        cron_expression: { type: [string, "null"] }
+        timezone: { type: string }
+        route: { type: [string, "null"], description: Webhook only — the path callers POST to. }
+        has_secret: { type: boolean }
+        allow_unsigned: { type: boolean }
+        allow_target_override: { type: boolean }
+        target_devices: { type: array, items: { type: string, format: uuid } }
+        input_defaults: { type: [object, "null"] }
+        enabled: { type: boolean }
+        next_run_at: { type: [string, "null"], format: date-time }
+        last_run_at: { type: [string, "null"], format: date-time }
+        last_run_status: { type: [string, "null"] }
+        last_run_id: { type: [string, "null"], format: uuid }
+        last_error: { type: [string, "null"] }
+        fire_count: { type: integer }
+        secret:
+          type: [string, "null"]
+          description: >
+            Present exactly once, on create and on rotate. No endpoint returns it
+            afterwards.
+        updated_at: { type: string, format: date-time }
+
+    WriteTest:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        input: { type: object, description: The payload the run starts with. }
+        target_devices: { type: array, items: { type: string, format: uuid } }
+        assertions:
+          type: array
+          items: { type: object }
+          description: The conditions the run's result must satisfy for the test to pass.
+
+    Test:
+      type: object
+      properties:
+        workflow_acceptance_test_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        input: { type: object }
+        target_devices: { type: array, items: { type: string, format: uuid } }
+        assertions: { type: array, items: { type: object } }
+        last_status: { type: [string, "null"] }
+        last_run_id: { type: [string, "null"], format: uuid }
+        last_run_at: { type: [string, "null"], format: date-time }
+        last_failures: { type: array, items: {} }
+        result_is_current:
+          type: boolean
+          description: >
+            False when there is no verdict, or when the verdict's schema hash no longer
+            matches the workflow's. Evidence for a definition that no longer exists is
+            not evidence — re-run before relying on it.
+        updated_at: { type: string, format: date-time }

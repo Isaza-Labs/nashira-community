@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="nashira_backend.Tests/nashira_backend.Tests.csproj" />
+  <Project Path="nashira_backend/nashira_backend.csproj" />
+  <Project Path="nashira_e2e/nashira_e2e.csproj" />
+</Solution>

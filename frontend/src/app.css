@@ -1,0 +1,584 @@
+/* nashira global styles.
+
+   The nashira design tokens. This file owns the theme outright — there is no
+   upstream preset underneath it, so every colour in the app traces back to a
+   ramp defined here.
+
+   Palette: the Nashira brand identity (see static/Nashira_resumen_identidad_
+   interfaz.pdf). Azul #1D4E89 is the primary action in light mode; turquesa
+   #00B2CA is the action colour in dark mode and the information/focus signal in
+   both; beige #E3CFB4 warms surfaces and secondary accents; coral #EE3D23 is
+   reserved for the brand mark (--color-brand below) and, derived, for the
+   destructive family (#B72B19 light / #FF795F dark); neutrals run from lavender
+   #EAECF6 to carbón #222222 (OKLCH hue 277).
+
+   The primary ramp is hue-shifted, like warning: light stops (50–400) carry the
+   turquesa hue, dark stops (500–950) the azul hue. The mode-aware pairs then do
+   the doc's mode assignment for free — links are deep azul in light (`-700`)
+   and bright turquesa in dark (`-300`) — with primary-400 being exactly
+   #00B2CA and primary-500 exactly #1D4E89.
+
+   Ramps were generated and contrast-checked against real component pairings
+   (white-on-primary-500, badge text on both surfaces, muted text in both
+   modes) — every pairing the components actually render clears WCAG AA. Three
+   rules keep it that way:
+     - `-500` stops used as button fills are dark enough for white text; in dark
+       mode filled CTAs switch to `-400` fills with `-950` text (the identity
+       doc's verified pairs: 8.39:1 light, 6.2:1+ dark).
+     - meaningful text uses the mode-aware pairs (`text-surface-600-400`), never
+       the single `-500` stop, which cannot clear AA against both modes at once.
+     - success sits at hue 148, held ~64° off the turquesa signal hue. Any
+       closer and the two read alike as the low-opacity tints used for alerts
+       and status badges.
+
+   Type: IBM Plex Sans + IBM Plex Mono (SIL OFL 1.1), self-hosted via @fontsource
+   — the .woff2 files are bundled at build time, so nothing is fetched from a CDN
+   at runtime and the SPA still runs fully offline for the air-gapped tier (T3).
+   Plex was drawn for technical products and the sans/mono pair is designed
+   together; mono is primary content here (IPs, hostnames, CLI output, diffs). */
+
+@import '@fontsource-variable/ibm-plex-sans/wght.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';
+@import '@fontsource/ibm-plex-mono/latin-600.css';
+@import 'tailwindcss';
+@import '@skeletonlabs/skeleton';
+
+@plugin '@tailwindcss/typography';
+
+/* Include Skeleton's Svelte component classes in the Tailwind scan. */
+@source '../node_modules/@skeletonlabs/skeleton-svelte/dist';
+
+/* Tailwind v4 dark variant keyed to data-mode, so `dark:` utilities line up with
+   the mode set by the pre-paint bootstrap and the mode toggle. */
+@custom-variant dark (&:where([data-mode='dark'], [data-mode='dark'] *));
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Theme tokens
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+[data-theme='nashira'] {
+	--spacing: 0.25rem;
+	--text-scaling: 1.067;
+	--base-font-color: var(--color-surface-950);
+	--base-font-color-dark: var(--color-surface-50);
+	--base-font-family: var(--font-sans);
+	--base-font-size: inherit;
+	--base-line-height: inherit;
+	--base-font-weight: normal;
+	--base-font-style: normal;
+	--base-letter-spacing: 0em;
+	--heading-font-color: inherit;
+	--heading-font-color-dark: inherit;
+	--heading-font-family: inherit;
+	--heading-font-weight: 650;
+	--heading-font-style: normal;
+	--heading-letter-spacing: -0.02em;
+	--anchor-font-color: var(--color-primary-700);
+	--anchor-font-color-dark: var(--color-primary-300);
+	--anchor-font-family: inherit;
+	--anchor-font-size: inherit;
+	--anchor-line-height: inherit;
+	--anchor-font-weight: inherit;
+	--anchor-font-style: inherit;
+	--anchor-letter-spacing: inherit;
+	--anchor-text-decoration: none;
+	--anchor-text-decoration-hover: underline;
+	--anchor-text-decoration-active: none;
+	--anchor-text-decoration-focus: none;
+	--body-background-color: var(--color-surface-50);
+	--body-background-color-dark: var(--color-surface-950);
+	--radius-base: 0.375rem;
+	--radius-container: 0.625rem;
+	--default-border-width: 1px;
+	--default-divide-width: 1px;
+	--default-ring-width: 1px;
+
+	/* ── Primary — hue-shifted: turquesa light stops, azul dark stops.
+	   400 is exactly #00B2CA, 500 exactly #1D4E89. ── */
+	--color-primary-50: oklch(0.97 0.02 212);
+	--color-primary-100: oklch(0.94 0.04 212);
+	--color-primary-200: oklch(0.88 0.07 212);
+	--color-primary-300: oklch(0.8 0.095 212);
+	--color-primary-400: oklch(0.7006 0.1219 211.61);
+	--color-primary-500: oklch(0.4234 0.1112 255.11);
+	--color-primary-600: oklch(0.38 0.1 255);
+	--color-primary-700: oklch(0.34 0.088 255);
+	--color-primary-800: oklch(0.3 0.075 255);
+	--color-primary-900: oklch(0.265 0.06 255);
+	--color-primary-950: oklch(0.23 0.046 255);
+	--color-primary-contrast-dark: var(--color-primary-950);
+	--color-primary-contrast-light: var(--color-primary-50);
+	--color-primary-contrast-50: var(--color-primary-contrast-dark);
+	--color-primary-contrast-100: var(--color-primary-contrast-dark);
+	--color-primary-contrast-200: var(--color-primary-contrast-dark);
+	--color-primary-contrast-300: var(--color-primary-contrast-dark);
+	--color-primary-contrast-400: var(--color-primary-contrast-dark);
+	--color-primary-contrast-500: var(--color-primary-contrast-light);
+	--color-primary-contrast-600: var(--color-primary-contrast-light);
+	--color-primary-contrast-700: var(--color-primary-contrast-light);
+	--color-primary-contrast-800: var(--color-primary-contrast-light);
+	--color-primary-contrast-900: var(--color-primary-contrast-light);
+	--color-primary-contrast-950: var(--color-primary-contrast-light);
+
+	/* ── Secondary — turquesa in full: information, progress and focus in both
+	   modes (the identity doc's "Información / foco"). ── */
+	--color-secondary-50: oklch(0.96 0.018 212);
+	--color-secondary-100: oklch(0.92 0.035 212);
+	--color-secondary-200: oklch(0.86 0.06 212);
+	--color-secondary-300: oklch(0.78 0.085 212);
+	--color-secondary-400: oklch(0.69 0.105 212);
+	--color-secondary-500: oklch(0.575 0.115 212);
+	--color-secondary-600: oklch(0.505 0.1 212);
+	--color-secondary-700: oklch(0.44 0.088 212);
+	--color-secondary-800: oklch(0.37 0.073 212);
+	--color-secondary-900: oklch(0.31 0.058 212);
+	--color-secondary-950: oklch(0.24 0.042 212);
+	--color-secondary-contrast-dark: var(--color-secondary-950);
+	--color-secondary-contrast-light: var(--color-secondary-50);
+	--color-secondary-contrast-50: var(--color-secondary-contrast-dark);
+	--color-secondary-contrast-100: var(--color-secondary-contrast-dark);
+	--color-secondary-contrast-200: var(--color-secondary-contrast-dark);
+	--color-secondary-contrast-300: var(--color-secondary-contrast-dark);
+	--color-secondary-contrast-400: var(--color-secondary-contrast-dark);
+	--color-secondary-contrast-500: var(--color-secondary-contrast-light);
+	--color-secondary-contrast-600: var(--color-secondary-contrast-light);
+	--color-secondary-contrast-700: var(--color-secondary-contrast-light);
+	--color-secondary-contrast-800: var(--color-secondary-contrast-light);
+	--color-secondary-contrast-900: var(--color-secondary-contrast-light);
+	--color-secondary-contrast-950: var(--color-secondary-contrast-light);
+
+	/* ── Tertiary — beige, warm sand: tertiary-200 is exactly #E3CFB4. Chroma
+	   sits clearly below warning's at every stop so the two warm families never
+	   read alike as tints. ── */
+	--color-tertiary-50: oklch(0.96 0.015 75.4);
+	--color-tertiary-100: oklch(0.92 0.03 75.4);
+	--color-tertiary-200: oklch(0.864 0.0425 75.38);
+	--color-tertiary-300: oklch(0.78 0.055 75.4);
+	--color-tertiary-400: oklch(0.69 0.06 75.4);
+	--color-tertiary-500: oklch(0.575 0.06 75.4);
+	--color-tertiary-600: oklch(0.505 0.055 75.4);
+	--color-tertiary-700: oklch(0.44 0.05 75.4);
+	--color-tertiary-800: oklch(0.37 0.042 75.4);
+	--color-tertiary-900: oklch(0.31 0.035 75.4);
+	--color-tertiary-950: oklch(0.24 0.026 75.4);
+	--color-tertiary-contrast-dark: var(--color-tertiary-950);
+	--color-tertiary-contrast-light: var(--color-tertiary-50);
+	--color-tertiary-contrast-50: var(--color-tertiary-contrast-dark);
+	--color-tertiary-contrast-100: var(--color-tertiary-contrast-dark);
+	--color-tertiary-contrast-200: var(--color-tertiary-contrast-dark);
+	--color-tertiary-contrast-300: var(--color-tertiary-contrast-dark);
+	--color-tertiary-contrast-400: var(--color-tertiary-contrast-dark);
+	--color-tertiary-contrast-500: var(--color-tertiary-contrast-light);
+	--color-tertiary-contrast-600: var(--color-tertiary-contrast-light);
+	--color-tertiary-contrast-700: var(--color-tertiary-contrast-light);
+	--color-tertiary-contrast-800: var(--color-tertiary-contrast-light);
+	--color-tertiary-contrast-900: var(--color-tertiary-contrast-light);
+	--color-tertiary-contrast-950: var(--color-tertiary-contrast-light);
+
+	/* ── Success ── */
+	--color-success-50: oklch(0.96 0.03 148);
+	--color-success-100: oklch(0.92 0.06 148);
+	--color-success-200: oklch(0.86 0.1 148);
+	--color-success-300: oklch(0.78 0.13 148);
+	--color-success-400: oklch(0.69 0.147 148);
+	--color-success-500: oklch(0.6 0.128 148);
+	--color-success-600: oklch(0.52 0.111 148);
+	--color-success-700: oklch(0.44 0.094 148);
+	--color-success-800: oklch(0.36 0.077 148);
+	--color-success-900: oklch(0.3 0.064 148);
+	--color-success-950: oklch(0.23 0.049 148);
+	--color-success-contrast-dark: var(--color-success-950);
+	--color-success-contrast-light: var(--color-success-50);
+	--color-success-contrast-50: var(--color-success-contrast-dark);
+	--color-success-contrast-100: var(--color-success-contrast-dark);
+	--color-success-contrast-200: var(--color-success-contrast-dark);
+	--color-success-contrast-300: var(--color-success-contrast-dark);
+	--color-success-contrast-400: var(--color-success-contrast-dark);
+	--color-success-contrast-500: var(--color-success-contrast-dark);
+	--color-success-contrast-600: var(--color-success-contrast-light);
+	--color-success-contrast-700: var(--color-success-contrast-light);
+	--color-success-contrast-800: var(--color-success-contrast-light);
+	--color-success-contrast-900: var(--color-success-contrast-light);
+	--color-success-contrast-950: var(--color-success-contrast-light);
+
+	/* ── Warning ── */
+	--color-warning-50: oklch(0.97 0.023 75);
+	--color-warning-100: oklch(0.94 0.047 75);
+	--color-warning-200: oklch(0.89 0.09 75);
+	--color-warning-300: oklch(0.83 0.13 72);
+	--color-warning-400: oklch(0.77 0.15 68);
+	--color-warning-500: oklch(0.7 0.155 62);
+	--color-warning-600: oklch(0.61 0.145 55);
+	--color-warning-700: oklch(0.51 0.125 50);
+	--color-warning-800: oklch(0.42 0.1 48);
+	--color-warning-900: oklch(0.34 0.08 46);
+	--color-warning-950: oklch(0.26 0.06 45);
+	--color-warning-contrast-dark: var(--color-warning-950);
+	--color-warning-contrast-light: var(--color-warning-50);
+	--color-warning-contrast-50: var(--color-warning-contrast-dark);
+	--color-warning-contrast-100: var(--color-warning-contrast-dark);
+	--color-warning-contrast-200: var(--color-warning-contrast-dark);
+	--color-warning-contrast-300: var(--color-warning-contrast-dark);
+	--color-warning-contrast-400: var(--color-warning-contrast-dark);
+	--color-warning-contrast-500: var(--color-warning-contrast-dark);
+	--color-warning-contrast-600: var(--color-warning-contrast-dark);
+	--color-warning-contrast-700: var(--color-warning-contrast-light);
+	--color-warning-contrast-800: var(--color-warning-contrast-light);
+	--color-warning-contrast-900: var(--color-warning-contrast-light);
+	--color-warning-contrast-950: var(--color-warning-contrast-light);
+
+	/* ── Error — derived from the coral brand hue: 500 is exactly #B72B19 (the
+	   doc's accessible destructive on light, 6.23:1 under white text) and 400 is
+	   exactly #FF795F (its dark-mode counterpart, 6.5:1 under -950 text). ── */
+	--color-error-50: oklch(0.96 0.018 30);
+	--color-error-100: oklch(0.92 0.038 30);
+	--color-error-200: oklch(0.86 0.07 30);
+	--color-error-300: oklch(0.8 0.1 30);
+	--color-error-400: oklch(0.7285 0.1689 32.55);
+	--color-error-500: oklch(0.5124 0.1791 30.93);
+	--color-error-600: oklch(0.455 0.16 30);
+	--color-error-700: oklch(0.4 0.14 30);
+	--color-error-800: oklch(0.345 0.118 30);
+	--color-error-900: oklch(0.295 0.096 30);
+	--color-error-950: oklch(0.24 0.073 30);
+	--color-error-contrast-dark: var(--color-error-950);
+	--color-error-contrast-light: var(--color-error-50);
+	--color-error-contrast-50: var(--color-error-contrast-dark);
+	--color-error-contrast-100: var(--color-error-contrast-dark);
+	--color-error-contrast-200: var(--color-error-contrast-dark);
+	--color-error-contrast-300: var(--color-error-contrast-dark);
+	--color-error-contrast-400: var(--color-error-contrast-dark);
+	--color-error-contrast-500: var(--color-error-contrast-light);
+	--color-error-contrast-600: var(--color-error-contrast-light);
+	--color-error-contrast-700: var(--color-error-contrast-light);
+	--color-error-contrast-800: var(--color-error-contrast-light);
+	--color-error-contrast-900: var(--color-error-contrast-light);
+	--color-error-contrast-950: var(--color-error-contrast-light);
+
+	/* ── Surface — lavender-to-carbón neutrals (hue 277, from the light canvas
+	   #EAECF6). 950 is carbón #222222 (the dark canvas and dark-mode cards),
+	   500 sits at the identity's gris #888888. ── */
+	--color-surface-50: oklch(0.985 0.004 277);
+	--color-surface-100: oklch(0.955 0.006 277);
+	--color-surface-200: oklch(0.905 0.009 277);
+	--color-surface-300: oklch(0.835 0.011 277);
+	--color-surface-400: oklch(0.68 0.011 277);
+	--color-surface-500: oklch(0.627 0.008 277);
+	--color-surface-600: oklch(0.455 0.01 277);
+	--color-surface-700: oklch(0.37 0.009 277);
+	--color-surface-800: oklch(0.33 0.008 277);
+	--color-surface-900: oklch(0.29 0.006 277);
+	--color-surface-950: oklch(0.252 0.002 277);
+	--color-surface-contrast-dark: var(--color-surface-950);
+	--color-surface-contrast-light: var(--color-surface-50);
+	--color-surface-contrast-50: var(--color-surface-contrast-dark);
+	--color-surface-contrast-100: var(--color-surface-contrast-dark);
+	--color-surface-contrast-200: var(--color-surface-contrast-dark);
+	--color-surface-contrast-300: var(--color-surface-contrast-dark);
+	--color-surface-contrast-400: var(--color-surface-contrast-dark);
+	--color-surface-contrast-500: var(--color-surface-contrast-light);
+	--color-surface-contrast-600: var(--color-surface-contrast-light);
+	--color-surface-contrast-700: var(--color-surface-contrast-light);
+	--color-surface-contrast-800: var(--color-surface-contrast-light);
+	--color-surface-contrast-900: var(--color-surface-contrast-light);
+	--color-surface-contrast-950: var(--color-surface-contrast-light);
+}
+
+:root {
+	/* Bundled webfonts with a system fallback that only shows if a face fails to
+	   load. Swap these two vars to rebrand — nothing else references a family. */
+	--font-sans: 'IBM Plex Sans Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+		Roboto, Helvetica, Arial, sans-serif;
+	--font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas,
+		monospace;
+	/* Brand coral. Marca y énfasis only — the logo and favicon, never actions.
+	   Deliberately outside the theme families so custom themes keep the brand. */
+	--color-brand: #ee3d23;
+}
+
+html {
+	font-family: var(--font-sans);
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	text-rendering: optimizeLegibility;
+}
+
+code,
+kbd,
+pre,
+.font-mono {
+	font-family: var(--font-mono);
+}
+
+/* Read through the heading tokens rather than restating their values. They were
+   already declared above but nothing consumed them — Skeleton's base styles only
+   wire --base-font-family, on <body>. Going through the vars is what lets a theme
+   set a heading font or weight at all; the fallbacks keep this rule the shipped
+   truth when no theme is applied. */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+	font-family: var(--heading-font-family, inherit);
+	letter-spacing: -0.02em;
+	font-weight: var(--heading-font-weight, 650);
+}
+
+/* Visible focus ring for keyboard users (accessibility). Matches the control
+   radius so the ring traces the component it belongs to. */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+	outline: 2px solid var(--focus-color, var(--color-primary-500));
+	outline-offset: 2px;
+	border-radius: var(--ctl-radius);
+}
+
+/* Text selection.
+
+   Skeleton ships one rule — primary-500 at 50%, both modes. In light mode that
+   is fine and this keeps it. In dark mode it is not: primary-500 is the azul
+   #1D4E89, and half of a dark navy laid over a near-black surface is a shade of
+   the surface, so dragging across text in the mode this app opens in looked
+   identical to not dragging. Dark mode gets the turquesa instead — the stop that
+   is already this palette's dark-mode action colour, for the same reason. */
+::selection {
+	background: color-mix(in oklab, var(--color-primary-500) 45%, transparent);
+}
+[data-mode='dark'] ::selection {
+	background: color-mix(in oklab, var(--color-primary-400) 42%, transparent);
+}
+
+/* … and where the ground IS the primary colour, a primary wash on top of it is
+   invisible in BOTH modes — which is what the user's own chat bubble is. Those
+   surfaces opt into a neutral wash instead: white over the azul fill in light
+   mode, near-black over the turquesa in dark, each with the text colour flipped
+   to match, since the bubble's own text is chosen against the fill. */
+.selection-on-fill::selection,
+.selection-on-fill ::selection {
+	background: color-mix(in oklab, white 80%, transparent);
+	color: var(--color-surface-950);
+}
+[data-mode='dark'] .selection-on-fill::selection,
+[data-mode='dark'] .selection-on-fill ::selection {
+	background: color-mix(in oklab, black 62%, transparent);
+	color: var(--color-surface-50);
+}
+
+button,
+a,
+[role='button'],
+[role='menuitem'],
+[role='tab'] {
+	transition-property: background-color, border-color, color, opacity, box-shadow, transform;
+	transition-duration: 140ms;
+	transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.tabular-nums {
+	font-variant-numeric: tabular-nums;
+}
+
+/* Slim, theme-aware scrollbars (WebKit). */
+*::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+}
+*::-webkit-scrollbar-track {
+	background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+	background: color-mix(in oklab, var(--color-surface-500) 30%, transparent);
+	border-radius: 999px;
+	border: 2px solid transparent;
+	background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in oklab, var(--color-surface-500) 50%, transparent);
+	background-clip: padding-box;
+}
+
+/* ── Entrance utilities ───────────────────────────────────────────────────
+   Same names and timings as Flow Weaver's, so a pattern learned in one
+   console applies in the other. Compose as `animate-in fade-in` or
+   `animate-in slide-up`. The reduced-motion block below collapses all of
+   these to their final frame, so no component needs its own guard. */
+@keyframes na-fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+@keyframes na-slide-up {
+	from {
+		opacity: 0;
+		transform: translateY(4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+.animate-in {
+	animation: na-fade-in 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.fade-in {
+	animation-name: na-fade-in;
+}
+.slide-up {
+	animation-name: na-slide-up;
+}
+
+/* Respect prefers-reduced-motion across the app (accessibility). */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.001ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.001ms !important;
+		scroll-behavior: auto !important;
+	}
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Surface system
+
+   One treatment, two modes. Components consume the semantic .ui-* classes below
+   rather than raw colours, so the whole app repaints from these few variables.
+
+   The elevation stack is deliberate and reads the same in both modes:
+     app background  →  surface (cards, tables, menus)  →  controls  →  raised
+   In light mode depth comes from layered shadow; in dark mode shadow is nearly
+   invisible, so depth comes from the surface sitting lighter than the app
+   background plus a hairline border.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+[data-mode='light'] {
+	/* Deliberately NOT surface-100. Tinted panels (table heads, code blocks,
+	   inline alerts) are surface-100, and plenty of them sit straight on the app
+	   background — if the two match, those panels vanish. Sitting one notch below
+	   keeps the three-step stack readable: app < tint < card. */
+	/* The fallback IS the shipped value; the variable exists so the theme engine
+	   can move the shell with a surface tint. Without it the two largest areas on
+	   screen stay stock and a theme reads as "nothing happened". */
+	/* The light canvas is the identity's fondo claro #EAECF6, verbatim. */
+	--app-bg: var(--app-bg-light, oklch(0.9445 0.0136 277.06));
+	--app-glow: color-mix(in oklab, var(--color-primary-500) 7%, transparent);
+	--srf-bg: var(--color-surface-50);
+	--srf-border-color: color-mix(in oklab, var(--color-surface-950) 10%, transparent);
+	--srf-shadow: 0 1px 2px color-mix(in oklab, var(--color-surface-950) 5%, transparent),
+		0 8px 20px -8px color-mix(in oklab, var(--color-surface-950) 10%, transparent);
+	--ctl-bg: var(--color-surface-50);
+	--ctl-border-color: color-mix(in oklab, var(--color-surface-950) 16%, transparent);
+	--btn-shadow: 0 1px 2px color-mix(in oklab, var(--color-surface-950) 12%, transparent);
+	/* Keyboard focus is azul on light — turquesa cannot clear 3:1 here. */
+	--focus-color: var(--color-primary-500);
+}
+
+[data-mode='dark'] {
+	/* One notch below carbón, so cards (surface-950 = #222222) sit lighter. */
+	--app-bg: var(--app-bg-dark, oklch(0.205 0.005 277));
+	--app-glow: color-mix(in oklab, var(--color-primary-400) 10%, transparent);
+	--srf-bg: var(--color-surface-950);
+	--srf-border-color: color-mix(in oklab, var(--color-surface-50) 9%, transparent);
+	--srf-shadow: 0 1px 2px oklch(0 0 0 / 0.4), 0 8px 24px -10px oklch(0 0 0 / 0.5);
+	--ctl-bg: var(--ctl-bg-dark, oklch(0.29 0.007 277));
+	--ctl-border-color: color-mix(in oklab, var(--color-surface-50) 13%, transparent);
+	--btn-shadow: 0 1px 2px oklch(0 0 0 / 0.45);
+	/* Turquesa focus on dark — the doc's "foco" signal, 5.5:1 on controls. */
+	--focus-color: var(--color-primary-400);
+}
+
+/* Shape is mode-independent: generous on containers, tighter on controls. */
+:root {
+	--srf-radius: 0.75rem;
+	--ctl-radius: 0.5rem;
+	--btn-radius: 0.5rem;
+}
+
+/* App shell. The glow is a single large, very low-opacity radial anchored off
+   the top-left — enough to keep large empty areas from reading as flat fill,
+   far too faint to compete with content. */
+.ui-app {
+	background-color: var(--app-bg);
+	background-image: radial-gradient(1200px 800px at 8% -15%, var(--app-glow), transparent 70%);
+	background-attachment: fixed;
+	background-repeat: no-repeat;
+}
+
+.ui-surface {
+	background: var(--srf-bg);
+	border: 1px solid var(--srf-border-color);
+	border-radius: var(--srf-radius);
+	box-shadow: var(--srf-shadow);
+	transition:
+		background 200ms ease,
+		box-shadow 200ms ease,
+		border-color 200ms ease;
+}
+
+.ui-control {
+	background: var(--ctl-bg);
+	border: 1px solid var(--ctl-border-color);
+	border-radius: var(--ctl-radius);
+	transition:
+		background 160ms ease,
+		box-shadow 160ms ease,
+		border-color 160ms ease;
+}
+.ui-control:focus,
+.ui-control:focus-within {
+	border-color: var(--focus-color, var(--color-primary-500));
+	box-shadow: 0 0 0 3px
+		color-mix(in oklab, var(--focus-color, var(--color-primary-500)) 25%, transparent);
+	outline: none;
+}
+
+.ui-raised {
+	border-radius: var(--btn-radius);
+	box-shadow: var(--btn-shadow);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Code highlighting (highlight.js token classes, scoped to .hljs-tokens).
+   Colours ride the theme's mode-aware pairs so every token clears AA on the
+   control background in both modes. Restrained on purpose: keys/headings on
+   primary, strings on success, literals on tertiary, meta on secondary.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.hljs-tokens {
+	color: var(--color-surface-900-100);
+}
+.hljs-tokens :is(.hljs-comment, .hljs-quote) {
+	color: var(--color-surface-600-400);
+	font-style: italic;
+}
+.hljs-tokens :is(.hljs-attr, .hljs-attribute, .hljs-keyword, .hljs-selector-tag, .hljs-section, .hljs-title) {
+	color: var(--color-primary-700-300);
+	font-weight: 600;
+}
+.hljs-tokens :is(.hljs-string, .hljs-regexp, .hljs-addition) {
+	color: var(--color-success-700-300);
+}
+.hljs-tokens :is(.hljs-number, .hljs-literal, .hljs-symbol, .hljs-type) {
+	color: var(--color-tertiary-700-300);
+}
+.hljs-tokens :is(.hljs-meta, .hljs-template-variable, .hljs-variable, .hljs-deletion) {
+	color: var(--color-secondary-700-300);
+}
+.hljs-tokens :is(.hljs-bullet, .hljs-code, .hljs-punctuation) {
+	color: var(--color-surface-600-400);
+}
+.hljs-tokens .hljs-emphasis {
+	font-style: italic;
+}
+.hljs-tokens .hljs-strong {
+	font-weight: 650;
+}
+.hljs-tokens .hljs-link {
+	text-decoration: underline;
+}

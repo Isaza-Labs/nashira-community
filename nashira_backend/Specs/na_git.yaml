@@ -1,0 +1,494 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Git repositories
+  version: "1.0"
+  description: >
+    Server-side working copies of configuration repositories: clone, browse, edit,
+    commit, push. Every path is resolved inside the repository's own checkout, so a
+    traversal outside it is rejected rather than clamped.
+
+    The write path is deliberately three steps — put the file, commit, then push.
+    Nothing leaves the server until push, which makes an unwanted edit a local reset
+    instead of a force-push.
+
+tags:
+  - name: repositories
+  - name: files
+  - name: webhooks
+
+paths:
+  /api/git/repositories:
+    get:
+      operationId: git_listRepositories
+      summary: List configured repositories
+      tags: [repositories]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of repositories.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Repository" }
+                  total: { type: integer }
+    post:
+      operationId: git_createRepository
+      summary: Register and clone a repository
+      tags: [repositories]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, remote_url]
+              properties:
+                name: { type: string }
+                remote_url: { type: string }
+                branch: { type: string, default: main }
+                credential_id:
+                  type: string
+                  format: uuid
+                  description: A token or key credential used for fetch and push.
+      responses:
+        "201":
+          description: The registered repository.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Repository" }
+
+  /api/git/repositories/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: git_getRepository
+      summary: Get one repository
+      tags: [repositories]
+      responses:
+        "200":
+          description: The repository.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Repository" }
+    delete:
+      operationId: git_deleteRepository
+      summary: Soft-delete a repository
+      tags: [repositories]
+      responses:
+        "200": { description: The deactivated repository. }
+
+  /api/git/repositories/{id}/status:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: git_status
+      summary: Working-tree status
+      description: Current branch plus the staged, modified and untracked paths.
+      tags: [repositories]
+      responses:
+        "200":
+          description: The status.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/git/repositories/{id}/branches:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: git_listBranches
+      summary: List branches
+      tags: [repositories]
+      responses:
+        "200":
+          description: Local and remote branches.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/git/repositories/{id}/checkout:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: git_checkout
+      summary: Switch the working copy to a branch
+      tags: [repositories]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [branch]
+              properties:
+                branch: { type: string }
+                create: { type: boolean, default: false }
+      responses:
+        "200": { description: The new checkout state. }
+
+  /api/git/repositories/{id}/pull:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: git_pull
+      summary: Fetch and fast-forward the current branch
+      tags: [repositories]
+      responses:
+        "200": { description: What the pull moved. }
+
+  /api/git/repositories/{id}/push:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: git_push
+      summary: Push committed work to the remote
+      tags: [repositories]
+      responses:
+        "200": { description: The push result. }
+
+  /api/git/repositories/{id}/files:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: path
+        in: query
+        description: Directory to list, relative to the repository root. Defaults to the root.
+        schema: { type: string }
+    get:
+      operationId: git_listFiles
+      summary: List tracked files under a path
+      tags: [files]
+      responses:
+        "200":
+          description: Entries.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/git/repositories/{id}/file:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: git_readFile
+      summary: Read a file's contents
+      tags: [files]
+      parameters:
+        - name: path
+          in: query
+          required: true
+          description: Path relative to the repository root.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/json:
+              schema: { type: object }
+        "404": { description: No such file in the working copy. }
+    put:
+      operationId: git_writeFile
+      summary: Write a file in the working copy
+      description: Writes to disk only. Nothing is recorded until git_commit.
+      tags: [files]
+      parameters:
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string }
+      responses:
+        "200": { description: The write result. }
+
+  /api/git/repositories/{id}/commit:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: git_commit
+      summary: Stage and commit the working copy
+      tags: [files]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                message: { type: string }
+                paths:
+                  type: array
+                  items: { type: string }
+                  description: Paths to stage. Empty stages every change.
+      responses:
+        "200":
+          description: The new commit.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/git/repositories/{id}/diff:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: path
+        in: query
+        description: Limit the diff to one path.
+        schema: { type: string }
+    get:
+      operationId: git_diff
+      summary: Diff the working copy against HEAD
+      tags: [files]
+      responses:
+        "200":
+          description: The unified diff.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/git/repositories/{id}/webhooks:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: git_listWebhooks
+      summary: List the inbound webhooks on a repository
+      tags: [webhooks]
+      responses:
+        "200":
+          description: Webhooks, with the path and header the provider must be configured with.
+          content:
+            application/json:
+              schema: { type: object }
+    post:
+      operationId: git_createWebhook
+      summary: Register an inbound webhook
+      description: >
+        Admin. The shared secret is returned once in this response and by rotate-secret;
+        no other endpoint returns it. Registering here configures nothing on the
+        provider — somebody still pastes the URL and the secret into the repository's
+        webhook settings, and until they do every delivery is rejected.
+      tags: [webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WriteWebhook' }
+      responses:
+        "200":
+          description: The webhook, including its one-time secret.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/git/repositories/{id}/webhooks/{webhookId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: git_getWebhook
+      summary: Read one webhook
+      tags: [webhooks]
+      responses:
+        "200": { description: The webhook. }
+    put:
+      operationId: git_updateWebhook
+      summary: Update a webhook
+      description: >
+        Admin. The provider cannot be changed: it decides which header the sender signs
+        with, so switching it would reject every delivery from a hook still configured
+        the old way. Pass clear_on_push_workflow to unbind the workflow — omitting
+        on_push_workflow_id leaves the existing binding alone.
+      tags: [webhooks]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WriteWebhook' }
+      responses:
+        "200": { description: The updated webhook. }
+    delete:
+      operationId: git_deleteWebhook
+      summary: Remove a webhook
+      description: >
+        Admin. Deliveries to the route are rejected from then on, but the provider still
+        has it configured — remove it there too or it keeps posting to a dead route.
+      tags: [webhooks]
+      responses:
+        "200": { description: The removed webhook. }
+
+  /api/git/repositories/{id}/webhooks/{webhookId}/rotate-secret:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: git_rotateWebhookSecret
+      summary: Issue a new shared secret
+      description: >
+        Admin. The previous secret stops working immediately — a rotation that kept both
+        valid would not be a rotation. Returned once; nothing reads it back.
+      tags: [webhooks]
+      responses:
+        "200": { description: The webhook, including the new secret. }
+
+  /api/git/repositories/{id}/webhooks/{webhookId}/deliveries:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: limit
+        in: query
+        schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+    get:
+      operationId: git_listWebhookDeliveries
+      summary: Delivery history for one webhook
+      description: >
+        Newest first. Bodies and headers are deliberately not stored — a push payload
+        carries commit messages and author emails — so a row explains the outcome
+        rather than reproducing the request. Rows older than 30 days are pruned.
+      tags: [webhooks]
+      responses:
+        "200":
+          description: Deliveries.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/git/repositories/{id}/webhooks/{webhookId}/dry-run:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: webhookId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: branch
+        in: query
+        description: Branch the hypothetical push lands on. Omit to ask about a push with no branch, i.e. a tag.
+        schema: { type: string }
+    get:
+      operationId: git_dryRunWebhook
+      summary: Ask what a push to a branch would do
+      description: >
+        Read-only: it pulls nothing and enqueues nothing. Use it before telling somebody
+        their webhook is broken — a branch filter is the usual answer.
+      tags: [webhooks]
+      responses:
+        "200":
+          description: Whether it would dispatch, and why not when it would not.
+          content:
+            application/json:
+              schema: { type: object }
+
+components:
+  schemas:
+    WriteWebhook:
+      type: object
+      properties:
+        name: { type: string }
+        provider:
+          type: string
+          enum: [github, gitlab, generic]
+          default: github
+          description: Create only. Decides which header carries the signature.
+        on_push_workflow_id:
+          type: [string, "null"]
+          format: uuid
+          description: Enqueued on a matching push, with repository_id, branch and commit_sha as its input.
+        clear_on_push_workflow:
+          type: boolean
+          description: Update only. Unbinds the workflow; omitting on_push_workflow_id leaves it alone.
+        on_push_branches:
+          type: array
+          items: { type: string }
+          description: >
+            Exact branch names. Empty fires on every branch. A tag push carries no
+            branch, so a filtered webhook ignores tags.
+        auto_pull:
+          type: boolean
+          default: true
+          description: Pull the working copy before dispatching, so the run sees the pushed commit.
+        enabled: { type: boolean, default: true }
+        allow_unsigned:
+          type: boolean
+          default: false
+          description: >
+            Only meaningful when no secret is set. False is what keeps the route from
+            being an unauthenticated way to run a workflow.
+    Repository:
+      type: object
+      properties:
+        git_repository_id: { type: string, format: uuid }
+        name: { type: string }
+        remote_url: { type: string }
+        branch: { type: string }
+        credential_id: { type: [string, "null"], format: uuid }
+        last_synced_at: { type: [string, "null"], format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

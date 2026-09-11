@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose a focused improvement to Nashira or its documentation
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the user and operational problem without prescribing a solution first.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence or use case
+      description: Explain frequency, impact and any current workaround.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and risks
+      description: Note permissions, security, compatibility, migration or documentation implications.

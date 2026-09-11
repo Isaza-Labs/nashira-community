@@ -1,0 +1,206 @@
+name: nashira
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: nashira-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nashira}
+      POSTGRES_USER: ${POSTGRES_USER:-nashira}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nashira}
+    # Postgres is deliberately NOT published to the host: the backend reaches it
+    # over the internal network as db:5432, so a host mapping only adds exposure
+    # (and a port that can collide with anything else on the machine).
+    #
+    # For an occasional psql session:
+    #   docker exec -it nashira-db psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+    # For a GUI client, publish it on loopback only and reach it over an SSH
+    # tunnel by uncommenting:
+    #   ports:
+    #     - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nashira} -d ${POSTGRES_DB:-nashira}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nashira-net
+
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: nashira-backend:latest
+    container_name: nashira-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: http://+:8080
+      # A null mapping asks Compose to pass the value through only when the
+      # operator defined it. Do not use ${NASHIRA_MODULES:-}: that would collapse
+      # "absent" (all modules) and "empty" (invalid configuration).
+      NASHIRA_MODULES:
+      ConnectionStrings__DefaultConnection: Host=db;Port=5432;Database=${POSTGRES_DB:-nashira};Username=${POSTGRES_USER:-nashira};Password=${POSTGRES_PASSWORD:-nashira}
+      DataProtection__KeyRingPath: /app/keyring
+      # JWT_KEY must be supplied via .env or environment (generate with: openssl rand -base64 48).
+      Jwt__Key: "${JWT_KEY:?JWT_KEY env var is required - generate with openssl rand -base64 48}"
+      Jwt__Issuer: ${JWT_ISSUER:-nashira}
+      Jwt__Audience: ${JWT_AUDIENCE:-nashira-api}
+      Jwt__AccessTokenMinutes: ${JWT_ACCESS_MINUTES:-15}
+      Jwt__RefreshTokenDays: ${JWT_REFRESH_DAYS:-7}
+      # Email (SMTP) — optional; enable + fill host/from to turn on the email tool.
+      Smtp__Enabled: ${SMTP_ENABLED:-false}
+      Smtp__Host: ${SMTP_HOST:-}
+      Smtp__Port: ${SMTP_PORT:-587}
+      Smtp__UseSsl: ${SMTP_USESSL:-true}
+      Smtp__User: ${SMTP_USER:-}
+      Smtp__Password: ${SMTP_PASSWORD:-}
+      Smtp__FromAddress: ${SMTP_FROM_ADDRESS:-}
+      Smtp__FromName: ${SMTP_FROM_NAME:-nashira}
+      # Allow the SSH runner to execute destructive / configuration commands.
+      Ssh__AllowDestructiveCommands: ${SSH_ALLOW_DESTRUCTIVE:-false}
+      # Where the provisioner pip-installs the packages an admin approves under
+      # Admin → Python modules, and where the snippet sandbox looks for them. Both
+      # sides read this one setting, so they cannot disagree about the path.
+      Python__PackagesDir: ${PYTHON_PACKAGES_DIR:-/app/pyenv}
+      # Wheels only. pip runs an sdist's packaging code during install, which is
+      # arbitrary code executing at approval time rather than at snippet time —
+      # turn this off only for a package you need and have looked at.
+      Python__PipOnlyBinary: ${PYTHON_PIP_ONLY_BINARY:-true}
+      # Set false to refuse pip installs entirely; the allowlist then only ever
+      # grants stdlib modules.
+      Python__PackageProvisioningEnabled: ${PYTHON_PACKAGE_PROVISIONING:-true}
+      # Where the backend reaches itself, so the AI agent can drive Nashira's own API
+      # (the built-in na_* specs). Empty is correct here: the code falls back to
+      # http://localhost:8080, which is exactly the address the healthcheck below
+      # already proves answers. Set it only if the backend answers somewhere else, and
+      # give the origin without /api - the shipped spec paths already carry it.
+      Ai__SelfBaseUrl: ${AI_SELF_BASE_URL:-}
+      # Browser-facing frontend origin. The MCP OAuth flow 302s the admin's
+      # browser back to `{origin}/admin/mcp` after consent; without this the
+      # backend falls back to the dev origin (localhost:5173) baked into
+      # appsettings.json. Keep it in step with FRONTEND_ORIGIN below.
+      Cors__AllowedOrigins__0: ${FRONTEND_ORIGIN:-http://localhost:3006}
+      # Same browser-facing origin, for the messaging channels: it is what the
+      # webhook URL shown in admin → Messaging channels is built from, and what
+      # the bot puts in the `/link?token=…` URL it DMs an unlinked user. Left
+      # empty the backend refuses to send half a URL, so the admin page shows no
+      # webhook and the bot falls back to "link from the web app first" — the
+      # channel then has no way to bind anyone's account. Defaults to
+      # FRONTEND_ORIGIN because that is exactly what it is; override only when
+      # the provider must reach the app at a different hostname (a tunnel, a
+      # reverse proxy) than the one people browse to.
+      Messaging__PublicBaseUrl: ${MESSAGING_PUBLIC_BASE_URL:-${FRONTEND_ORIGIN:-http://localhost:3006}}
+      # Proxies whose X-Forwarded-For the backend honours. The frontend container
+      # proxies /api — so without this every request looks like it came from that
+      # container: one constant IP in the audit trail, and a single shared
+      # per-IP login rate-limit budget for the whole platform.
+      #
+      # Scoped to this compose network's fixed subnet (see `networks` below),
+      # NOT 0.0.0.0/0: trusting everyone would let any caller forge its own
+      # address in the audit log and dodge the login limiter entirely.
+      #
+      # Raise ForwardLimit to the number of proxies in the chain if you put
+      # another one in front (cloudflared, nginx, an ALB) — it counts hops
+      # from the backend outwards.
+      Network__TrustedProxies: ${TRUSTED_PROXIES:-172.27.0.0/16}
+      Network__ForwardLimit: ${FORWARD_LIMIT:-1}
+      # pretty = colored text for `docker logs`; json = CLEF for aggregators.
+      # Unset => auto (pretty on Development, json otherwise).
+      LOG_FORMAT: ${LOG_FORMAT:-pretty}
+      # EF Core SQL verbosity (Warning = silent). Application-services tree
+      # verbosity (Information). Raw LLM SSE chunk dump (triage only).
+      LOG_EF_SQL: ${LOG_EF_SQL:-Warning}
+      LOG_ACTIONS: ${LOG_ACTIONS:-Information}
+      AI_LOG_PAYLOADS: ${AI_LOG_PAYLOADS:-false}
+    ports:
+      - "${BACKEND_PORT:-8080}:8080"
+    volumes:
+      - backend_keyring:/app/keyring
+      # Git checkouts (Git:Root = ./data/git relative to /app). Without this the
+      # clones live in the container layer and are lost on every restart, so each
+      # boot re-clones every registered repository from its remote.
+      - backend_git:/app/data/git
+      # Approved pip packages. A named volume rather than the container layer so an
+      # image rebuild does not silently empty the allowlist's `ready` rows — every
+      # snippet importing one would start failing on a deploy that changed nothing
+      # about them.
+      - backend_pyenv:/app/pyenv
+    healthcheck:
+      # Liveness via the anonymous /health/live endpoint; python3 ships in the image.
+      test:
+        - CMD-SHELL
+        - "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health/live').read()\" || exit 1"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - nashira-net
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.frontend
+    image: nashira-frontend:latest
+    container_name: nashira-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      # Public origin the SPA is reached at (SvelteKit CSRF / origin check).
+      ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3006}
+      # Internal backend URL the hooks.server proxy forwards /api, /health, … to.
+      BACKEND_URL: http://backend:8080
+    ports:
+      # Host:container. Host defaults to 3006 (container always listens on 3000).
+      - "${FRONTEND_PORT:-3006}:3000"
+    networks:
+      - nashira-net
+
+volumes:
+  db_data:
+  backend_keyring:
+  backend_git:
+  backend_pyenv:
+
+networks:
+  nashira-net:
+    driver: bridge
+    # Fixed subnet so Network__TrustedProxies can name it. Docker assigns
+    # bridge subnets dynamically by default, which would make the trusted
+    # range unpredictable — and a trusted range you can't state is one you
+    # end up widening to 0.0.0.0/0.
+    #
+    # "Pool overlaps with other one on this address space" on `up` means the
+    # default range below is already taken on this host — by another Docker
+    # network or by a host route (LAN, VPN). Find a free range:
+    #
+    #   docker network inspect $(docker network ls -q) \
+    #     --format '{{.Name}}: {{range .IPAM.Config}}{{.Subnet}} {{end}}'
+    #   ip route        # host/VPN routes count too
+    #
+    # then pick a subnet absent from both lists (a /20 is plenty for this
+    # stack) and set it in .env — BOTH variables, always in sync:
+    #
+    #   COMPOSE_SUBNET=192.168.96.0/20
+    #   TRUSTED_PROXIES=192.168.96.0/20
+    #
+    # Changing the subnet requires recreating the network AND the containers:
+    #   docker compose down && docker compose up -d
+    # A full `down` first is not optional: if the network is recreated while
+    # old containers survive, Docker reattaches them WITHOUT their compose
+    # service aliases, and the backend dies resolving `db` ("Name or service
+    # not known") even though every container looks up and healthy.
+    ipam:
+      config:
+        - subnet: ${COMPOSE_SUBNET:-172.27.0.0/16}

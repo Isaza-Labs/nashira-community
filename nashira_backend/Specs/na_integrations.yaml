@@ -1,0 +1,602 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Integrations
+  version: "1.0"
+  description: >
+    Registered external HTTP systems (NetBox, ServiceNow, AWX, …) and the action
+    catalogue projected from their OpenAPI specs.
+
+    An integration owns the base URL, the auth and the health probe; a spec linked to it
+    with `auth_type: none` inherits both. Material placed inline in `auth_config`
+    overrides the linked credential — the read flags that as `has_inline_credentials`.
+
+    Specs and prompt skills can be attached from the integration itself: the /bundle,
+    /specs and /skills paths below. Prefer those over registering a spec globally and
+    linking it afterwards — attaching re-materialises the action catalogue in the same
+    call, so the agent's catalogue and the workflow builder's cannot drift apart.
+
+    Secret material is write-only: it goes in on create/update and no read returns it.
+
+tags:
+  - name: integrations
+  - name: actions
+  - name: bundle
+
+paths:
+  /api/integrations:
+    get:
+      operationId: integrations_list
+      summary: List integrations, ordered by name
+      tags: [integrations]
+      parameters:
+        - name: type
+          in: query
+          description: Filter by integration type (netbox, servicenow, …).
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of integrations.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Integration" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: integrations_create
+      summary: Register an integration
+      description: >
+        Admin. health_check_path is relative ("/status/"). Link credentials with
+        auth_credential_id and describe their shape in auth_config rather than embedding
+        the material there.
+      tags: [integrations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteIntegration" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Integration" }
+        "400": { description: Validation failed (bad base_url, unknown auth method). }
+        "403": { description: Admin only. }
+
+  /api/integrations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: integrations_get
+      summary: Get one integration
+      tags: [integrations]
+      responses:
+        "200":
+          description: The integration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Integration" }
+        "404": { description: Not found. }
+    put:
+      operationId: integrations_update
+      summary: Update an integration
+      description: >
+        Admin. Only provided fields change; auth_credential_id accepts null to unlink.
+      tags: [integrations]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteIntegration" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Integration" }
+        "403": { description: Admin only. }
+    delete:
+      operationId: integrations_delete
+      summary: Remove an integration
+      tags: [integrations]
+      responses:
+        "200": { description: Removed. }
+        "403": { description: Admin only. }
+
+  /api/integrations/{id}/check:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: integrations_check
+      summary: Probe the integration health endpoint
+      description: >
+        Operator. healthy = answered 2xx/3xx. degraded = answered but rejected the
+        credentials, or the probe path 404'd. unreachable = nothing answered (URL, port,
+        network, or the SSRF guard — a private address needs allow_private_network).
+      tags: [integrations]
+      responses:
+        "200":
+          description: The probe result; also persisted onto the integration row.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [healthy, degraded, unreachable] }
+                  status_code: { type: [integer, "null"] }
+                  elapsed_ms: { type: integer }
+                  error: { type: [string, "null"] }
+
+  /api/integrations/{id}/sync-actions:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: integrations_syncActions
+      summary: Project the linked specs operations into the action catalogue
+      description: >
+        Admin. An action the specs no longer describe is retired, not deleted, so a spec
+        that comes back does not lose its bindings.
+      tags: [integrations]
+      responses:
+        "200":
+          description: Sync counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  updated: { type: integer }
+                  unchanged: { type: integer }
+                  disappeared: { type: integer }
+                  spec_count: { type: integer }
+
+  /api/integrations/{integrationId}/actions:
+    parameters:
+      - name: integrationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: integrations_listActions
+      summary: List the catalogued actions of an integration
+      tags: [actions]
+      parameters:
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          description: Substring match on name and description.
+          schema: { type: string }
+        - name: includeRetired
+          in: query
+          description: Retired = the spec stopped describing it. Hidden by default.
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of actions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Action" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+
+  /api/integrations/{integrationId}/actions/{id}:
+    parameters:
+      - name: integrationId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: integrations_getAction
+      summary: Get one action
+      tags: [actions]
+      responses:
+        "200":
+          description: The action.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Action" }
+        "404": { description: Not found. }
+    put:
+      operationId: integrations_updateAction
+      summary: Rename, recategorise or disable an action
+      description: >
+        Admin. Disabling removes it from what workflows and permissions can bind; it
+        changes nothing upstream. read_only is what lets an integration_action node be
+        marked idempotent honestly.
+      tags: [actions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                description: { type: string }
+                category: { type: string }
+                read_only: { type: boolean }
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Action" }
+        "403": { description: Admin only. }
+
+  /api/integrations/bundle:
+    post:
+      operationId: integrations_createBundle
+      summary: Create an integration together with its skills and specs
+      description: >
+        Admin. One transaction: the integration, every staged spec and skill, and the
+        actions materialised from those specs. If any piece fails validation the whole
+        thing rolls back and nothing persists.
+
+        Prefer this over create-then-attach when the specs are already in hand. An
+        integration on its own is a base URL — it does nothing until a spec gives it
+        operations — so creating those separately means a failure halfway leaves a
+        half-configured system for someone to find later.
+
+        Two items in one call that share a spec `api` or a skill `name` are refused
+        rather than silently collapsed: the second upsert would overwrite the first and
+        the response would claim both were attached.
+      tags: [bundle]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [integration]
+              properties:
+                integration: { $ref: "#/components/schemas/WriteIntegration" }
+                skills:
+                  type: array
+                  items:
+                    type: object
+                    required: [name, content]
+                    properties:
+                      name: { type: string }
+                      content: { type: string, description: Markdown. }
+                      priority: { type: integer, default: 100 }
+                specs:
+                  type: array
+                  items:
+                    type: object
+                    required: [api, content]
+                    properties:
+                      api: { type: string }
+                      content: { type: string, description: The OpenAPI document. }
+      responses:
+        "201":
+          description: The integration, plus what came with it.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  integration: { $ref: "#/components/schemas/Integration" }
+                  skills_created: { type: integer }
+                  specs_created: { type: integer }
+                  actions_created:
+                    type: integer
+                    description: >
+                      Materialised from every staged spec together, which is why this is
+                      one number rather than one per spec.
+        "400": { description: Anything failed validation. Nothing was created. }
+        "409": { description: The integration name, a spec api, or a skill name is taken. }
+
+  /api/integrations/{id}/bundle:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: integrations_getBundle
+      summary: The skills and specs scoped to this integration
+      description: >
+        Skill content is included; spec content is not — a spec runs to megabytes and
+        this is a listing. Fetch a spec body through the specs API when you need it.
+      tags: [bundle]
+      responses:
+        "200":
+          description: What this integration owns.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  skills:
+                    type: array
+                    items: { $ref: "#/components/schemas/BundleSkill" }
+                  specs:
+                    type: array
+                    items: { $ref: "#/components/schemas/BundleSpec" }
+        "404": { description: Not found. }
+
+  /api/integrations/{id}/specs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: integrations_attachSpec
+      summary: Attach or replace an OpenAPI spec, and rebuild the actions
+      description: >
+        Admin. Upsert by `api`: re-posting the same name replaces that spec, which is
+        what loading a new version means. A second row would leave two documents
+        describing one API with no way to tell which is current.
+
+        No base_url or auth here, on purpose. The spec inherits the integration's,
+        which is the whole reason for linking it; a spec that declares its own auth
+        uses that instead, and an empty one calls out unauthenticated.
+
+        Content is security-validated and parsed before it saves. An unparseable
+        document is refused rather than stored, because a spec that saves and
+        materialises nothing looks exactly like success.
+      tags: [bundle]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [api, content]
+              properties:
+                api:
+                  type: string
+                  description: >
+                    Lowercase letters, digits, underscore, hyphen. This is the id the
+                    agent passes to discover_operations.
+                content:
+                  type: string
+                  description: The OpenAPI document, YAML or JSON.
+                adopt:
+                  type: boolean
+                  default: false
+                  description: >
+                    Take over an api name that currently belongs to NO integration.
+                    Off by default: a global spec carries its own base URL and auth, so
+                    re-scoping it changes where its calls go and who they authenticate
+                    as, which is not something to do because a name collided.
+      responses:
+        "200":
+          description: >
+            The spec, plus what the upload did to the action catalogue — usually the
+            part the caller was actually after.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  spec: { $ref: "#/components/schemas/BundleSpec" }
+                  actions_created: { type: integer }
+                  actions_updated: { type: integer }
+                  actions_unchanged: { type: integer }
+                  actions_disappeared:
+                    type: integer
+                    description: >
+                      Operations the spec stopped describing. Disabled, not deleted — a
+                      workflow may still bind one.
+        "400":
+          description: >
+            Bad api name, failed validation, unparseable OpenAPI — or a document that
+            parsed and describes NO operations. That last one is refused rather than
+            warned about: plain prose is valid YAML, so the wrong file would otherwise
+            save cleanly and leave the action catalogue untouched.
+        "404": { description: Integration not found. }
+        "409":
+          description: >
+            The api name is taken, and `code` says by what. Only one of the two is
+            resolvable from here: `spec_api_global` belongs to no integration and can
+            be claimed by retrying with adopt=true; `spec_api_taken` is owned by
+            another integration, and taking it would strip operations that integration
+            is calling today.
+
+  /api/integrations/{id}/skills:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: integrations_attachSkill
+      summary: Attach or replace a prompt skill scoped to this integration
+      description: >
+        Admin. Upsert by name, security-validated like any other skill, and the prompt
+        is hot-reloaded — it joins the agent's system prompt on the next turn, with no
+        restart.
+
+        A name already used by a global skill, or by another integration's, is a 409
+        rather than a silent re-scoping: that skill is already merged into prompts
+        nobody is currently looking at.
+      tags: [bundle]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content]
+              properties:
+                name: { type: string }
+                content: { type: string, description: Markdown. }
+                priority:
+                  type: integer
+                  description: >
+                    Lower loads earlier. Defaults to 100, behind the global skills — an
+                    integration skill qualifies the base instructions rather than
+                    replacing them.
+                adopt:
+                  type: boolean
+                  default: false
+                  description: >
+                    Take over a GLOBAL skill of the same name instead of failing on it.
+                    Off by default: that skill is already merged into every
+                    conversation's prompt, and scoping it here stops it applying
+                    anywhere else.
+      responses:
+        "200":
+          description: The skill.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BundleSkill" }
+        "400": { description: Missing name/content, or the content failed validation. }
+        "404": { description: Integration not found. }
+        "409":
+          description: >
+            The name is taken, and `code` distinguishes the two cases:
+            `skill_name_global` is a global skill, claimable by retrying with
+            adopt=true; `skill_name_taken` belongs to another integration and is never
+            adoptable from here.
+
+            Re-uploading a name THIS integration already owns is not a conflict — it
+            replaces, which is what loading a corrected version means.
+
+components:
+  schemas:
+    BundleSkill:
+      type: object
+      properties:
+        ai_prompt_skill_id: { type: string, format: uuid }
+        name: { type: string }
+        content: { type: string }
+        priority: { type: integer, description: Lower loads earlier. }
+        integration_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    BundleSpec:
+      type: object
+      properties:
+        ai_api_spec_id: { type: string, format: uuid }
+        api: { type: string }
+        operation_count: { type: integer }
+        base_url: { type: [string, "null"] }
+        auth_type:
+          type: string
+          description: >
+            "none" on a spec attached this way — that is what makes it inherit the
+            integration's credentials.
+        integration_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WriteIntegration:
+      type: object
+      properties:
+        name: { type: string }
+        type:
+          type: string
+          description: Free-form system kind — netbox, servicenow, awx, …
+        description: { type: string }
+        base_url: { type: string, description: Absolute http(s) URL. }
+        auth_method:
+          type: string
+          enum: [none, bearer, token, basic, api_key, oauth2_client_credentials]
+        auth_config:
+          type: object
+          description: >
+            The auth shape: method, plus prefix for the token method (defaults to
+            "Token" — this is what NetBox needs) and header for api_key (defaults to
+            X-API-Key). Material placed here overrides the linked credential.
+        auth_credential_id: { type: [string, "null"], format: uuid }
+        headers: { type: string, description: JSON object of extra request headers. }
+        verify_ssl: { type: boolean }
+        allow_private_network:
+          type: boolean
+          description: >
+            Required for a base_url on a private address; the SSRF guard refuses
+            otherwise.
+        health_check_path: { type: string, description: Relative, e.g. "/status/". }
+        enabled: { type: boolean }
+
+    Integration:
+      type: object
+      properties:
+        integration_id: { type: string, format: uuid }
+        name: { type: string }
+        slug:
+          type: string
+          description: Stable cross-instance identity; also the permission key.
+        type: { type: string }
+        description: { type: [string, "null"] }
+        base_url: { type: string }
+        auth_method: { type: string }
+        has_credentials: { type: boolean }
+        has_inline_credentials:
+          type: boolean
+          description: >
+            True when auth_config carries material. That material wins over
+            auth_credential_id — the fix is to clear it, not to re-link.
+        auth_credential_id: { type: [string, "null"], format: uuid }
+        auth_credential_name: { type: [string, "null"] }
+        headers: { type: [string, "null"] }
+        verify_ssl: { type: boolean }
+        allow_private_network: { type: boolean }
+        health_check_path: { type: [string, "null"] }
+        status: { type: string, enum: [unknown, healthy, degraded, unreachable] }
+        last_check_error: { type: [string, "null"] }
+        last_checked_at: { type: [string, "null"], format: date-time }
+        enabled: { type: boolean }
+        spec_count: { type: integer }
+        action_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Action:
+      type: object
+      properties:
+        integration_action_id: { type: string, format: uuid }
+        integration_id: { type: string, format: uuid }
+        operation_id: { type: [string, "null"] }
+        name: { type: string }
+        description: { type: [string, "null"] }
+        method: { type: string }
+        path: { type: string }
+        category: { type: string }
+        read_only: { type: boolean }
+        enabled: { type: boolean }

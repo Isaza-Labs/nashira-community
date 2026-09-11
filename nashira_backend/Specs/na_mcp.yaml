@@ -1,0 +1,348 @@
+openapi: 3.1.0
+info:
+  title: Nashira — MCP servers
+  version: "1.0"
+  description: >
+    External Model Context Protocol endpoints, the tools they advertise, and the call
+    path into them.
+
+    An MCP server holds its own upstream credentials, so nothing about its upstream auth
+    lives here. That is also why its health probe (a tools/list) proves less than it
+    looks: it succeeds using this side's credentials and says nothing about the server's
+    own session, which is why a server can list tools happily and fail every call.
+
+    Nothing in the protocol distinguishes a read from a write. read_only_hint is the
+    remote server's claim, and the MCP specification says in as many words that a client
+    must not make tool-use decisions on annotations from a server it does not trust — so
+    it counts only where an admin has set trust_tool_hints on that server.
+
+tags:
+  - name: servers
+  - name: tools
+
+paths:
+  /api/mcp/servers:
+    get:
+      operationId: mcp_listServers
+      summary: List MCP servers, ordered by name
+      tags: [servers]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of servers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Server" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: mcp_createServer
+      summary: Register an MCP server
+      description: Admin. Register, then sync before any tool can be called.
+      tags: [servers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteServer" }
+      responses:
+        "201":
+          description: Created. tool_count is 0 until the first sync.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Server" }
+        "403": { description: Admin only. }
+
+  /api/mcp/servers/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: mcp_getServer
+      summary: Get one MCP server
+      tags: [servers]
+      responses:
+        "200":
+          description: The server.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Server" }
+        "404": { description: Not found. }
+    put:
+      operationId: mcp_updateServer
+      summary: Update an MCP server
+      description: >
+        Admin. Only provided fields change. clear_auth_config wipes the stored auth
+        object; auth_credential_id accepts null to unlink.
+      tags: [servers]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteServer" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Server" }
+        "403": { description: Admin only. }
+    delete:
+      operationId: mcp_deleteServer
+      summary: Remove an MCP server
+      tags: [servers]
+      responses:
+        "200": { description: Removed. }
+        "403": { description: Admin only. }
+
+  /api/mcp/servers/{id}/sync:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: mcp_syncTools
+      summary: Discover the tools a server advertises
+      description: >
+        Admin. A tool that stops being advertised is marked disappeared_at rather than
+        deleted, so a server that comes back does not lose its permission grants.
+      tags: [servers]
+      responses:
+        "200":
+          description: Sync counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  discovered: { type: integer }
+                  created: { type: integer }
+                  updated: { type: integer }
+                  disappeared: { type: integer }
+                  reappeared: { type: integer }
+
+  /api/mcp/servers/{id}/check:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: mcp_checkServer
+      summary: Probe a server with tools/list
+      description: >
+        Operator. A degraded result whose error mentions an expired or unauthorised
+        session is the server's own upstream session, not a Nashira credential — there
+        is nothing here that fixes it.
+      tags: [servers]
+      responses:
+        "200":
+          description: The probe result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [healthy, degraded, unreachable] }
+                  elapsed_ms: { type: integer }
+                  error: { type: [string, "null"] }
+
+  /api/mcp/servers/{id}/tools:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: mcp_listTools
+      summary: List a server's synced tools with their argument schemas
+      tags: [tools]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of tools.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Tool" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+
+  /api/mcp/servers/{id}/tools/{toolId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: toolId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: mcp_updateTool
+      summary: Enable or disable one tool
+      description: Admin. A disabled tool is not callable and not bindable by a workflow.
+      tags: [tools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tool" }
+        "403": { description: Admin only. }
+
+  /api/mcp/servers/{id}/call:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: mcp_callTool
+      summary: Invoke a tool on a server
+      description: >
+        Operator. Read the tool's input_schema first — it is defined by the remote
+        server and changes on re-sync, so it cannot be guessed. Nothing in the protocol
+        says whether a tool reads or writes, so a call counts as read-only only when the
+        tool declares readOnlyHint AND the server has trust_tool_hints set.
+      tags: [tools]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool]
+              properties:
+                tool: { type: string, description: The tool name exactly as advertised. }
+                arguments:
+                  type: object
+                  description: Must match that tool's input_schema.
+      responses:
+        "200":
+          description: The tool's output.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content: { type: string, description: The textual result. }
+                  structured:
+                    type: [object, "null"]
+                    description: The structured result, when the tool returned one.
+                  is_error:
+                    type: boolean
+                    description: >
+                      The tool itself reported a failure. This is a 200 — the call
+                      reached the server, the server said no.
+        "400": { description: tool is missing, or arguments is not a JSON object. }
+        "404": { description: No such tool on this server, or it has disappeared. }
+
+components:
+  schemas:
+    WriteServer:
+      type: object
+      properties:
+        name: { type: string }
+        description: { type: string }
+        url: { type: string, description: The MCP endpoint. }
+        auth_type: { type: string }
+        auth_config: { type: object }
+        clear_auth_config: { type: boolean, description: Update only — wipes the stored auth object. }
+        auth_credential_id: { type: [string, "null"], format: uuid }
+        headers: { type: string, description: JSON object of extra request headers. }
+        tls_skip_verify:
+          type: boolean
+          description: >
+            Disables certificate validation — removes the guarantee that the endpoint is
+            who it claims to be.
+        allow_private_network:
+          type: boolean
+          description: Required for an endpoint on a private address.
+        trust_tool_hints:
+          type: boolean
+          description: >
+            Whether to believe the server's own read_only_hint. Off by default.
+        enabled: { type: boolean }
+
+    Server:
+      type: object
+      properties:
+        mcp_server_id: { type: string, format: uuid }
+        name: { type: string, description: Also the permission key, as mcp:<name>. }
+        description: { type: [string, "null"] }
+        url: { type: string }
+        transport: { type: string, default: http }
+        auth_type: { type: string }
+        has_credentials: { type: boolean }
+        auth_credential_id: { type: [string, "null"], format: uuid }
+        auth_credential_name: { type: [string, "null"] }
+        tls_skip_verify: { type: boolean }
+        allow_private_network: { type: boolean }
+        trust_tool_hints: { type: boolean }
+        status: { type: string, enum: [unknown, healthy, degraded, unreachable] }
+        last_check_error: { type: [string, "null"] }
+        last_checked_at: { type: [string, "null"], format: date-time }
+        tools_synced_at:
+          type: [string, "null"]
+          format: date-time
+          description: Null means never synced — zero tools is expected, not a fault.
+        tool_count: { type: integer }
+        enabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Tool:
+      type: object
+      properties:
+        mcp_tool_id: { type: string, format: uuid }
+        mcp_server_id: { type: string, format: uuid }
+        name: { type: string }
+        title: { type: [string, "null"] }
+        description: { type: [string, "null"] }
+        input_schema: { type: object, description: JSON Schema for the arguments. }
+        read_only_hint:
+          type: boolean
+          description: The remote server's claim. Only honoured when trust_tool_hints is set.
+        disappeared_at:
+          type: [string, "null"]
+          format: date-time
+          description: >
+            Set when a sync stopped seeing it. Such a tool is not callable; re-sync
+            before concluding it was removed on purpose.
+        enabled: { type: boolean }
+        updated_at: { type: string, format: date-time }

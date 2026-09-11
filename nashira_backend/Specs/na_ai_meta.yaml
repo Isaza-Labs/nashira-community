@@ -1,0 +1,370 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Agent configuration
+  version: "1.0"
+  description: >
+    The agent's own moving parts: the prompt skills that compose its system prompt, the
+    API specs that make up this catalog, the LLM providers behind it, and the stored
+    conversations.
+
+    Every write here is Admin-only and changes the agent's behaviour for everyone, so
+    treat these as configuration changes and not as ordinary tool calls. Skill and spec
+    uploads are security-validated before they are accepted; a rejected upload is
+    recorded in the validation log either way.
+
+tags:
+  - name: skills
+  - name: specs
+  - name: providers
+  - name: conversations
+
+paths:
+  /api/skills:
+    get:
+      operationId: aimeta_listSkills
+      summary: List prompt skills in prompt order
+      description: >
+        Ordered by priority then name — lower priority loads earlier, so a skill that
+        must frame everything else belongs near 0.
+      tags: [skills]
+      parameters:
+        - name: integrationId
+          in: query
+          description: Only skills scoped to this integration.
+          schema: { type: string, format: uuid }
+        - name: globalOnly
+          in: query
+          description: Only unscoped skills. Takes precedence over integrationId.
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of skills.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Skill" }
+                  total: { type: integer }
+    post:
+      operationId: aimeta_createSkill
+      summary: Upload a prompt skill
+      description: >
+        The content is scanned before it is stored; a failure returns 400 and nothing is
+        written. A successful write hot-reloads the system prompt.
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, content]
+              properties:
+                name:
+                  type: string
+                  description: Unique; conventionally the markdown filename.
+                content:
+                  type: string
+                  description: "Markdown. Supports the {tool_list} and {current_date} placeholders."
+                priority: { type: integer, default: 100 }
+                integration_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: The created skill.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Skill" }
+        "400": { description: The content failed security validation. }
+        "409": { description: The name is taken. }
+
+  /api/skills/builtin:
+    get:
+      operationId: aimeta_listBuiltinSkills
+      summary: List the built-in file skills that prefix every prompt
+      description: >
+        Shipped with the backend and prepended ahead of the uploaded rows. Surfaced so
+        the full prompt composition is inspectable, not just the editable part.
+      tags: [skills]
+      responses:
+        "200":
+          description: The built-in skills, in prompt order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name: { type: string }
+                    content: { type: string }
+
+  /api/skills/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: aimeta_getSkill
+      summary: Get one prompt skill
+      tags: [skills]
+      responses:
+        "200":
+          description: The skill.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Skill" }
+    put:
+      operationId: aimeta_updateSkill
+      summary: Update a prompt skill
+      tags: [skills]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                content: { type: string }
+                priority: { type: integer }
+                integration_id: { type: string, format: uuid }
+                clear_integration:
+                  type: boolean
+                  description: Unlink from its integration. Needed because a null id reads as "absent".
+                is_active: { type: boolean }
+      responses:
+        "200":
+          description: The updated skill.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Skill" }
+    delete:
+      operationId: aimeta_deleteSkill
+      summary: Soft-delete a prompt skill
+      tags: [skills]
+      responses:
+        "200": { description: The deactivated skill. }
+
+  /api/ai/specs:
+    get:
+      operationId: aimeta_listSpecs
+      summary: List the OpenAPI specs backing this catalog
+      tags: [specs]
+      parameters:
+        - name: integrationId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: globalOnly
+          in: query
+          schema: { type: boolean, default: false }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of specs, without their content.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Spec" }
+                  total: { type: integer }
+    post:
+      operationId: aimeta_createSpec
+      summary: Upload an OpenAPI spec
+      description: >
+        The YAML is parsed to count its operations and rejected if it does not parse.
+        A successful write reloads the in-memory operation index immediately.
+      tags: [specs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [api, content]
+              properties:
+                api:
+                  type: string
+                  description: >
+                    The identifier the agent passes to discover_operations. Unique,
+                    lowercased on write.
+                content: { type: string, description: "The OpenAPI 3.x document, as YAML." }
+                base_url:
+                  type: string
+                  description: Root URL execute_operation resolves paths against.
+                auth_type: { type: string, enum: [none, token, bearer, basic, header], default: none }
+                auth_config:
+                  type: string
+                  description: >
+                    JSON. Values may hold ${secret:secret:<name>:value} references, which are
+                    resolved at call time so the secret never lives in the spec.
+                verify_ssl: { type: boolean, default: true }
+                integration_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: The created spec.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Spec" }
+        "400": { description: "Validation failed, or the content is not valid OpenAPI YAML." }
+        "409": { description: The api name is taken. }
+
+  /api/ai/specs/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: aimeta_getSpec
+      summary: Get one spec, content included
+      tags: [specs]
+      responses:
+        "200":
+          description: The spec.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Spec"
+                  - type: object
+                    properties:
+                      content: { type: string }
+    delete:
+      operationId: aimeta_deleteSpec
+      summary: Soft-delete a spec
+      tags: [specs]
+      responses:
+        "200": { description: The deactivated spec. }
+
+  /api/ai/providers:
+    get:
+      operationId: aimeta_listProviders
+      summary: List configured LLM providers
+      description: API keys are stored encrypted and never returned.
+      tags: [providers]
+      responses:
+        "200":
+          description: Page of providers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        ai_provider_id: { type: string, format: uuid }
+                        name: { type: string }
+                        type: { type: string, enum: [openai, anthropic, ollama] }
+                        base_url: { type: [string, "null"] }
+                        default_model: { type: string }
+                        enabled: { type: boolean }
+                  total: { type: integer }
+
+  /api/ai/conversations:
+    get:
+      operationId: aimeta_listConversations
+      summary: List the caller's conversations
+      tags: [conversations]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of conversations.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Conversation" }
+                  total: { type: integer }
+
+  /api/ai/conversations/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: aimeta_getConversation
+      summary: Get one conversation with its messages
+      tags: [conversations]
+      responses:
+        "200":
+          description: The conversation.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Conversation" }
+    delete:
+      operationId: aimeta_deleteConversation
+      summary: Soft-delete a conversation
+      tags: [conversations]
+      responses:
+        "200": { description: The deactivated conversation. }
+
+components:
+  schemas:
+    Skill:
+      type: object
+      properties:
+        ai_prompt_skill_id: { type: string, format: uuid }
+        name: { type: string }
+        content: { type: string }
+        priority: { type: integer, description: Lower loads earlier. }
+        integration_id: { type: [string, "null"], format: uuid }
+        created_by:
+          type: [string, "null"]
+          format: uuid
+          description: The admin who last wrote this row.
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Spec:
+      type: object
+      properties:
+        ai_api_spec_id: { type: string, format: uuid }
+        api: { type: string }
+        operation_count: { type: integer }
+        base_url: { type: [string, "null"] }
+        auth_type: { type: string, enum: [none, token, bearer, basic, header] }
+        verify_ssl: { type: boolean }
+        integration_id: { type: [string, "null"], format: uuid }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Conversation:
+      type: object
+      properties:
+        ai_conversation_id: { type: string, format: uuid }
+        title: { type: [string, "null"] }
+        message_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

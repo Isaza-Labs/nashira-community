@@ -1,0 +1,51 @@
+platform: cisco_xr
+description: Cisco IOS-XR. No startup-config and no VLAN or MAC table — persistence is a config-mode commit, so save_config is deliberately absent.
+commands:
+  - intent: show_version
+    command: show version
+    description: Software version, model, uptime and hardware summary.
+  - intent: show_running_config
+    command: show running-config
+    description: Active configuration currently in effect.
+  - intent: show_interfaces
+    command: show interfaces
+    description: Full per-interface state, counters and errors.
+  - intent: show_ip_interfaces
+    command: show ipv4 interface brief
+    description: One line per interface with address, status and protocol.
+  - intent: show_arp
+    command: show arp
+    description: ARP table — IP to MAC bindings with age and interface.
+  - intent: show_lldp_neighbors
+    command: show lldp neighbors detail
+    description: Directly connected neighbours discovered over LLDP.
+  - intent: show_route_table
+    command: show route
+    description: Routing table with protocol, metric and next hop.
+  - intent: show_bgp_summary
+    command: show bgp summary
+    description: BGP peers, state, prefixes received and uptime.
+  - intent: show_ospf_neighbors
+    command: show ospf neighbor
+    description: OSPF adjacencies with state, priority and interface.
+  - intent: show_inventory
+    command: show inventory
+    description: Chassis, modules and transceivers with PID and serial.
+  - intent: show_cpu
+    command: show processes cpu
+    description: CPU utilisation per process.
+  - intent: show_memory
+    command: show processes memory
+    description: Memory allocation per process.
+  - intent: show_logs
+    command: show logging
+    description: Syslog buffer contents.
+  - intent: show_clock
+    command: show clock
+    description: Current system date and time.
+  - intent: show_users
+    command: show users
+    description: Active management sessions on the device.
+  - intent: show_environment
+    command: show environment
+    description: Power, fan and temperature sensor readings.

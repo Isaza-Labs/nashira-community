@@ -1,0 +1,218 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Knowledge and learnings
+  version: "1.0"
+  description: >
+    Two long-lived memories, deliberately kept apart.
+
+    Knowledge articles are curated reference material a human wrote or approved —
+    vendor procedures, runbooks, site conventions. Learnings are what the agent
+    inferred from its own runs: a tool that needs a particular argument shape, a
+    platform that rejects a command. Both are searchable, but only knowledge is
+    authoritative, so do not promote a learning into an article without review.
+
+tags:
+  - name: knowledge
+  - name: learnings
+
+paths:
+  /api/knowledge:
+    get:
+      operationId: knowledge_search
+      summary: Search knowledge articles
+      tags: [knowledge]
+      parameters:
+        - name: q
+          in: query
+          description: Case-insensitive substring match on title, content and tags.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of articles.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Article" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: knowledge_create
+      summary: Create a knowledge article
+      tags: [knowledge]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content]
+              properties:
+                title: { type: string }
+                content: { type: string, description: Markdown body. }
+                category: { type: string }
+                tags: { type: array, items: { type: string } }
+                source: { type: string }
+      responses:
+        "201":
+          description: The created article.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+
+  /api/knowledge/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: knowledge_get
+      summary: Get one article, full body included
+      tags: [knowledge]
+      responses:
+        "200":
+          description: The article.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+        "404": { description: Not found. }
+    put:
+      operationId: knowledge_update
+      summary: Update an article
+      tags: [knowledge]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                content: { type: string }
+                category: { type: string }
+                tags: { type: array, items: { type: string } }
+      responses:
+        "200":
+          description: The updated article.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Article" }
+    delete:
+      operationId: knowledge_delete
+      summary: Soft-delete an article
+      tags: [knowledge]
+      responses:
+        "200": { description: The deactivated article. }
+
+  /api/learnings:
+    get:
+      operationId: learnings_list
+      summary: List agent learnings
+      tags: [learnings]
+      parameters:
+        - name: category
+          in: query
+          schema: { type: string }
+        - name: tool
+          in: query
+          description: Only learnings recorded about this tool.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of learnings.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Learning" }
+                  total: { type: integer }
+    post:
+      operationId: learnings_create
+      summary: Record a learning
+      tags: [learnings]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, description: "What was learned, in one or two sentences." }
+                category: { type: string }
+                tool: { type: string }
+                tags: { type: array, items: { type: string } }
+      responses:
+        "201":
+          description: The created learning.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Learning" }
+
+  /api/learnings/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: learnings_get
+      summary: Get one learning
+      tags: [learnings]
+      responses:
+        "200":
+          description: The learning.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Learning" }
+    delete:
+      operationId: learnings_delete
+      summary: Soft-delete a learning
+      tags: [learnings]
+      responses:
+        "200": { description: The deactivated learning. }
+
+components:
+  schemas:
+    Article:
+      type: object
+      properties:
+        knowledge_article_id: { type: string, format: uuid }
+        title: { type: string }
+        content: { type: string }
+        category: { type: [string, "null"] }
+        tags: { type: array, items: { type: string } }
+        source: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Learning:
+      type: object
+      properties:
+        agent_learning_id: { type: string, format: uuid }
+        content: { type: string }
+        category: { type: [string, "null"] }
+        tool: { type: [string, "null"] }
+        tags: { type: array, items: { type: string } }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

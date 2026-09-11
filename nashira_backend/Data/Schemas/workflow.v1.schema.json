@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://networkingdev.com/schemas/workflow.v1.json",
+  "title": "workflow.v1",
+  "description": "Runtime copy of the workflow.v1 structural schema. Source of truth is workflow-v1-conformance/schema/workflow.v1.schema.json; keep in sync.",
+  "type": "object",
+  "required": ["nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "snippet_id"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "snippet_id": {
+            "anyOf": [
+              { "type": "string", "format": "uuid" },
+              { "type": "string", "enum": ["__start__", "__end__", "subflow"] }
+            ]
+          },
+          "type": { "type": "string", "enum": ["task", "decision", "subflow"], "default": "task" },
+          "x": { "type": "number" },
+          "y": { "type": "number" },
+          "config_overrides": { "type": "object" }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "target", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "source": { "type": "string", "minLength": 1 },
+          "target": { "type": "string", "minLength": 1 },
+          "type": { "type": "string", "enum": ["success", "failure", "always", "conditional"] },
+          "condition": { "type": "string" },
+          "source_handle": { "type": "string" },
+          "target_handle": { "type": "string" }
+        }
+      }
+    }
+  }
+}

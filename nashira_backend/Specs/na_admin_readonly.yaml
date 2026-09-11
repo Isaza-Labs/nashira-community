@@ -1,0 +1,351 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Administration (read-only)
+  version: "1.0"
+  description: >
+    The read side of governance: who did what, which uploads passed validation, what
+    each role is permitted, and the artifacts an export produced.
+
+    Read-only on purpose. Creating users, granting permissions and rotating secrets are
+    reachable through the API but are not described here, so the agent can answer
+    "who has access to X" without holding a spec that also tells it how to grant access.
+
+tags:
+  - name: audit
+  - name: permissions
+  - name: validation
+  - name: exports
+
+paths:
+  /api/audit:
+    get:
+      operationId: admin_listAuditEvents
+      summary: List audit events, newest first
+      description: >
+        Every mutation is appended here as a hash-chained record, so the log detects
+        tampering rather than merely discouraging it.
+      tags: [audit]
+      parameters:
+        - name: entityType
+          in: query
+          description: e.g. workflow, device, credential.
+          schema: { type: string }
+        - name: entityId
+          in: query
+          description: >
+            The history of one object. Answers "what has happened to this credential",
+            which is the question an investigation actually starts from.
+          schema: { type: string, format: uuid }
+        - name: action
+          in: query
+          description: e.g. create, update, delete, promote.
+          schema: { type: string }
+        - name: actionPrefix
+          in: query
+          description: >
+            Matches a family of verbs at once — `credential` catches create, update and
+            delete. This is what the screen's category chips filter on.
+          schema: { type: string }
+        - name: userId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: actor
+          in: query
+          description: >
+            Text actor. The username for a signed-in change; the automation identity
+            ("workflow-runner", "scheduler", "webhook") for one with no user at all —
+            which is the only way to ask what the unattended runs changed.
+          schema: { type: string }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AuditEvent" }
+                  total: { type: integer }
+
+  /api/audit/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: admin_getAuditEvent
+      summary: Get one event with its before/after payloads
+      tags: [audit]
+      responses:
+        "200":
+          description: The event.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/AuditEvent"
+                  - type: object
+                    properties:
+                      before: { type: [object, "null"] }
+                      after: { type: [object, "null"] }
+
+  /api/audit/verify:
+    get:
+      operationId: admin_verifyAuditChain
+      summary: Verify the audit hash chain
+      description: >
+        Recomputes every link. A break names the first event whose stored hash does not
+        match its recomputed one — everything before it is still trustworthy.
+      tags: [audit]
+      responses:
+        "200":
+          description: The verification result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  checked: { type: integer }
+                  broken_at: { type: [string, "null"], format: uuid }
+
+  /api/permissions/domains:
+    get:
+      operationId: admin_listPermissionDomains
+      summary: List tool permission domains and their default tiers
+      description: >
+        The classification each tool falls under — read, write, execute — and whether
+        it is autonomous, needs a single confirmation, needs elevated confirmation, or
+        is human-only and never runnable by the agent.
+      tags: [permissions]
+      responses:
+        "200":
+          description: The domains.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/permissions/users/{userId}:
+    parameters:
+      - name: userId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: admin_getUserPermissions
+      summary: Get one user's per-domain overrides
+      tags: [permissions]
+      responses:
+        "200":
+          description: The user's effective permissions.
+          content:
+            application/json:
+              schema: { type: object }
+
+  /api/loader/validations:
+    get:
+      operationId: admin_listValidations
+      summary: List security-validation records for uploaded skills and specs
+      description: >
+        Every skill and spec upload is scanned before it is accepted; this is the
+        record of what was scanned and what was found, including for uploads that were
+        rejected.
+      tags: [validation]
+      parameters:
+        - name: kind
+          in: query
+          schema: { type: string, enum: [skill, spec] }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of validation records.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Validation" }
+                  total: { type: integer }
+
+  /api/export:
+    get:
+      operationId: admin_listExports
+      summary: List generated export artifacts
+      tags: [exports]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of artifacts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Export" }
+                  total: { type: integer }
+
+  /api/export/{id}/download:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: admin_downloadExport
+      summary: Download an export artifact
+      tags: [exports]
+      responses:
+        "200":
+          description: The file.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+
+  /api/auth/events:
+    get:
+      operationId: admin_listAuthEvents
+      summary: List authentication events, newest first
+      description: >
+        Sign-ins, refreshes, logouts, lockouts and password changes. Admin only.
+
+        Separate from the audit trail because it answers a different question: an audit
+        row is about an entity that changed and carries before/after, while the most
+        valuable rows here changed nothing at all. A failed sign-in has no entity and no
+        diff, and is exactly what a security review is looking for.
+
+        Not hash-chained. The chain serialises writes behind one lock, and a burst of
+        failed sign-ins — the case that matters most — is when that would turn the login
+        endpoint into a queue.
+      tags: [audit]
+      parameters:
+        - name: userId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: event
+          in: query
+          schema:
+            type: string
+            enum: [login_success, login_failure, logout, password_change, lockout, refresh, token_revoked]
+        - name: includeUnattributed
+          in: query
+          description: >
+            Include attempts that resolve to no user — a sign-in for a username that
+            does not exist. Off by default: they are the noisiest rows on a public
+            endpoint and would bury failures on real accounts. Turn it on to look for
+            account enumeration, which is exactly what a burst of them is.
+          schema: { type: boolean, default: false }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of authentication events.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/AuthEvent" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        "403": { description: Admin only. }
+
+components:
+  schemas:
+    AuthEvent:
+      type: object
+      properties:
+        auth_event_id: { type: string, format: uuid }
+        at: { type: string, format: date-time }
+        user_id:
+          type: [string, "null"]
+          format: uuid
+          description: Null when the attempt could not be attributed to an account.
+        username: { type: [string, "null"] }
+        event:
+          type: string
+          enum: [login_success, login_failure, logout, password_change, lockout, refresh, token_revoked]
+        ip: { type: string }
+        user_agent: { type: string }
+        metadata:
+          type: [object, "null"]
+          description: >
+            Why it failed, which username was attempted, how long a lockout lasts.
+            Never a password and never a token.
+
+    AuditEvent:
+      type: object
+      properties:
+        audit_event_id: { type: string, format: uuid }
+        entity_type: { type: string }
+        entity_id: { type: [string, "null"], format: uuid }
+        action: { type: string }
+        actor: { type: [string, "null"] }
+        created_at: { type: string, format: date-time }
+
+    Validation:
+      type: object
+      properties:
+        validation_record_id: { type: string, format: uuid }
+        kind: { type: string, enum: [skill, spec] }
+        name: { type: string }
+        ok: { type: boolean }
+        issues:
+          type: array
+          items:
+            type: object
+            properties:
+              severity: { type: string, enum: [error, warning] }
+              message: { type: string }
+        created_at: { type: string, format: date-time }
+
+    Export:
+      type: object
+      properties:
+        export_artifact_id: { type: string, format: uuid }
+        file_name: { type: string }
+        content_type: { type: string }
+        size_bytes: { type: integer }
+        created_at: { type: string, format: date-time }

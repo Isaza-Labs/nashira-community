@@ -1,0 +1,57 @@
+platform: juniper_junos
+description: Juniper Junos. Persisting a change is a config-mode `commit`, not an operational command, so save_config is deliberately absent.
+commands:
+  - intent: show_version
+    command: show version
+    description: Software version, model and hostname.
+  - intent: show_running_config
+    command: show configuration
+    description: Active committed configuration.
+  - intent: show_interfaces
+    command: show interfaces
+    description: Full per-interface state, counters and errors.
+  - intent: show_interfaces_brief
+    command: show interfaces terse
+    description: One line per interface and unit with address and admin/link state.
+  - intent: show_arp
+    command: show arp
+    description: ARP table — IP to MAC bindings with interface.
+  - intent: show_mac_table
+    command: show ethernet-switching table
+    description: Learned MAC addresses per VLAN and interface.
+  - intent: show_lldp_neighbors
+    command: show lldp neighbors
+    description: Directly connected neighbours discovered over LLDP.
+  - intent: show_route_table
+    command: show route
+    description: Routing table with protocol, preference and next hop.
+  - intent: show_bgp_summary
+    command: show bgp summary
+    description: BGP peers, state, prefixes received and uptime.
+  - intent: show_ospf_neighbors
+    command: show ospf neighbor
+    description: OSPF adjacencies with state, priority and interface.
+  - intent: show_vlans
+    command: show vlans
+    description: VLAN ids, names and member interfaces.
+  - intent: show_inventory
+    command: show chassis hardware
+    description: Chassis, FPCs, PICs and transceivers with part and serial numbers.
+  - intent: show_cpu
+    command: show chassis routing-engine
+    description: Routing engine CPU utilisation, load averages and memory.
+  - intent: show_memory
+    command: show system memory
+    description: System memory usage by zone and process.
+  - intent: show_logs
+    command: show log messages
+    description: Contents of the main syslog file.
+  - intent: show_uptime
+    command: show system uptime
+    description: Current time, boot time, last configuration change and load averages.
+  - intent: show_users
+    command: show system users
+    description: Active management sessions on the device.
+  - intent: show_environment
+    command: show chassis environment
+    description: Power, fan and temperature sensor readings.

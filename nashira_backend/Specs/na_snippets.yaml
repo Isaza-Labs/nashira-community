@@ -1,0 +1,494 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Snippets and the step catalogue
+  version: "1.0"
+  description: >
+    The reusable steps a workflow node invokes by snippet_id, plus the two catalogues a
+    step draws on: the intent → platform → command table that makes one workflow
+    multi-vendor, and the python_snippet import allowlist.
+
+    Reads are Viewer and writes are Operator for snippets and vendor commands — a
+    definition is authoring, not administration. The python module allowlist is
+    Admin throughout: every row widens what arbitrary snippet code can reach, and a
+    pip row additionally has the deployment install third-party code.
+
+tags:
+  - name: snippets
+  - name: vendor-commands
+  - name: python-modules
+
+paths:
+  /api/snippets/types:
+    get:
+      operationId: snippets_listTypes
+      summary: The snippet types with a handler registered today
+      tags: [snippets]
+      responses:
+        "200":
+          description: Handler type names.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                  enum: [ping, transform, rest_call, integration_action, ssh, mcp_call, python_snippet]
+
+  /api/snippets:
+    get:
+      operationId: snippets_list
+      summary: List snippets, ordered by name
+      tags: [snippets]
+      parameters:
+        - name: type
+          in: query
+          schema: { type: string }
+        - name: q
+          in: query
+          description: Case-insensitive substring match on name and description.
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of snippets.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Snippet" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: snippets_create
+      summary: Create a snippet
+      description: Operator. type must be one of the registered handler types.
+      tags: [snippets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteSnippet" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Snippet" }
+        "400": { description: Unknown type, or a body the handler cannot use. }
+
+  /api/snippets/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: snippets_get
+      summary: Get one snippet
+      tags: [snippets]
+      responses:
+        "200":
+          description: The snippet.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Snippet" }
+        "404": { description: Not found. }
+    put:
+      operationId: snippets_update
+      summary: Update a snippet
+      description: >
+        Operator. Only provided fields change. Editing a snippet changes every workflow
+        node bound to it, including nodes in workflows already promoted.
+
+        One asymmetry: turning network_enabled ON is an Admin act, because it widens
+        which allowlist modules the snippet may import. Turning it OFF is a narrowing
+        any Operator may do.
+      tags: [snippets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteSnippet" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Snippet" }
+    delete:
+      operationId: snippets_delete
+      summary: Remove a snippet
+      tags: [snippets]
+      responses:
+        "200": { description: Removed. }
+        "409":
+          description: >
+            snippet_in_use — a live workflow still names it. The message lists up to
+            five of them. A node resolving to nothing mid-run is a worse discovery than
+            a rejected delete.
+
+  /api/vendor-commands:
+    get:
+      operationId: snippets_listVendorCommands
+      summary: List vendor commands, ordered by intent then platform
+      tags: [vendor-commands]
+      parameters:
+        - name: intent
+          in: query
+          schema: { type: string }
+        - name: platform
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: Page of vendor commands.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/VendorCommand" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: snippets_createVendorCommand
+      summary: Add a vendor command
+      description: Operator. intent and platform are stored lowercased and are unique together.
+      tags: [vendor-commands]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteVendorCommand" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorCommand" }
+
+  /api/vendor-commands/resolve:
+    get:
+      operationId: snippets_resolveVendorCommand
+      summary: Resolve one intent to the command for a platform
+      description: >
+        The lookup a workflow actually performs. Pass either platform or deviceId — with
+        a device, its platform is used. A miss is a 404, never another platform's
+        syntax: falling back would send a Juniper command to a Cisco box.
+      tags: [vendor-commands]
+      parameters:
+        - name: intent
+          in: query
+          required: true
+          schema: { type: string }
+        - name: platform
+          in: query
+          schema: { type: string }
+        - name: deviceId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The matching command.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorCommand" }
+        "400": { description: Neither platform nor deviceId was given, or intent is empty. }
+        "404": { description: No command for that intent on that platform. }
+
+  /api/vendor-commands/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: snippets_updateVendorCommand
+      summary: Update a vendor command
+      tags: [vendor-commands]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WriteVendorCommand" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VendorCommand" }
+    delete:
+      operationId: snippets_deleteVendorCommand
+      summary: Remove a vendor command
+      tags: [vendor-commands]
+      responses:
+        "200": { description: Removed. }
+
+  /api/python-modules:
+    get:
+      operationId: snippets_listPythonModules
+      summary: List the python_snippet import allowlist
+      description: >
+        Admin. A snippet importing anything absent from this list fails before the
+        interpreter starts, with the offending module named.
+
+        Two kinds of row. A stdlib row only records permission and is born ready. A
+        pip row also carries an install: it starts pending, a background provisioner
+        runs pip install into the shared package directory, and only then is it ready.
+        Only ready rows are offered to a snippet, so check `status` before concluding
+        a module is available — approved and importable are different states.
+      tags: [python-modules]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 200, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0, minimum: 0 }
+      responses:
+        "200":
+          description: The allowlist, ordered by module name.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/PythonModule" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+    post:
+      operationId: snippets_addPythonModule
+      summary: Allow a module
+      description: >
+        Admin. Root-module names only. Adding one widens what every snippet in the
+        tenant can reach; with source=pip it also installs the package on the server.
+        The response comes back pending — poll the list, or watch the admin screen,
+        rather than assuming the module is usable on the next call.
+      tags: [python-modules]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WritePythonModule" }
+      responses:
+        "201":
+          description: Added.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PythonModule" }
+        "400": { description: Not a valid root-module name. }
+        "403": { description: Admin only. }
+
+  /api/python-modules/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    put:
+      operationId: snippets_updatePythonModule
+      summary: Update an allowlist entry
+      tags: [python-modules]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WritePythonModule" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PythonModule" }
+    delete:
+      operationId: snippets_removePythonModule
+      summary: Disallow a module
+      description: >
+        Admin. Every existing snippet importing it starts failing on the next run — that
+        is the intent, but it is not gradual. The installed package stays in the volume;
+        re-adding the module re-queues the install rather than trusting what is there.
+      tags: [python-modules]
+      responses:
+        "200": { description: Removed. }
+
+  /api/python-modules/{id}/retry:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      operationId: snippets_retryPythonModule
+      summary: Re-queue a failed pip install
+      description: >
+        Admin, pip rows only. Clears the error and puts the row back to pending for
+        the provisioner. Use it after fixing whatever pip reported — a typo in the
+        requirement, a version that does not exist, a package with no wheel.
+      tags: [python-modules]
+      responses:
+        "200":
+          description: The row, back at pending.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PythonModule" }
+        "400": { description: A stdlib row has no install to retry. }
+
+components:
+  schemas:
+    WriteSnippet:
+      type: object
+      properties:
+        name: { type: string }
+        type:
+          type: string
+          enum: [ping, transform, rest_call, integration_action, ssh, mcp_call, python_snippet]
+        description: { type: string }
+        code:
+          type: string
+          description: >
+            The body, for handlers that carry logic — the script for python_snippet, the
+            mapping for transform. Null for handlers fully described by their input.
+        script_language: { type: string }
+        input_schema: { type: string, description: JSON Schema, advisory. }
+        output_schema: { type: string, description: JSON Schema, advisory. }
+        target_mode:
+          type: string
+          enum: [once, per_device]
+          description: How the step maps onto the run's target devices.
+        timeout_seconds: { type: integer, default: 60 }
+        idempotency:
+          type: string
+          enum: [idempotent, requires_compensation, non_reversible]
+          description: >
+            The declared tier. It may lower the handler's default, but a non_reversible
+            handler (mcp_call, python_snippet) is an absolute ceiling.
+        logic_diagram_mermaid: { type: string }
+        network_enabled:
+          type: boolean
+          description: >
+            python_snippet only — required before a module marked requires_network is
+            available to it.
+        verified: { type: boolean, description: Update only. }
+        is_active: { type: boolean, description: Update only. }
+
+    Snippet:
+      type: object
+      properties:
+        snippet_id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string, description: Stable cross-instance identity, used by exported bundles. }
+        type: { type: string }
+        description: { type: [string, "null"] }
+        code: { type: [string, "null"] }
+        script_language: { type: [string, "null"] }
+        input_schema: { type: [string, "null"] }
+        output_schema: { type: [string, "null"] }
+        target_mode: { type: string, enum: [once, per_device] }
+        timeout_seconds: { type: integer }
+        idempotency: { type: [string, "null"], description: What the author declared. }
+        effective_idempotency:
+          type: string
+          enum: [idempotent, requires_compensation, non_reversible]
+          description: >
+            What the executor will actually apply, after the handler's ceiling. A
+            declaration silently overruled is visible here and nowhere else.
+        logic_diagram_mermaid: { type: [string, "null"] }
+        network_enabled: { type: boolean }
+        verified: { type: boolean }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    WriteVendorCommand:
+      type: object
+      properties:
+        intent: { type: string, description: What the step wants done, vendor-neutral. }
+        platform: { type: string }
+        command: { type: string }
+        description: { type: string }
+        read_only: { type: boolean }
+        parser_template: { type: string }
+
+    VendorCommand:
+      type: object
+      properties:
+        vendor_command_id: { type: string, format: uuid }
+        intent: { type: string }
+        platform: { type: string }
+        command: { type: string }
+        description: { type: [string, "null"] }
+        read_only: { type: boolean }
+        parser_template: { type: [string, "null"] }
+        updated_at: { type: string, format: date-time }
+
+    WritePythonModule:
+      type: object
+      properties:
+        module:
+          type: string
+          description: >
+            Root module name only — what the script writes after `import`. Not
+            necessarily the pip package name.
+        description: { type: string }
+        requires_network:
+          type: boolean
+          description: >
+            When true, only snippets with network_enabled may import it.
+        source:
+          type: string
+          enum: [stdlib, pip]
+          default: stdlib
+          description: >
+            stdlib = already on the interpreter, nothing to install. pip = the
+            provisioner installs pip_spec before the module becomes usable.
+        pip_spec:
+          type: string
+          description: >
+            The pip requirement, for source=pip. Defaults to the module name; set it
+            when the two differ (pip install pyyaml imports as yaml) or to pin a
+            version. No spaces and no pip flags — one requirement per row.
+
+    PythonModule:
+      type: object
+      properties:
+        allowed_python_module_id: { type: string, format: uuid }
+        module: { type: string }
+        description: { type: [string, "null"] }
+        requires_network: { type: boolean }
+        source: { type: string, enum: [stdlib, pip] }
+        pip_spec: { type: [string, "null"] }
+        status:
+          type: string
+          enum: [pending, installing, ready, failed]
+          description: >
+            Only `ready` is importable. A pending or installing row is approved and
+            not yet on disk; a failed one is approved and never will be until someone
+            fixes it and retries.
+        installed_version:
+          type: [string, "null"]
+          description: Read back from the module after the install, so it reflects what landed.
+        error:
+          type: [string, "null"]
+          description: pip's own output, tail-trimmed, when status is failed.
+        updated_at: { type: string, format: date-time }

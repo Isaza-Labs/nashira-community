@@ -1,0 +1,41 @@
+platform: nokia_srl
+description: Nokia SR Linux. Routing state hangs off a network-instance; the default instance is what these entries query.
+commands:
+  - intent: show_version
+    command: show version
+    description: Software version, chassis type, serial and uptime.
+    parser_template: nokia_srl_show_version
+  - intent: show_running_config
+    command: info
+    description: Active configuration currently in effect.
+  - intent: show_interfaces
+    command: show interface
+    description: Full per-interface state, addresses and counters.
+  - intent: show_interfaces_brief
+    command: show interface brief
+    description: One line per interface with admin and operational state.
+  - intent: show_arp
+    command: show arpnd arp-entries
+    description: ARP table — IP to MAC bindings with interface.
+  - intent: show_lldp_neighbors
+    command: show system lldp neighbor
+    description: Directly connected neighbours discovered over LLDP.
+  - intent: show_route_table
+    command: show network-instance default route-table summary
+    description: Route counts per protocol in the default network-instance.
+  - intent: show_bgp_summary
+    command: show network-instance default protocols bgp summary
+    description: BGP peers, state, prefixes received and uptime.
+  - intent: show_ospf_neighbors
+    command: show network-instance default protocols ospf neighbor
+    description: OSPF adjacencies with state, priority and interface.
+  - intent: show_inventory
+    command: show platform chassis
+    description: Chassis type, part number, serial and MAC range.
+  - intent: show_environment
+    command: show platform environment
+    description: Power, fan and temperature sensor readings.
+  - intent: save_config
+    command: commit save
+    description: Commit the candidate configuration and write it to startup.
+    read_only: false

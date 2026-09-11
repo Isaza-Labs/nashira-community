@@ -1,0 +1,64 @@
+platform: cisco_ios
+description: Cisco IOS. Classic IOS switches and routers; IOS-XE shares most of this syntax but has its own file.
+commands:
+  - intent: show_version
+    command: show version
+    description: Software version, model, uptime and hardware summary.
+  - intent: show_running_config
+    command: show running-config
+    description: Active configuration currently in effect.
+  - intent: show_startup_config
+    command: show startup-config
+    description: Saved configuration in NVRAM, loaded at boot.
+  - intent: show_interfaces
+    command: show interfaces
+    description: Full per-interface state, counters and errors.
+  - intent: show_ip_interfaces
+    command: show ip interface brief
+    description: One line per interface with address, status and protocol.
+  - intent: show_arp
+    command: show ip arp
+    description: ARP table — IP to MAC bindings with age and interface.
+  - intent: show_mac_table
+    command: show mac address-table
+    description: Learned MAC addresses per VLAN and port.
+  - intent: show_lldp_neighbors
+    command: show lldp neighbors detail
+    description: Directly connected neighbours discovered over LLDP.
+  - intent: show_route_table
+    command: show ip route
+    description: IPv4 routing table with protocol, metric and next hop.
+  - intent: show_bgp_summary
+    command: show ip bgp summary
+    description: BGP peers, state, prefixes received and uptime.
+  - intent: show_ospf_neighbors
+    command: show ip ospf neighbor
+    description: OSPF adjacencies with state, priority and interface.
+  - intent: show_vlans
+    command: show vlan brief
+    description: VLAN ids, names and the ports assigned to each.
+  - intent: show_inventory
+    command: show inventory
+    description: Chassis, modules and transceivers with PID and serial.
+  - intent: show_cpu
+    command: show processes cpu sorted
+    description: CPU utilisation, processes ordered by consumption.
+  - intent: show_memory
+    command: show processes memory
+    description: Memory allocation per process.
+  - intent: show_logs
+    command: show logging
+    description: Syslog buffer contents.
+  - intent: show_clock
+    command: show clock
+    description: Current system date and time.
+  - intent: show_users
+    command: show users
+    description: Active management sessions on the device.
+  - intent: show_environment
+    command: show environment
+    description: Power, fan and temperature sensor readings.
+  - intent: save_config
+    command: write memory
+    description: Persist the running configuration to NVRAM.
+    read_only: false

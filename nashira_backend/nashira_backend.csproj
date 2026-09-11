@@ -1,0 +1,109 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>nashira_backend</RootNamespace>
+    <AssemblyName>nashira_backend</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Expose internal members to the test project. -->
+    <InternalsVisibleTo Include="nashira_backend.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- EF Core + PostgreSQL -->
+    <PackageReference Include="Cronos" Version="0.8.4" />
+    <PackageReference Include="MailKit" Version="4.17.0" />
+    <!-- Teams has no Socket Mode; an Azure Relay Hybrid Connection stands in for one,
+         letting a VPN-only deployment receive Bot Framework activities over an outbound
+         connection instead of a public webhook. -->
+    <PackageReference Include="Microsoft.Azure.Relay" Version="3.1.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.6" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.6">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="10.0.6">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="ModelContextProtocol.Core" Version="2.0.0-preview.3" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.6" />
+
+    <!-- Auth. PasswordHasher<TUser> comes from the ASP.NET Core shared framework. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.6" />
+
+    <!-- OpenAPI + Scalar UI -->
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.6" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.1.16" />
+    <!-- Pin the transitive Microsoft.OpenApi to a patched build (2.0.0/2.0.1 are
+         flagged by NU1903 / GHSA-v5pm-xwqc-g5wc, pulled in by AspNetCore.OpenApi
+         10.0.6). Stay on the 2.x line it expects. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.9.0" />
+
+    <!-- Logging (Serilog) -->
+    <PackageReference Include="Serilog.AspNetCore" Version="9.0.0" />
+    <PackageReference Include="Serilog.Formatting.Compact" Version="3.0.0" />
+    <PackageReference Include="Serilog.Enrichers.Environment" Version="3.0.1" />
+    <PackageReference Include="Serilog.Enrichers.Thread" Version="4.0.0" />
+
+    <!-- Specs (YAML) + JSON Schema (workflow.v1) -->
+    <PackageReference Include="YamlDotNet" Version="16.2.0" />
+    <PackageReference Include="JsonSchema.Net" Version="9.2.0" />
+
+    <!-- JMESPath for the `transform` snippet (workflow.v1 snippets/SPEC.md). Same
+         package and version flow-weaver evaluates expressions with, so an
+         expression that works there works here. -->
+    <PackageReference Include="JmesPath.Net" Version="1.1.0" />
+
+    <!-- Git integration (LibGit2Sharp bundles native libgit2). -->
+    <PackageReference Include="LibGit2Sharp" Version="0.31.0" />
+
+    <!-- Spreadsheet export + parsing (XLSX). -->
+    <PackageReference Include="ClosedXML" Version="0.105.0" />
+
+    <!-- DOCX parsing. Same package ClosedXML already pulls transitively (3.1.1),
+         referenced directly so WordprocessingDocument is usable and the version
+         is pinned rather than inherited. -->
+    <PackageReference Include="DocumentFormat.OpenXml" Version="3.1.1" />
+
+    <!-- PDF text extraction (QuestPDF above only writes PDFs). Pure managed code,
+         no native dependencies. -->
+    <PackageReference Include="PdfPig" Version="0.1.16" />
+
+    <!-- PDF export. Ships its own native renderer and bundles the Lato font, so it
+         needs no system fonts or extra apt packages in the runtime image. Community
+         licence, registered in Program.cs; same version flow-weaver runs. -->
+    <PackageReference Include="QuestPDF" Version="2025.1.5" />
+  </ItemGroup>
+
+  <!-- Skills (.md prompts) and Specs (.yaml OpenAPI) are read at runtime from
+       ContentRootPath, so they are copied next to the built assembly. -->
+  <ItemGroup>
+    <None Update="Skills\**\*.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <!-- Vendor command catalogues: VendorCommandSeeder walks Skills/vendors/*.yaml
+         at boot to populate vendor_commands, so they ship next to the assembly too. -->
+    <None Update="Skills\vendors\*.yaml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="KnowledgeSeed\**\*.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Specs\**\*.yaml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Specs\**\*.yml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Data\Schemas\**\*.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

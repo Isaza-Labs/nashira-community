@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+	<!-- Nashira brand mark: coral eight-point star on carbón, light sparkle core.
+	     Colours mirror the identity palette (#EE3D23 / #222222 / #EAECF6). -->
+	<rect width="64" height="64" rx="14" fill="#222222" />
+	<path
+		fill="#ee3d23"
+		d="M32 6 L34.68 25.53 L44.02 19.98 L38.47 29.32 L58 32 L38.47 34.68 L44.02 44.02 L34.68 38.47 L32 58 L29.32 38.47 L19.98 44.02 L25.53 34.68 L6 32 L25.53 29.32 L19.98 19.98 L29.32 25.53 Z"
+	/>
+	<path fill="#eaecf6" d="M32 26 L36.5 32 L32 38 L27.5 32 Z" />
+</svg>

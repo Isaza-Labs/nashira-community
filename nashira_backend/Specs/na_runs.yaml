@@ -1,0 +1,166 @@
+openapi: 3.1.0
+info:
+  title: Nashira — Workflow runs
+  version: "1.0"
+  description: >
+    Execution of promoted workflows and the record each execution leaves behind. A run
+    holds the aggregate outcome; the per-node detail lives in its step rows, and every
+    state-changing node is additionally chained into the hash-linked audit log.
+
+    A run executes in the environment of the workflow it belongs to, and every device
+    it touches must allow that environment (allow_draft / allow_qa / allow_production
+    on the device row). A device that allows none is parked: the run reports the
+    refusal for that node rather than silently skipping it.
+
+tags:
+  - name: runs
+
+paths:
+  /api/workflows/{id}/run:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        description: The workflow to execute.
+        schema: { type: string, format: uuid }
+    post:
+      operationId: runs_start
+      summary: Execute a workflow
+      description: >
+        Runs the DAG in topological order, stopping at the first failing node. On
+        failure the reversible nodes that already changed state are collected into a
+        rollback plan, in reverse execution order.
+      tags: [runs]
+      responses:
+        "200":
+          description: The finished run.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Run" }
+        "403": { description: The caller's role does not permit a tool the workflow binds. }
+
+  /api/workflows/{id}/runs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: limit
+        in: query
+        schema: { type: integer, default: 50, minimum: 1, maximum: 200 }
+      - name: offset
+        in: query
+        schema: { type: integer, default: 0, minimum: 0 }
+    get:
+      operationId: runs_list
+      summary: List a workflow's runs, newest first
+      tags: [runs]
+      responses:
+        "200":
+          description: Page of runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Run" }
+                  total: { type: integer }
+                  limit: { type: integer }
+                  offset: { type: integer }
+
+  /api/workflows/runs/{runId}:
+    parameters:
+      - name: runId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      operationId: runs_get
+      summary: Get one run with its per-node steps
+      tags: [runs]
+      responses:
+        "200":
+          description: The run and its steps.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Run"
+                  - type: object
+                    properties:
+                      steps:
+                        type: array
+                        items: { $ref: "#/components/schemas/Step" }
+        "404": { description: Not found. }
+
+components:
+  schemas:
+    Run:
+      type: object
+      properties:
+        workflow_run_id: { type: string, format: uuid }
+        workflow_id: { type: string, format: uuid }
+        environment: { type: string, enum: [draft, qa, production] }
+        schema_hash:
+          type: string
+          description: The definition actually executed, not the workflow's current one.
+        status: { type: string, enum: [running, completed, failed] }
+        final_state:
+          type: string
+          enum: [completed, rolled_back, failed]
+          description: >
+            rolled_back means every state change made before the failure was
+            reversible; failed means at least one was not.
+        node_count: { type: integer }
+        changed_count: { type: integer }
+        failed_count: { type: integer }
+        rollback_plan:
+          type: array
+          items: { type: string }
+          description: Node ids to undo, in reverse execution order. Empty on success.
+        started_at: { type: string, format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        trigger:
+          type: string
+          enum: [manual, agent, schedule, webhook, git_webhook, test]
+          description: What started the run.
+        error:
+          type: [string, "null"]
+          description: >
+            Why the run failed when NO step can say — a policy denied it, the DAG would
+            not parse, the targets resolved to nothing. When this is set with
+            node_count 0, nothing executed: do not go looking for a failed step, the
+            answer is here. Null on success and on ordinary step failures.
+
+    Step:
+      type: object
+      properties:
+        step_run_id: { type: string, format: uuid }
+        node_id: { type: string }
+        sequence: { type: integer }
+        result: { type: string, enum: [changed, no_change, failed, skipped] }
+        error_code: { type: [string, "null"] }
+        retryable: { type: boolean }
+        output: { type: [object, "null"] }
+        error:
+          type: [string, "null"]
+          description: The failure message. error_code names the category; this is the sentence.
+        input:
+          type: [object, "null"]
+          description: >
+            The node's configuration as the handler received it — templates already
+            resolved, secret-looking values redacted, capped. Read this before blaming
+            the node: a `{{ … }}` reference that resolved to something other than what
+            the author assumed is the most common cause, and it is invisible in the
+            workflow definition.
+        logs:
+          type: [string, "null"]
+          description: The handler's own account of what it did. What explains a no_change.
+        attempts:
+          type: integer
+          description: 0 when the step never reached a handler, 1 normally, more when retried.
+        started_at: { type: [string, "null"], format: date-time }
+        finished_at: { type: [string, "null"], format: date-time }
+        duration_ms: { type: [integer, "null"] }

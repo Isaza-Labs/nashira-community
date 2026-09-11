@@ -1,0 +1,58 @@
+platform: nokia_sros
+description: Nokia SR OS (TiMOS). Ports rather than interfaces at the physical layer; L3 interfaces live under the router context.
+commands:
+  - intent: show_version
+    command: show version
+    description: Software version, build and system type.
+  - intent: show_running_config
+    command: admin display-config
+    description: Active configuration currently in effect.
+  - intent: show_interfaces
+    command: show port
+    description: Physical port state, speed and counters.
+  - intent: show_interfaces_brief
+    command: show port description
+    description: One line per port with its description.
+  - intent: show_ip_interfaces
+    command: show router interface
+    description: Router interfaces with address, admin and operational state.
+  - intent: show_arp
+    command: show router arp
+    description: ARP table — IP to MAC bindings with interface.
+  - intent: show_route_table
+    command: show router route-table
+    description: Routing table with protocol, preference, metric and next hop.
+  - intent: show_bgp_summary
+    command: show router bgp summary
+    description: BGP peers, state, prefixes received and uptime.
+  - intent: show_ospf_neighbors
+    command: show router ospf neighbor
+    description: OSPF adjacencies with state, priority and interface.
+  - intent: show_inventory
+    command: show chassis
+    description: Chassis type, cards, MDAs and power supplies.
+  - intent: show_cpu
+    command: show system cpu
+    description: CPU utilisation per system task.
+  - intent: show_memory
+    command: show system memory-pools
+    description: Memory pool allocation and usage.
+  - intent: show_logs
+    command: show log
+    description: Configured log destinations and their contents.
+  - intent: show_uptime
+    command: show uptime
+    description: How long the system has been up since its last reboot.
+  - intent: show_clock
+    command: show time
+    description: Current system date and time.
+  - intent: show_users
+    command: show users
+    description: Active management sessions on the device.
+  - intent: show_environment
+    command: show chassis environment
+    description: Power, fan and temperature sensor readings.
+  - intent: save_config
+    command: admin save
+    description: Persist the running configuration to the boot config file.
+    read_only: false

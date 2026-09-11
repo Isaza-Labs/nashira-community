@@ -1,0 +1,67 @@
+platform: huawei
+description: Huawei VRP. `display` rather than `show`, and the saved configuration is a first-class object.
+commands:
+  - intent: show_version
+    command: display version
+    description: Software version, model and uptime.
+  - intent: show_running_config
+    command: display current-configuration
+    description: Active configuration currently in effect.
+  - intent: show_startup_config
+    command: display saved-configuration
+    description: Saved configuration loaded at boot.
+  - intent: show_interfaces
+    command: display interface
+    description: Full per-interface state, counters and errors.
+  - intent: show_interfaces_brief
+    command: display interface brief
+    description: One line per interface with status, speed and duplex.
+  - intent: show_ip_interfaces
+    command: display ip interface brief
+    description: One line per interface with address and protocol state.
+  - intent: show_arp
+    command: display arp
+    description: ARP table — IP to MAC bindings with VLAN and interface.
+  - intent: show_mac_table
+    command: display mac-address
+    description: Learned MAC addresses per VLAN and port.
+  - intent: show_lldp_neighbors
+    command: display lldp neighbor
+    description: Directly connected neighbours discovered over LLDP.
+  - intent: show_route_table
+    command: display ip routing-table
+    description: IPv4 routing table with protocol, preference, cost and next hop.
+  - intent: show_bgp_summary
+    command: display bgp peer
+    description: BGP peers, state, prefixes received and uptime.
+  - intent: show_ospf_neighbors
+    command: display ospf peer brief
+    description: OSPF adjacencies with area, interface and state.
+  - intent: show_vlans
+    command: display vlan brief
+    description: VLAN ids, names and member ports.
+  - intent: show_inventory
+    command: display device
+    description: Chassis, boards and their status.
+  - intent: show_cpu
+    command: display cpu-usage
+    description: CPU utilisation over the last 5 seconds, 1 minute and 5 minutes.
+  - intent: show_memory
+    command: display memory-usage
+    description: Memory usage totals and free space.
+  - intent: show_logs
+    command: display logbuffer
+    description: Contents of the log buffer.
+  - intent: show_clock
+    command: display clock
+    description: Current system date and time.
+  - intent: show_users
+    command: display users
+    description: Active management sessions on the device.
+  - intent: show_environment
+    command: display environment
+    description: Temperature sensor readings per board.
+  - intent: save_config
+    command: save
+    description: Persist the current configuration to the saved configuration file.
+    read_only: false

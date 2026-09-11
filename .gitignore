@@ -1,0 +1,55 @@
+# ---------- .NET (nashira_backend) ----------
+bin/
+obj/
+publish/
+.vs/
+*.user
+
+# SQLite local (dev only; production runs on PostgreSQL)
+*.db
+*.db-shm
+*.db-wal
+
+# ---------- Node / SvelteKit (frontend) ----------
+node_modules/
+build/
+dist/
+.svelte-kit/
+*-debug.log*
+*-error.log*
+
+# ---------- Python (deploy/python SSH runner) ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# ---------- Secrets ----------
+# deploy/.env holds the real JWT_KEY / DB / SMTP values. Only the template is tracked.
+.env
+.env.*
+!.env.example
+appsettings.*.local.json
+
+# ---------- Runtime state ----------
+keyring/
+uploads/
+
+# Anchored on purpose: a bare `data/` matches at any depth and, with git on
+# Windows being case-insensitive, also swallows nashira_backend/Data/ (source).
+/data/
+**/data/git/
+
+# nashira_e2e run output (run.json / run.md / bench / coverage / downloads)
+/reports/
+nashira_e2e/reports/
+
+# ---------- IDE / OS / local tooling ----------
+.idea/
+.vscode/
+.claude/
+*.swp
+.DS_Store
+Thumbs.db

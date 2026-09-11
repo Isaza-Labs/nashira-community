@@ -1,0 +1,46 @@
+platform: cisco_asa
+description: Cisco ASA firewalls. Routed/transparent firewall CLI — no VLAN or MAC table intents, and interface brief carries the IP.
+commands:
+  - intent: show_version
+    command: show version
+    description: Software version, model, uptime and hardware summary.
+  - intent: show_running_config
+    command: show running-config
+    description: Active configuration currently in effect.
+  - intent: show_startup_config
+    command: show startup-config
+    description: Saved configuration loaded at boot.
+  - intent: show_interfaces
+    command: show interface
+    description: Full per-interface state, counters and errors.
+  - intent: show_ip_interfaces
+    command: show interface ip brief
+    description: One line per interface with address, status and protocol.
+  - intent: show_arp
+    command: show arp
+    description: ARP table — IP to MAC bindings with interface.
+  - intent: show_route_table
+    command: show route
+    description: Routing table with protocol, metric and next hop.
+  - intent: show_ospf_neighbors
+    command: show ospf neighbor
+    description: OSPF adjacencies with state, priority and interface.
+  - intent: show_inventory
+    command: show inventory
+    description: Chassis and modules with PID and serial.
+  - intent: show_cpu
+    command: show cpu usage
+    description: CPU utilisation over the last 5 seconds, 1 minute and 5 minutes.
+  - intent: show_memory
+    command: show memory
+    description: Free and used system memory.
+  - intent: show_logs
+    command: show logging
+    description: Syslog buffer contents.
+  - intent: show_clock
+    command: show clock
+    description: Current system date and time.
+  - intent: save_config
+    command: write memory
+    description: Persist the running configuration to flash.
+    read_only: false
