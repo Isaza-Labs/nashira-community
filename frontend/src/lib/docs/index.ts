@@ -8,6 +8,7 @@ import { workflows } from './sections/workflows';
 import { governance } from './sections/governance';
 import { integrations } from './sections/integrations';
 import { administration } from './sections/administration';
+import { consoleScreens } from './sections/console';
 
 export type { DocSection, Block, Param, Endpoint, Role, Method } from './types';
 export { inline } from './types';
@@ -28,7 +29,8 @@ export const SECTIONS: DocSection[] = [
 	...workflows,
 	...governance,
 	...integrations,
-	...administration
+	...administration,
+	...consoleScreens
 ];
 
 export function sectionBySlug(slug: string): DocSection | undefined {

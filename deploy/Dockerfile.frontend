@@ -10,7 +10,13 @@ RUN npm ci
 
 FROM node:22-alpine AS build
 WORKDIR /app
-ENV NODE_ENV=production
+# .git is not in the build context, so the docs version stamp takes its commit and
+# date from here (vite.config.ts); empty values fall back to "unknown" / build day.
+ARG NASHIRA_BUILD_COMMIT=
+ARG NASHIRA_BUILD_DATE=
+ENV NODE_ENV=production \
+    NASHIRA_BUILD_COMMIT=$NASHIRA_BUILD_COMMIT \
+    NASHIRA_BUILD_DATE=$NASHIRA_BUILD_DATE
 COPY --from=deps /app/node_modules ./node_modules
 COPY frontend/ ./
 RUN npm run build \

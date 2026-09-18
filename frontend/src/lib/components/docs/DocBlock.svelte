@@ -122,10 +122,14 @@
 				</tbody>
 			</table>
 		</div>
-		<p class="text-xs text-surface-600-400">
-			<span class="text-error-600-400">*</span> required on create. Update endpoints are partial: an omitted
-			field keeps its stored value.
-		</p>
+		<!-- Only tables with a required field describe a writable record; read-only
+		     shapes (audit events, runs, sync results) would carry a footnote about nothing. -->
+		{#if block.rows.some((row) => row.required)}
+			<p class="text-xs text-surface-600-400">
+				<span class="text-error-600-400">*</span> required on create. Update endpoints are partial: an omitted
+				field keeps its stored value.
+			</p>
+		{/if}
 	</div>
 {:else if block.kind === 'endpoints'}
 	<div class="space-y-2">

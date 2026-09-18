@@ -225,8 +225,8 @@ Every agent tool carries three things, enforced by `ToolDispatcher`: a **domain*
 | `human_only` | Never run by the agent. |
 
 On top of that sit your role, your **per-user tool-domain permissions**
-(`/admin/permissions` — an operator can still be denied the `ssh` domain in
-chat), the mutation budget for the turn, and any matching **policies**. A tool
+(`/admin/permissions` — an operator can still be denied the `device` domain,
+which SSH execution belongs to, in chat), the mutation budget for the turn, and any matching **policies**. A tool
 that is not in the matrix falls back to the most restrictive classification and
 is refused. Promoted workflows are pre-authorised artifacts: the review happened
 at promotion, so running one is not re-litigated tool by tool.

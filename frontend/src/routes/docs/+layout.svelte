@@ -18,6 +18,10 @@
 	const sections = $derived(availableSections(moduleStore.availability));
 	const groups = $derived(groupSections(searchSections(query, sections)));
 	const activeSlug = $derived(page.params.slug ?? '');
+
+	// Which build these pages describe. Without it a reader cannot tell a stale
+	// deployment from a wrong page.
+	const build = __NASHIRA_BUILD__;
 </script>
 
 <div class="flex flex-col gap-6 lg:flex-row lg:items-start">
@@ -62,6 +66,10 @@
 				</div>
 			{/each}
 		</div>
+
+		<p class="mt-6 px-2 text-[11px] text-surface-600-400/80" title="The build these pages describe">
+			v{build.version} · <code class="font-mono">{build.commit}</code> · {build.date}
+		</p>
 	</nav>
 
 	<div class="min-w-0 flex-1">

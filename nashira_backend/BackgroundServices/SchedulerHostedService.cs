@@ -26,9 +26,11 @@ public sealed class SchedulerHostedService : BackgroundService
 {
     private static readonly TimeSpan Tick = TimeSpan.FromSeconds(30);
 
-    // A trigger whose due time is far in the past (the process was down for a
-    // weekend) fires once and re-bases, rather than replaying every occurrence it
-    // missed. Replaying a nightly job forty times would be worse than skipping it.
+    // A firing more than this late (the process was down for a weekend) is skipped,
+    // not run: the trigger re-bases to its next occurrence, and the skip is traced and
+    // recorded in LastError. Replaying a nightly job forty times would be worse than
+    // skipping it, and a single late run could land outside the window it was
+    // scheduled for. Within the window, a late firing still runs once.
     private static readonly TimeSpan CatchUpWindow = TimeSpan.FromMinutes(10);
 
     private readonly IServiceScopeFactory _scopes;
