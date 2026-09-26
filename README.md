@@ -8,7 +8,7 @@ Network operations are Nashira's most extensively validated domain today. The pl
 
 ## Start here
 
-- [Quick start](QUICK_START_GUIDE_NASH.md)
+- [Quick start](QUICK_START.md)
 - [Documentation map](docs/README.md)
 - [Security policy](SECURITY.md)
 - [Support](SUPPORT.md)
