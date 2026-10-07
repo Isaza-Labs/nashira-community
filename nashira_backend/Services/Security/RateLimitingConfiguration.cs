@@ -90,7 +90,7 @@ public static class RateLimitingConfiguration
             options.AddPolicy(AuthGeneric, PerUser(100, TimeSpan.FromMinutes(1)));
             options.AddPolicy(ReadHeavy, PerUser(300, TimeSpan.FromMinutes(1)));
             options.AddPolicy(WriteNormal, PerUser(60, TimeSpan.FromMinutes(1)));
-            options.AddPolicy(AiChat, PerUser(30, TimeSpan.FromHours(1)));
+            options.AddPolicy(AiChat, PerUser(30, TimeSpan.FromMinutes(1)));
             options.AddPolicy(WorkflowRun, PerUser(20, TimeSpan.FromHours(1)));
 
             // Git webhook ingest: anonymous endpoint hit by external
