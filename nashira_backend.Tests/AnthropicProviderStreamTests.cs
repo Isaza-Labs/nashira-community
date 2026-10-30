@@ -73,6 +73,69 @@ public class AnthropicProviderStreamTests
         Assert.Equal(7, done.OutputTokens);
     }
 
+    // With caching on, `input_tokens` is only the uncached tail; the prompt is the sum
+    // of the three fields, and that sum is what InputTokens keeps reporting.
+    [Fact]
+    public async Task Stream_reports_cached_input_tokens_and_the_split()
+    {
+        var sse = string.Join("\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":7,\"cache_creation_input_tokens\":300,\"cache_read_input_tokens\":12000}}}",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}",
+            "data: {\"type\":\"message_stop\"}",
+            "");
+
+        using var http = new HttpClient(new CannedHandler(sse));
+        var done = (await Collect(new AnthropicProvider(http, "test-key"))).Single(e => e.Type == "done");
+
+        Assert.Equal(12_307, done.InputTokens);
+        Assert.Equal(12_000, done.CacheReadTokens);
+        Assert.Equal(300, done.CacheWriteTokens);
+    }
+
+    // Three breakpoints: the last tool, the first system block (the shared skills
+    // prompt) and the last block of the conversation. The system blocks after the
+    // first (persona, integration skills) vary per user and turn and stay unmarked.
+    [Fact]
+    public async Task Request_marks_cache_breakpoints_on_tools_system_and_last_message()
+    {
+        var handler = new CannedHandler("data: {\"type\":\"message_stop\"}\n");
+        using var http = new HttpClient(handler);
+        var schema = JsonDocument.Parse("{\"type\":\"object\"}").RootElement;
+        var provider = new AnthropicProvider(http, "test-key");
+
+        await foreach (var _ in provider.ChatWithToolsStreamAsync(
+            [
+                new LlmMessage { Role = "system", Content = "base prompt" },
+                new LlmMessage { Role = "system", Content = "profile: net" },
+                new LlmMessage { Role = "user", Content = "hi" },
+                new LlmMessage { Role = "assistant", Content = "hello" },
+                new LlmMessage { Role = "user", Content = "list devices" },
+            ],
+            [
+                new ToolDefinition { Name = "list_devices", Description = "Lists", ParametersSchema = schema },
+                new ToolDefinition { Name = "get_device", Description = "Gets", ParametersSchema = schema },
+            ],
+            "claude-opus-5", 0.0, CancellationToken.None)) { }
+
+        using var body = JsonDocument.Parse(handler.LastBody!);
+        var root = body.RootElement;
+
+        var tools = root.GetProperty("tools").EnumerateArray().ToList();
+        Assert.False(tools[0].TryGetProperty("cache_control", out _));
+        Assert.Equal("ephemeral", tools[1].GetProperty("cache_control").GetProperty("type").GetString());
+
+        var system = root.GetProperty("system").EnumerateArray().ToList();
+        Assert.Equal("base prompt", system[0].GetProperty("text").GetString());
+        Assert.Equal("ephemeral", system[0].GetProperty("cache_control").GetProperty("type").GetString());
+        Assert.Equal("profile: net", system[1].GetProperty("text").GetString());
+        Assert.False(system[1].TryGetProperty("cache_control", out _));
+
+        var last = root.GetProperty("messages").EnumerateArray().Last().GetProperty("content").EnumerateArray().Last();
+        Assert.Equal("ephemeral", last.GetProperty("cache_control").GetProperty("type").GetString());
+
+        Assert.Equal(3, handler.LastBody!.Split("\"cache_control\"").Length - 1);
+    }
+
     // "max_tokens" is Anthropic's spelling of a cut-off answer, and the runner reads
     // it as one — so it has to arrive on the "done" event unchanged.
     [Fact]

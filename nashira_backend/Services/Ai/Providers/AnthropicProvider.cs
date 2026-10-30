@@ -92,7 +92,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
         // the stop reason that explains it.
         var toolBlocks = new Dictionary<int, (string id, string name, StringBuilder args)>();
         string? stopReason = null;
-        var inputTokens = 0;
+        var inputUsage = default(InputUsage);
         var outputTokens = 0;
 
         _logger?.LogDebug(
@@ -138,11 +138,8 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
                 case "message_start":
                     if (evt.TryGetProperty("message", out var msg)
                         && msg.ValueKind == JsonValueKind.Object
-                        && msg.TryGetProperty("usage", out var u0)
-                        && u0.ValueKind == JsonValueKind.Object
-                        && u0.TryGetProperty("input_tokens", out var it0)
-                        && it0.ValueKind == JsonValueKind.Number)
-                        inputTokens = it0.GetInt32();
+                        && msg.TryGetProperty("usage", out var u0))
+                        inputUsage = ReadInputUsage(u0);
                     break;
 
                 case "content_block_start":
@@ -237,7 +234,9 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
         yield return new ChatStreamEvent
         {
             Type = "done",
-            InputTokens = inputTokens,
+            InputTokens = inputUsage.Total,
+            CacheReadTokens = inputUsage.CacheRead,
+            CacheWriteTokens = inputUsage.CacheWrite,
             OutputTokens = outputTokens,
             // Reported as the API words it: the runner already reads Anthropic's
             // "max_tokens" as a cut-off alongside OpenAI's "length".
@@ -294,7 +293,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
         List<LlmMessage> messages, List<ToolDefinition> tools,
         string model, double temperature, bool stream)
     {
-        var (system, mapped) = MapMessages(messages);
+        var (systemParts, mapped) = Map(messages);
 
         // The clamp is what keeps the request legal, but it also shortens every answer
         // this model can give, and nothing downstream would say why: a reply cut at 8k
@@ -315,17 +314,72 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
             ["messages"] = mapped,
             ["stream"] = stream,
         };
-        if (!string.IsNullOrWhiteSpace(system)) body["system"] = system;
+        if (systemParts.Count > 0) body["system"] = SystemBlocks(systemParts);
         if (AcceptsTemperature(model)) body["temperature"] = temperature;
-        if (tools.Count > 0)
-            body["tools"] = tools.Select(t => new
-            {
-                name = t.Name,
-                description = t.Description,
-                input_schema = t.ParametersSchema,
-            }).ToList();
+        if (tools.Count > 0) body["tools"] = ToolBlocks(tools);
+        MarkLastMessage(mapped);
 
         return JsonSerializer.Serialize(body);
+    }
+
+    // Prompt caching. Every tool round re-sends the whole prompt — tools, tens of
+    // thousands of tokens of skills, the history, the round so far — and without a
+    // marker each of those tokens is billed in full every time. Three breakpoints of
+    // the four the API allows, at the boundaries where the prompt stops being stable:
+    //
+    //  1. the last tool: the tool set only changes with a deploy;
+    //  2. the first system block: the shared skills prompt, identical for every user;
+    //  3. the last block of the last message: the next round of this turn starts with
+    //     exactly this prefix, so it reads it back instead of paying for it again.
+    //
+    // A read costs a tenth of a normal input token and a write a quarter more, so the
+    // second round of a turn already pays for the first. Anything after a breakpoint
+    // that changes (the persona, the history note) only costs from there on.
+    private static readonly Dictionary<string, string> Ephemeral = new() { ["type"] = "ephemeral" };
+
+    private static List<Dictionary<string, object?>> SystemBlocks(List<string> parts)
+    {
+        var blocks = new List<Dictionary<string, object?>>
+        {
+            new() { ["type"] = "text", ["text"] = parts[0], ["cache_control"] = Ephemeral },
+        };
+        if (parts.Count > 1)
+            blocks.Add(new() { ["type"] = "text", ["text"] = string.Join("\n\n", parts.Skip(1)) });
+        return blocks;
+    }
+
+    private static List<Dictionary<string, object?>> ToolBlocks(List<ToolDefinition> tools)
+    {
+        var blocks = tools.Select(t => new Dictionary<string, object?>
+        {
+            ["name"] = t.Name,
+            ["description"] = t.Description,
+            ["input_schema"] = t.ParametersSchema,
+        }).ToList();
+        blocks[^1]["cache_control"] = Ephemeral;
+        return blocks;
+    }
+
+    private static void MarkLastMessage(List<Dictionary<string, object?>> mapped)
+    {
+        if (mapped.Count > 0 && mapped[^1]["content"] is List<Dictionary<string, object?>> { Count: > 0 } blocks)
+            blocks[^1]["cache_control"] = Ephemeral;
+    }
+
+    // The input side of a `usage` object. With caching on, `input_tokens` is only the
+    // part after the last breakpoint; the prompt is the sum of the three. Total is
+    // reported as the input so the number keeps meaning "how big the prompt was", the
+    // way it did before caching, and the split says how much of it was cheap.
+    internal readonly record struct InputUsage(int Total, int CacheRead, int CacheWrite);
+
+    internal static InputUsage ReadInputUsage(JsonElement usage)
+    {
+        if (usage.ValueKind != JsonValueKind.Object) return default;
+        int Field(string name) =>
+            usage.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number ? v.GetInt32() : 0;
+        var read = Field("cache_read_input_tokens");
+        var write = Field("cache_creation_input_tokens");
+        return new InputUsage(Field("input_tokens") + read + write, read, write);
     }
 
     // Maps the shared message list onto Anthropic's shape: the leading system
@@ -341,7 +395,17 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
     internal static (string? System, List<Dictionary<string, object?>> Messages) MapMessages(
         List<LlmMessage> messages)
     {
-        var system = new StringBuilder();
+        var (parts, mapped) = Map(messages);
+        return (parts.Count > 0 ? string.Join("\n\n", parts) : null, mapped);
+    }
+
+    // MapMessages with the leading system messages kept apart, one entry each, so the
+    // request can put a cache breakpoint after the first (the shared prompt) and leave
+    // the per-user ones that follow it outside.
+    private static (List<string> SystemParts, List<Dictionary<string, object?>> Messages) Map(
+        List<LlmMessage> messages)
+    {
+        var system = new List<string>();
         var mapped = new List<Dictionary<string, object?>>();
         var blocks = new List<Dictionary<string, object?>>();
         string? openRole = null;
@@ -368,11 +432,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
             switch (m.Role)
             {
                 case "system" when mapped.Count == 0 && openRole is null:
-                    if (!string.IsNullOrWhiteSpace(m.Content))
-                    {
-                        if (system.Length > 0) system.Append("\n\n");
-                        system.Append(m.Content);
-                    }
+                    if (!string.IsNullOrWhiteSpace(m.Content)) system.Add(m.Content);
                     break;
 
                 case "system": // mid-conversation — see the note above
@@ -437,7 +497,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
                 },
             });
 
-        return (system.Length > 0 ? system.ToString() : null, mapped);
+        return (system, mapped);
     }
 
     private Task<HttpResponseMessage> PostAsync(string body, CancellationToken ct)
@@ -491,13 +551,15 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
         var usage = root.TryGetProperty("usage", out var u) && u.ValueKind == JsonValueKind.Object ? u : default;
         var hasUsage = usage.ValueKind == JsonValueKind.Object;
+        var input = ReadInputUsage(usage);
 
         return new ChatResult
         {
             Content = text.ToString(),
             ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
-            InputTokens = hasUsage && usage.TryGetProperty("input_tokens", out var it)
-                && it.ValueKind == JsonValueKind.Number ? it.GetInt32() : 0,
+            InputTokens = input.Total,
+            CacheReadTokens = input.CacheRead,
+            CacheWriteTokens = input.CacheWrite,
             OutputTokens = hasUsage && usage.TryGetProperty("output_tokens", out var ot)
                 && ot.ValueKind == JsonValueKind.Number ? ot.GetInt32() : 0,
             StopReason = root.TryGetProperty("stop_reason", out var sr) && sr.ValueKind == JsonValueKind.String

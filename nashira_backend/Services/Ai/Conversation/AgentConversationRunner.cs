@@ -113,8 +113,10 @@ public sealed class AgentConversationRunner
             : await LoadLoadedSkillsAsync(request.ConversationId, streamCt);
         foreach (var id in previouslyLoaded) _turnScope.MarkSkillLoaded(id);
         foreach (var id in ScopedSkillCatalog.MatchMentions(request.Message, scopedSkills)) _turnScope.MarkSkillLoaded(id);
-        var systemPrompt = ScopedSkillCatalog.ComposePrompt(
-            basePrompt, scopedSkills, new HashSet<Guid>(_turnScope.LoadedSkillIntegrationIds));
+        // A system message of its own, after the base prompt: it changes when a skill
+        // loads, and the base prompt is the prefix the provider caches.
+        var scopedPrompt = ScopedSkillCatalog.RenderScoped(
+            scopedSkills, new HashSet<Guid>(_turnScope.LoadedSkillIntegrationIds));
 
         // The user's persona (assigned profile + own text) goes in as a second
         // system message, never into the shared prompt: that one is cached
@@ -132,11 +134,14 @@ public sealed class AgentConversationRunner
         _dispatcher.ApproveTools(approvals);
         var newlyApproved = approvals.Count > previouslyApproved.Count;
         var composedMessage = ComposeUserMessage(request.Message, request.Attachments);
-        var messages = await BuildInitialMessagesAsync(systemPrompt, profileMessage, composedMessage, request.ConversationId, streamCt);
+        var messages = await BuildInitialMessagesAsync(
+            basePrompt, scopedPrompt, profileMessage, composedMessage, request.ConversationId, streamCt);
 
         var finalText = new StringBuilder();
         var totalIn = 0;
         var totalOut = 0;
+        var totalCacheRead = 0;
+        var totalCacheWrite = 0;
         var iterations = 0;
         var errored = false;
         var awaitingConfirmation = false;
@@ -159,7 +164,7 @@ public sealed class AgentConversationRunner
             + "max_tool_result_chars={MaxToolResultChars} prompt_chars={PromptChars} "
             + "scoped_skills={ScopedSkills} skills_loaded={SkillsLoaded} profile={Profile}",
             conversationId, model, tools.Count, messages.Count, deadlineSeconds, maxIterations, maxToolResultChars,
-            systemPrompt.Length, scopedSkills.Count, _turnScope.LoadedSkillIntegrationIds.Count,
+            basePrompt.Length + scopedPrompt.Length, scopedSkills.Count, _turnScope.LoadedSkillIntegrationIds.Count,
             profile is null ? "none" : profile.ProfileName ?? "custom-text");
 
         // The warning that arrives while the deadline is still tunable. A turn that
@@ -202,6 +207,8 @@ public sealed class AgentConversationRunner
                         case "done":
                             if (evt.InputTokens is int ti) totalIn += ti;
                             if (evt.OutputTokens is int to) totalOut += to;
+                            if (evt.CacheReadTokens is int cr) totalCacheRead += cr;
+                            if (evt.CacheWriteTokens is int cw) totalCacheWrite += cw;
                             if (evt.StopReason is not null) stopReason = evt.StopReason;
                             break;
                     }
@@ -321,7 +328,18 @@ public sealed class AgentConversationRunner
                 conversation_id = conversationId, model, status = turnStatus,
                 iterations, tool_calls = toolCalls.Count,
                 tokens_in = totalIn, tokens_out = totalOut,
+                tokens_cache_read = totalCacheRead, tokens_cache_write = totalCacheWrite,
             };
+            // tokens_in is the whole prompt summed over the turn's rounds; the cache
+            // fields say how much of it was read back at a tenth of the price, which is
+            // the number that shows whether caching is working (a run of zeros means a
+            // silent invalidator in the prefix, or a provider that does not cache).
+            _logger.LogInformation(
+                "ai.chat.done conversation={ConversationId} status={Status} iterations={Iterations} "
+                + "tool_calls={ToolCalls} tokens_in={TokensIn} tokens_out={TokensOut} "
+                + "tokens_cache_read={CacheRead} tokens_cache_write={CacheWrite}",
+                conversationId, turnStatus, iterations, toolCalls.Count, totalIn, totalOut,
+                totalCacheRead, totalCacheWrite);
             if (turnError is null) trace.Complete(summary); else trace.Fail(turnError, summary);
         }
     }
@@ -507,9 +525,12 @@ public sealed class AgentConversationRunner
     }
 
     private async Task<List<LlmMessage>> BuildInitialMessagesAsync(
-        string systemPrompt, string? profileMessage, string userMessage, Guid? conversationId, CancellationToken ct)
+        string systemPrompt, string scopedPrompt, string? profileMessage, string userMessage,
+        Guid? conversationId, CancellationToken ct)
     {
         var msgs = new List<LlmMessage> { new() { Role = "system", Content = systemPrompt } };
+        if (!string.IsNullOrEmpty(scopedPrompt))
+            msgs.Add(new LlmMessage { Role = "system", Content = scopedPrompt });
         if (profileMessage is not null)
             msgs.Add(new LlmMessage { Role = "system", Content = profileMessage });
 
