@@ -8,7 +8,15 @@ public sealed record BuiltinSkill(string Name, string Content);
 // uploaded AiPromptSkill rows, injecting the live tool list and current date.
 public interface ISkillPromptLoader
 {
+    // The every-turn prompt. Topic skills (TopicSkillCatalog) are not in it; they
+    // come from LoadTopicsAsync.
     Task<string> LoadAsync(string toolList, CancellationToken ct);
+
+    // The built-in skills that are loaded on demand, in prompt order. Empty by
+    // default so a loader that knows nothing about topics keeps every skill in the
+    // prompt.
+    Task<IReadOnlyList<TopicSkill>> LoadTopicsAsync(CancellationToken ct)
+        => Task.FromResult<IReadOnlyList<TopicSkill>>([]);
 
     // Lists the built-in file skills that prefix the prompt (base.md first,
     // matching prompt order). They ship with the backend image.

@@ -107,16 +107,26 @@ public sealed class AgentConversationRunner
         // play. "In play" at the start of a turn means loaded earlier in this
         // conversation or named in this message; API calls during the turn and the
         // load_skill tool add to the set as it goes (see AutoLoadSkillAsync).
+        //
+        // Topic skills (the built-in domain guides, TopicSkillCatalog) work the same
+        // way and share the one loaded set: integration ids and topic keys never
+        // collide.
         var scopedSkills = await _scopedSkills.ListAsync(streamCt);
-        var previouslyLoaded = scopedSkills.Count == 0
+        var topics = await _skills.LoadTopicsAsync(streamCt);
+        var previouslyLoaded = scopedSkills.Count == 0 && topics.Count == 0
             ? []
             : await LoadLoadedSkillsAsync(request.ConversationId, streamCt);
         foreach (var id in previouslyLoaded) _turnScope.MarkSkillLoaded(id);
         foreach (var id in ScopedSkillCatalog.MatchMentions(request.Message, scopedSkills)) _turnScope.MarkSkillLoaded(id);
+        foreach (var id in TopicSkillCatalog.MatchMentions(request.Message, topics)) _turnScope.MarkSkillLoaded(id);
         // A system message of its own, after the base prompt: it changes when a skill
         // loads, and the base prompt is the prefix the provider caches.
-        var scopedPrompt = ScopedSkillCatalog.RenderScoped(
-            scopedSkills, new HashSet<Guid>(_turnScope.LoadedSkillIntegrationIds));
+        var loadedNow = new HashSet<Guid>(_turnScope.LoadedSkillIntegrationIds);
+        var scopedPrompt = string.Join("\n\n---\n\n", new[]
+        {
+            TopicSkillCatalog.Render(topics, loadedNow),
+            ScopedSkillCatalog.RenderScoped(scopedSkills, loadedNow),
+        }.Where(p => p.Length > 0));
 
         // The user's persona (assigned profile + own text) goes in as a second
         // system message, never into the shared prompt: that one is cached
@@ -162,9 +172,10 @@ public sealed class AgentConversationRunner
             "ai.chat.begin conversation={ConversationId} model={Model} tools={ToolCount} "
             + "messages={MessageCount} deadline_s={DeadlineSeconds} max_iterations={MaxIterations} "
             + "max_tool_result_chars={MaxToolResultChars} prompt_chars={PromptChars} "
-            + "scoped_skills={ScopedSkills} skills_loaded={SkillsLoaded} profile={Profile}",
+            + "scoped_skills={ScopedSkills} topic_skills={TopicSkills} skills_loaded={SkillsLoaded} profile={Profile}",
             conversationId, model, tools.Count, messages.Count, deadlineSeconds, maxIterations, maxToolResultChars,
-            basePrompt.Length + scopedPrompt.Length, scopedSkills.Count, _turnScope.LoadedSkillIntegrationIds.Count,
+            basePrompt.Length + scopedPrompt.Length, scopedSkills.Count, topics.Count,
+            _turnScope.LoadedSkillIntegrationIds.Count,
             profile is null ? "none" : profile.ProfileName ?? "custom-text");
 
         // The warning that arrives while the deadline is still tunable. A turn that
@@ -280,6 +291,10 @@ public sealed class AgentConversationRunner
                     if (scopedSkills.Count > 0
                         && await AutoLoadSkillAsync(tc.Name, tc.Arguments, scopedSkills, streamCt) is { } skillMessage)
                         messages.Add(skillMessage);
+                    // Same for a topic: the first call to one of its tools brings its
+                    // rules in, so the calls that follow are made with them in view.
+                    if (topics.Count > 0 && AutoLoadTopicSkills(tc.Name, topics) is { } topicMessage)
+                        messages.Add(topicMessage);
                 }
 
                 if (awaitingConfirmation) break;
@@ -428,6 +443,27 @@ public sealed class AgentConversationRunner
         {
             Role = "system",
             Content = string.Join("\n\n---\n\n", skills.Select(ScopedSkillCatalog.RenderLoaded)),
+        };
+    }
+
+    // Loads the topic skills a tool belongs to, once per conversation, as a system
+    // message placed right after the tool result. Null when the tool belongs to no
+    // topic or its topics are already in.
+    private LlmMessage? AutoLoadTopicSkills(string toolName, IReadOnlyList<TopicSkill> topics)
+    {
+        var fresh = TopicSkillCatalog.ForTool(toolName, topics)
+            .Where(t => _turnScope.MarkSkillLoaded(t.LoadKey))
+            .ToList();
+        if (fresh.Count == 0) return null;
+
+        _logger.LogInformation(
+            "ai.chat.topic_skill_autoloaded conversation={ConversationId} tool={Tool} skills={Skills}",
+            _turnScope.ConversationId, toolName, string.Join(",", fresh.Select(t => t.Name)));
+
+        return new LlmMessage
+        {
+            Role = "system",
+            Content = string.Join("\n\n---\n\n", fresh.Select(TopicSkillCatalog.RenderLoaded)),
         };
     }
 

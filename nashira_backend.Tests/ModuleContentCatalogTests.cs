@@ -340,6 +340,24 @@ public class ModuleContentCatalogTests
         Assert.DoesNotContain("git_list_webhooks", automationOnly);
     }
 
+    // With every capability on, the domain guides leave the every-turn prompt and are
+    // served on demand; base.md and the platform map stay.
+    [Fact]
+    public async Task Domain_skills_are_served_on_demand_not_in_every_turn()
+    {
+        var loader = Loader("core,chat,ai-studio,integrations,git,automation,secrets,fleet,governance,knowledge,communications,artifacts,observability");
+        var prompt = await loader.LoadAsync("(tools)", default);
+        var topics = (await loader.LoadTopicsAsync(default)).Select(t => t.Name).ToList();
+
+        Assert.Contains("You are Nashira", prompt);
+        Assert.Contains("# Nashira — the platform you are operating", prompt);
+        Assert.DoesNotContain("# Skill: git", prompt);
+        Assert.DoesNotContain("# Skill: workflows", prompt);
+        Assert.Contains("git.md", topics);
+        Assert.Contains("workflows.md", topics);
+        Assert.DoesNotContain("base.md", topics);
+    }
+
     // Admin → Skills lists what the deployment actually uses. A built-in offered for
     // editing but never loaded is an invitation to tune a prompt nothing reads.
     [Fact]
@@ -362,8 +380,14 @@ public class ModuleContentCatalogTests
         Assert.False(await loader.SaveBuiltinAsync("git.md", "replacement", default));
     }
 
-    private static Task<string> LoadPromptAsync(string configuredModules) =>
-        Loader(configuredModules).LoadAsync("(tools)", default);
+    // Everything the model can read in this deployment: the every-turn prompt and the
+    // on-demand topic skills, which go through the same module filter.
+    private static async Task<string> LoadPromptAsync(string configuredModules)
+    {
+        var loader = Loader(configuredModules);
+        var topics = await loader.LoadTopicsAsync(default);
+        return string.Join("\n\n", [await loader.LoadAsync("(tools)", default), .. topics.Select(t => t.Content)]);
+    }
 
     private static SkillPromptLoader Loader(string configuredModules)
     {

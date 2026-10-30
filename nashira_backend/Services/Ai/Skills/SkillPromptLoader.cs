@@ -14,7 +14,9 @@ namespace nashira_backend.Services.Ai.Skills;
 //
 // Rows tied to an integration are not here: ScopedSkillCatalog indexes them and the
 // runner loads their text only when that integration is in play. Concatenating them
-// all meant every integration's rules rode in every turn about anything else.
+// all meant every integration's rules rode in every turn about anything else. The
+// built-in domain skills listed in TopicSkillCatalog get the same treatment:
+// LoadTopicsAsync hands them to the runner instead.
 //
 // Shipped skills of a disabled capability are left out of both the prompt and the
 // listing (ModuleContentCatalog): the agent is told what it can do, and a page of rules
@@ -38,7 +40,7 @@ public sealed class SkillPromptLoader : ISkillPromptLoader
     private readonly ILogger<SkillPromptLoader> _logger;
     private CacheEntry? _cache;
 
-    private sealed record CacheEntry(long Version, DateTime FileStamp, string Text);
+    private sealed record CacheEntry(long Version, DateTime FileStamp, string Text, IReadOnlyList<TopicSkill> Topics);
 
     public SkillPromptLoader(
         IWebHostEnvironment env, IServiceScopeFactory scopes, ModuleSelection modules,
@@ -52,11 +54,17 @@ public sealed class SkillPromptLoader : ISkillPromptLoader
 
     public async Task<string> LoadAsync(string toolList, CancellationToken ct)
     {
-        var raw = await LoadRawAsync(ct);
+        var raw = (await LoadCacheAsync(ct)).Text;
         return raw
             .Replace("{tool_list}", toolList)
             .Replace("{current_date}", DateTime.UtcNow.ToString("yyyy-MM-dd"));
     }
+
+    // The built-in skills listed in TopicSkillCatalog, left out of LoadAsync's text.
+    // Same cache and the same module filter, so a skill of a disabled capability is
+    // not a topic either.
+    public async Task<IReadOnlyList<TopicSkill>> LoadTopicsAsync(CancellationToken ct)
+        => (await LoadCacheAsync(ct)).Topics;
 
     public void Invalidate() => Interlocked.Increment(ref _version);
 
@@ -111,19 +119,26 @@ public sealed class SkillPromptLoader : ISkillPromptLoader
         }
     }
 
-    private async Task<string> LoadRawAsync(CancellationToken ct)
+    private async Task<CacheEntry> LoadCacheAsync(CancellationToken ct)
     {
         var (files, fileStamp) = FileSkills();
         var version = Interlocked.Read(ref _version);
         if (_cache is { } cached && cached.Version == version && cached.FileStamp == fileStamp)
-            return cached.Text;
+            return cached;
 
         var sb = new StringBuilder();
+        var topics = new List<TopicSkill>();
         foreach (var f in files)
         {
             try
             {
-                sb.AppendLine(await File.ReadAllTextAsync(f, ct));
+                var content = await File.ReadAllTextAsync(f, ct);
+                if (TopicSkillCatalog.From(RelativeName(f), content) is { } topic)
+                {
+                    topics.Add(topic);
+                    continue;
+                }
+                sb.AppendLine(content);
                 sb.AppendLine("\n---\n");
             }
             catch (Exception ex)
@@ -153,8 +168,11 @@ public sealed class SkillPromptLoader : ISkillPromptLoader
         }
 
         var text = sb.Length == 0 ? Fallback : sb.ToString();
-        _cache = new CacheEntry(version, fileStamp, text);
-        return text;
+        _cache = new CacheEntry(version, fileStamp, text, topics);
+        _logger.LogInformation(
+            "ai.skills.loaded prompt_chars={PromptChars} topic_skills={TopicCount} topic_chars={TopicChars}",
+            text.Length, topics.Count, topics.Sum(t => t.Content.Length));
+        return _cache;
     }
 
     private (List<string> Files, DateTime Stamp) FileSkills()
