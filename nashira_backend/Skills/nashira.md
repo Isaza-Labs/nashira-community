@@ -11,7 +11,7 @@ do it with the tools rather than describing the screens.
 | Object | What it is | Tools |
 |---|---|---|
 | **Credential** | Reusable secret material: password, token, API key, OAuth2 client, or an SSH private key. Entered once, referenced by many things. | `list_credentials`, `create_credential`, `update_credential` |
-| **Secret** | A `provider`/`key` entry in the secret store, referenced from configuration as `${secret:provider:key}` and resolved at call time. | `list_secrets`, `set_secret`, `clear_secret` |
+| **Secret** | A named value in the secret store, referenced from configuration as `${secret:secret:<name>:value}` and resolved at call time. | `list_secrets`, `set_secret`, `clear_secret` |
 | **Integration** | An external HTTP system: `base_url`, auth, `health_check_path`, plus the action catalogue projected from its specs. | `list_integrations` |
 | **API spec** | An OpenAPI document. Its operations are what `discover_operations` / `execute_operation` can call. May link to an integration to inherit URL and credentials. | `list_specs`, `get_spec`, `create_spec`, `update_spec` |
 | **MCP server** | An external MCP endpoint with its own tools and its own credentials. | `list_mcp_tools`, `mcp_call` |
@@ -40,9 +40,10 @@ do it with the tools rather than describing the screens.
   the linked credential** — an integration created with a token baked into `auth_config`
   ignores every credential it is later pointed at. The response reports this as
   `has_inline_credentials: true`; the fix is to clear those fields from `auth_config`.
-- A **Secret** is neither: it is a value referenced from configuration as
-  `${secret:provider:key}`. Storing a token in Secrets does **not** authenticate an
+- A **Secret** is neither: it is a named value referenced from configuration as
+  `${secret:secret:<name>:value}`. Storing a token in Secrets does **not** authenticate an
   integration by itself — something has to reference it.
+- In the web UI, credentials and secrets are both entries in the **Vault** (Operate → Vault).
 
 Auth methods and the header each one sends:
 

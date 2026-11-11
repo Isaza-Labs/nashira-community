@@ -18,12 +18,13 @@ extension, and it is what the agent passes as `discover_operations(api="na_workf
 
 ## Executing against them
 
-Discovery works with nothing configured. **Execution** additionally needs a base URL:
-set `Ai:SelfBaseUrl` (e.g. `https://nashira.internal`) and the seeder stamps it onto
-every built-in spec, together with `auth_type: bearer` and an
-`${secret:nashira:self_api_token}` reference the operator fills in via
-`/api/secrets`. Leave it unset and the specs are documentation only — `execute_operation`
-refuses with a clear "spec has no base_url" rather than guessing a host.
+Discovery and execution both work with nothing configured. The seeded rows carry no base
+URL: the executor resolves it per call from `Ai:SelfBaseUrl` (default
+`http://localhost:8080`, the backend itself), so moving a deployment needs no re-seed. They
+carry `auth_type: bearer` with the reference `${secret:session:current:jwt}`, which
+resolves to the token of the user the agent is talking to — the agent calls the API as
+that user, so every per-user permission check applies unchanged. No stored service token
+is needed, and nothing has to be added to the secret store.
 
 ## Conventions
 

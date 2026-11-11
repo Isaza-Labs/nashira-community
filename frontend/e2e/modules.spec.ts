@@ -286,6 +286,7 @@ test('the admin hub offers only deployed tools', async ({ page }) => {
 	await expect(main.getByRole('link', { name: /Tool permissions/ })).toBeVisible();
 	await expect(main.getByRole('link', { name: /Devices/ })).toHaveCount(0);
 	await expect(main.getByRole('link', { name: /Secrets/ })).toHaveCount(0);
+	await expect(main.getByRole('link', { name: /Vault/ })).toHaveCount(0);
 	await expect(main.getByRole('link', { name: /Snippets/ })).toHaveCount(0);
 });
 

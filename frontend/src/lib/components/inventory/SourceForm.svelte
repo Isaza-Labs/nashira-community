@@ -207,7 +207,7 @@
 			bind:value={secretName}
 			placeholder="Choose a secret…"
 			options={secrets.map((s) => ({ value: s.name, label: s.name }))}
-			hint="Managed in Administration → Secrets. The value never leaves the server."
+			hint="Managed in Operate → Vault, as a Secret value. The value never leaves the server."
 		/>
 	{:else if authMode === 'credential'}
 		<Select
@@ -215,7 +215,7 @@
 			bind:value={credentialName}
 			placeholder="Choose a credential…"
 			options={credentials.map((c) => ({ value: c.name, label: c.name }))}
-			hint="Only credentials that hold a token are listed. Managed in Administration → Credentials."
+			hint="Only Vault entries that hold a token are listed. Managed in Operate → Vault."
 		/>
 	{:else if authMode === 'ref'}
 		<Input

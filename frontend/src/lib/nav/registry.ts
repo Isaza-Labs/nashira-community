@@ -39,8 +39,7 @@ import {
 	Blocks,
 	Megaphone,
 	Mail,
-	KeyRound,
-	Lock,
+	Vault,
 	ShieldAlert,
 	FileClock,
 	MessagesSquare,
@@ -115,6 +114,59 @@ export interface NavPage {
 const NAVIGATION_PERMISSIONS_PATH = '/admin/navigation-permissions';
 
 /**
+ * Pages that replaced others, and the pages they replaced.
+ *
+ * Stored navigation permissions are keyed by href, so a page that takes over from
+ * two older ones would otherwise start with no setting at all — and an
+ * administrator who had hidden Credentials and Secrets would find both back on the
+ * menu under a new name. Until the new page is given a setting of its own, it
+ * inherits: hidden only when every page it replaced was hidden.
+ */
+export const VAULT_PATH = '/admin/vault';
+export const VAULT_PREDECESSORS = {
+	credentials: '/admin/credentials',
+	secrets: '/admin/secrets'
+} as const;
+const PREDECESSORS: Readonly<Record<string, readonly string[]>> = {
+	[VAULT_PATH]: Object.values(VAULT_PREDECESSORS)
+};
+
+/** Old URLs kept alive as redirects, and the page each one leads to. */
+const ROUTE_ALIASES: Readonly<Record<string, string>> = Object.fromEntries(
+	Object.entries(PREDECESSORS).flatMap(([href, old]) => old.map((o) => [o, href]))
+);
+
+/** The pages a page replaced (empty for almost all of them). */
+export function predecessorsOf(href: string): readonly string[] {
+	return PREDECESSORS[href] ?? [];
+}
+
+/** The stored setting that applies to a page: its own, else what it inherits, else none. */
+export function storedVisibility(
+	href: string,
+	visibility: NavigationVisibility
+): boolean | undefined {
+	const own = visibility[href];
+	if (own !== undefined) return own;
+	const previous = PREDECESSORS[href];
+	if (!previous || previous.every((p) => visibility[p] === undefined)) return undefined;
+	return previous.some((p) => visibility[p] !== false);
+}
+
+/**
+ * Whether the Vault may show one of the two stores behind it. An explicit Vault
+ * setting covers both; without one, a store whose old page was hidden stays hidden
+ * inside the Vault, so the restriction an administrator set still holds.
+ */
+export function vaultStoreVisible(
+	store: keyof typeof VAULT_PREDECESSORS,
+	visibility: NavigationVisibility
+): boolean {
+	if (visibility[VAULT_PATH] !== undefined) return visibility[VAULT_PATH];
+	return visibility[VAULT_PREDECESSORS[store]] !== false;
+}
+
+/**
  * Effective visibility: module ∩ role ∩ stored navigation permission.
  *
  * The module comes first and is not negotiable. A permission is a preference about a
@@ -132,7 +184,7 @@ export function canViewPage(
 	if (!canSee(userRole, page.minRole)) return false;
 	// The management screen cannot hide itself and strand every administrator.
 	if (page.href === NAVIGATION_PERMISSIONS_PATH) return true;
-	return visibility[page.href] !== false;
+	return storedVisibility(page.href, visibility) !== false;
 }
 
 export interface NavSection {
@@ -456,29 +508,21 @@ export const PAGES: NavPage[] = [
 		keywords: 'smtp relay starttls ssl mail sender',
 		action: { label: 'New email channel', keywords: 'create smtp channel', minRole: 'admin' }
 	},
-	// Credentials and secrets live under Operate, next to the devices and runs
-	// that consume them — same placement as Flow Weaver.
+	// The Vault lives under Operate, next to the devices and runs that consume what
+	// it holds. One entry for every kind of sensitive material: it replaced the
+	// separate Credentials and Secrets pages, whose URLs now redirect here.
 	{
-		href: '/admin/credentials',
-		label: 'Credentials',
-		icon: KeyRound,
+		// A literal, like every other entry: check-nav.mjs reads hrefs from this file's text.
+		href: '/admin/vault',
+		label: 'Vault',
+		icon: Vault,
 		group: 'operate',
 		minRole: 'admin',
 		module: 'secrets',
-		desc: 'SSH, token, API key and OAuth2 logins',
-		keywords: 'ssh key password token api key oauth2 pat',
-		action: { label: 'New credential', keywords: 'create credential', minRole: 'admin' }
-	},
-	{
-		href: '/admin/secrets',
-		label: 'Secrets',
-		icon: Lock,
-		group: 'operate',
-		minRole: 'admin',
-		module: 'secrets',
-		desc: 'Named values other configuration points at',
-		keywords: 'vault encrypted settings name reference rotation',
-		action: { label: 'New secret', keywords: 'create secret', minRole: 'admin' }
+		desc: 'Logins, SSH keys, tokens, API keys, OAuth2 clients and secret values',
+		keywords:
+			'credentials secrets ssh key password token api key oauth2 pat encrypted name reference rotation login',
+		action: { label: 'New Vault entry', keywords: 'create credential secret login key token', minRole: 'admin' }
 	},
 
 	// Govern — who may do what, and the record of what was done.
@@ -692,8 +736,7 @@ export const SIDEBAR: SidebarGroup[] = [
 			{ kind: 'page', id: '/devices' },
 			{ kind: 'page', id: '/inventory' },
 			{ kind: 'page', id: '/admin/pools' },
-			{ kind: 'page', id: '/admin/credentials' },
-			{ kind: 'page', id: '/admin/secrets' },
+			{ kind: 'page', id: '/admin/vault' },
 			{ kind: 'section', id: 'artifacts' }
 		]
 	},
@@ -779,6 +822,10 @@ const SPECIAL_ROUTES: Readonly<Record<string, ModuleId>> = {
 	'/audit': 'governance',
 	// Self-service linking of an external chat identity, opened from a bot message.
 	'/link': 'communications',
+	// The pre-Vault URLs, kept alive for bookmarks, runbooks and links in old chat
+	// answers. They redirect to the Vault and belong to the same capability.
+	'/admin/credentials': 'secrets',
+	'/admin/secrets': 'secrets',
 	// The component gallery. Core: it renders the design system and calls no API.
 	'/kitchen-sink': 'core'
 };
@@ -846,6 +893,13 @@ export function blockedReasonForPath(
 	visibility: NavigationVisibility = {}
 ): 'module' | 'permission' | null {
 	if (!availability.isEnabled(moduleForPath(pathname))) return 'module';
+
+	// An alias is a redirect, so it is as reachable as the page it redirects to —
+	// no more. Without this the old Credentials and Secrets URLs would pass their own
+	// role check, redirect into a Vault the user may not see, and only then be told
+	// the area is not available.
+	const canonical = ROUTE_ALIASES[pathname];
+	if (canonical) return blockedReasonForPath(canonical, userRole, availability, visibility);
 
 	// A special route is answered by its own classification and never by the page that
 	// happens to match it. `/` is again the case: Chat owns it for highlighting, but

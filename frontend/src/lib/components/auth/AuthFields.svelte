@@ -3,7 +3,7 @@
 	import { authMethods, fieldsFor, type AuthDialect, type AuthDraft } from '$lib/auth/draft';
 
 	// The scheme select plus exactly the inputs that scheme uses — the pattern
-	// /admin/credentials already applies to stored credentials, generalized over the two
+	// the Vault (/admin/vault) already applies to stored credentials, generalized over the two
 	// wire formats. `dialect` matters because the same idea is spelled differently on
 	// each backend, so a single field set would send the wrong keys to one of them.
 	//

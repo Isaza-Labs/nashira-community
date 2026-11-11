@@ -143,14 +143,14 @@ export const administration: DocSection[] = [
 		group: 'Administration',
 		module: 'secrets',
 		tagline: 'How Nashira authenticates to devices and systems.',
-		uiPath: '/admin/credentials',
+		uiPath: '/admin/vault',
 		apiBase: '/api/credential',
 		role: 'Admin',
 		purpose:
 			'One record per way of signing in — an SSH login, a git token, an OAuth2 client. Devices reference one as `credential_id`, repositories, integrations and MCP servers as `auth_credential_id`; the material itself is encrypted at rest and never returned. Integrations and MCP servers accept only credentials that can authenticate an HTTP request — `password`, `token`, `api_key` or `oauth2`, never an SSH `key`.',
 		keywords: 'ssh key password token api key oauth2 secrets encryption pat',
 		blocks: [
-			{ kind: 'prose', text: 'In the sidebar: **Operate → Credentials**.' },
+			{ kind: 'prose', text: 'In the sidebar: **Operate → Vault**. Credentials are the Vault entries of type Login, SSH key, Access token, API key and OAuth2 client.' },
 			{
 				kind: 'values',
 				title: 'Auth methods and what each carries',
@@ -198,14 +198,14 @@ export const administration: DocSection[] = [
 		group: 'Administration',
 		module: 'secrets',
 		tagline: 'The named secret store integrations point at.',
-		uiPath: '/admin/secrets',
+		uiPath: '/admin/vault',
 		apiBase: '/api/secrets',
 		role: 'Admin',
 		purpose:
 			'Encrypted values addressed by name. An integration, a spec or an inventory source references one as `${secret:secret:<name>:value}` instead of embedding it, so rotating the value in one place updates everything that uses it.',
 		keywords: 'vault encrypted settings name reference rotation resolver',
 		blocks: [
-			{ kind: 'prose', text: 'In the sidebar: **Operate → Secrets**.' },
+			{ kind: 'prose', text: 'In the sidebar: **Operate → Vault**. Secrets are the Vault entries of type Secret value; each row shows its reference, ready to copy.' },
 			{
 				kind: 'params',
 				title: 'Fields',
