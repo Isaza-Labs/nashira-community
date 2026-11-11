@@ -77,6 +77,8 @@ interface Options {
 	holdFirstPut?: boolean;
 	/** A create is committed on arrival but not answered until the test releases it. */
 	holdCreate?: boolean;
+	/** A delete of a credential is committed, and the connection is lost before any answer. */
+	dropDeleteAnswer?: boolean;
 	/** The first read of each store is not answered until the test releases it. */
 	holdCredentialReads?: boolean;
 	holdSecretReads?: boolean;
@@ -180,6 +182,7 @@ async function mockVault(page: Page, opts: Options = {}): Promise<Calls> {
 		calls.push({ method: request.method(), path: `credential/${id}`, body: request.postDataJSON() });
 		if (request.method() === 'DELETE') {
 			state.creds = state.creds.filter((c) => c.credential_id !== id);
+			if (opts.dropDeleteAnswer) return route.abort('connectionreset');
 			return json(route, {});
 		}
 		const nth = puts++;
@@ -285,6 +288,8 @@ const finishBody = (page: Page, answer: unknown) =>
 	page.evaluate((a) => (window as unknown as { __finishBody: (body: unknown) => void }).__finishBody(a), answer);
 /** Past the 45 s write deadline, without waiting for it. */
 const PAST_THE_DEADLINE = 46_000;
+/** The API client gives up on a request whose headers have not arrived after 30 s. */
+const PAST_THE_CLIENT_TIMEOUT = 31_000;
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -603,6 +608,51 @@ test.describe('when a store fails or lags', () => {
 		// The re-read made at the deadline shows the row is in fact gone.
 		await expect(row(page, 'core-ssh')).toHaveCount(0);
 		await expect(page.getByText('Login deleted')).toHaveCount(0);
+	});
+
+	test('a save the client gives up on is reported as unknown, not failed, and the list is re-read', async ({ page }) => {
+		const calls = await mockVault(page, { holdFirstPut: true });
+		await page.clock.install();
+		await page.goto('/admin/vault');
+
+		await row(page, 'core-ssh').getByRole('button', { name: 'Edit entry' }).click();
+		await nameField(page).fill('timed-out-edit');
+		await dialog(page).getByRole('button', { name: 'Save changes' }).click();
+		await calls.put.arrived;
+
+		// The server made the change; no answer ever starts, so the client's own
+		// timeout ends the request before the write deadline is reached.
+		const edited = { ...calls.server.creds.find((c) => c.credential_id === 'c1')!, name: 'timed-out-edit' };
+		calls.server.creds = calls.server.creds.map((c) => (c.credential_id === 'c1' ? edited : c));
+		const readsBefore = storeReads(calls).length;
+		await page.clock.fastForward(PAST_THE_CLIENT_TIMEOUT);
+
+		await expect(dialog(page).getByText('The change may or may not have been saved')).toBeVisible();
+		await expect(page.getByText('Please try again')).toHaveCount(0);
+		// Re-read without being asked, so the list already shows what the server holds.
+		await expect.poll(() => storeReads(calls).length).toBeGreaterThan(readsBefore);
+		await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+		await expect(row(page, 'timed-out-edit')).toBeVisible();
+		await expect(row(page, 'core-ssh')).toHaveCount(0);
+		await expect(page.getByText('Login updated')).toHaveCount(0);
+		expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1);
+	});
+
+	test('a delete whose connection is lost is reported as unknown, and the list is re-read', async ({ page }) => {
+		const calls = await mockVault(page, { dropDeleteAnswer: true });
+		await page.goto('/admin/vault');
+
+		await row(page, 'core-ssh').getByRole('button', { name: 'Delete entry' }).click();
+		const readsBefore = storeReads(calls).length;
+		await page.getByRole('button', { name: 'Delete', exact: true }).click();
+
+		await expect(page.getByText('The change may or may not have been saved')).toBeVisible();
+		await expect(page.getByText("Couldn't delete the entry")).toHaveCount(0);
+		await expect(page.getByText('Login deleted')).toHaveCount(0);
+		// The delete had been made: the re-read shows the row is gone.
+		await expect.poll(() => storeReads(calls).length).toBeGreaterThan(readsBefore);
+		await expect(row(page, 'core-ssh')).toHaveCount(0);
+		expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
 	});
 
 	test('a write still waiting its turn is not sent once the Vault has been left', async ({ page }) => {

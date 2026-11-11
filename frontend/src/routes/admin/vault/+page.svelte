@@ -53,7 +53,7 @@
 	} from '$lib/components/ui';
 	import { absolute, timeAgo } from '$lib/utils/time';
 	import { copyText } from '$lib/utils/clipboard';
-	import { errorMessage } from '$lib/api/client';
+	import { errorMessage, isOfflineError } from '$lib/api/client';
 	import { navigationVisibilityStore } from '$lib/stores/navigation-visibility.svelte';
 	import { vaultStoreVisible } from '$lib/nav/registry';
 	import { VAULT_KINDS, kindInfo, kindOfCredential, isVaultKind, type VaultKind } from '$lib/vault/kinds';
@@ -735,6 +735,15 @@
 	}
 	const WRITE_DEADLINE_MS = 45_000;
 
+	// A write the client itself gave up on — its timeout passed before any answer
+	// began, or the connection failed — is in the same position as one past the
+	// deadline: it was sent, and the server may have made the change before the
+	// answer was lost. So it is reported the same way and the store is re-read,
+	// rather than the admin being told it failed and invited to send it again.
+	const NO_ANSWER = 'No answer came back from the server. The change may or may not have been saved — check the list.';
+	const outcomeUnknown = (e: unknown) => e instanceof Unanswered || isOfflineError(e);
+	const outcomeUnknownText = (e: unknown) => (e instanceof Unanswered ? e.message : NO_ANSWER);
+
 	// `onLate` runs if the operation settles after its deadline has already
 	// passed. Its answer is still ignored, but that it answered at all is news: the
 	// change has now definitely been made or refused, so the store is worth reading
@@ -887,12 +896,12 @@
 			}
 			// Never answered: the list is the only way to learn whether it was saved,
 			// and the admin is told exactly that rather than "it failed".
-			const unanswered = e instanceof Unanswered;
+			const unanswered = outcomeUnknown(e);
 			if (unanswered) void (submittedKind === 'secret' ? loadSecrets() : loadCredentials());
 			// Shown in the form it came from. If that form is gone, the failure still
 			// has to reach the admin, so it becomes a toast.
-			if (!gone && modalOpen && submitted === formId) formError = unanswered ? e.message : errorMessage(e);
-			else if (unanswered) toast.error(e.message);
+			if (!gone && modalOpen && submitted === formId) formError = unanswered ? outcomeUnknownText(e) : errorMessage(e);
+			else if (unanswered) toast.error(outcomeUnknownText(e));
 			else toast.fromError(e, `Failed to save the ${label.toLowerCase()}`);
 		} finally {
 			if (savingForm === submitted) savingForm = null;
@@ -952,9 +961,9 @@
 					});
 				return;
 			}
-			if (err instanceof Unanswered) {
+			if (outcomeUnknown(err)) {
 				void (e.secret ? loadSecrets() : loadCredentials());
-				toast.error(err.message);
+				toast.error(outcomeUnknownText(err));
 				return;
 			}
 			toast.fromError(err, "Couldn't delete the entry");
