@@ -79,6 +79,8 @@ interface Options {
 	holdCreate?: boolean;
 	/** A delete of a credential is committed, and the connection is lost before any answer. */
 	dropDeleteAnswer?: boolean;
+	/** A delete of a credential is committed, and the proxy in front of the API answers 502. */
+	gatewayFailsDelete?: boolean;
 	/** The first read of each store is not answered until the test releases it. */
 	holdCredentialReads?: boolean;
 	holdSecretReads?: boolean;
@@ -183,6 +185,7 @@ async function mockVault(page: Page, opts: Options = {}): Promise<Calls> {
 		if (request.method() === 'DELETE') {
 			state.creds = state.creds.filter((c) => c.credential_id !== id);
 			if (opts.dropDeleteAnswer) return route.abort('connectionreset');
+			if (opts.gatewayFailsDelete) return json(route, { error: 'backend_unreachable: socket hang up' }, 502);
 			return json(route, {});
 		}
 		const nth = puts++;
@@ -278,6 +281,35 @@ async function stallBody(page: Page, method: string, pathEnd: string) {
 				});
 				hooks.__stalled = true;
 				return Promise.resolve(new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } }));
+			};
+		},
+		{ method, pathEnd }
+	);
+}
+/**
+ * The first matching request is sent as usual, so the server does its work; its
+ * answer then reaches the page with the status and headers intact and a body that
+ * fails partway, as when the connection drops in the middle of the response. Later
+ * matching requests are left alone, so a retry would be seen as a second call.
+ */
+async function breakBody(page: Page, method: string, pathEnd: string) {
+	await page.addInitScript(
+		({ method, pathEnd }) => {
+			const real = window.fetch.bind(window);
+			let broken = false;
+			window.fetch = async (input, init) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				const asked = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase();
+				if (broken || asked !== method || !new URL(url, location.href).pathname.endsWith(pathEnd)) return real(input, init);
+				broken = true;
+				const answer = await real(input, init);
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('{"credential_id":"c1","na'));
+						controller.error(new TypeError('network error'));
+					}
+				});
+				return new Response(body, { status: answer.status, headers: answer.headers });
 			};
 		},
 		{ method, pathEnd }
@@ -653,6 +685,48 @@ test.describe('when a store fails or lags', () => {
 		await expect.poll(() => storeReads(calls).length).toBeGreaterThan(readsBefore);
 		await expect(row(page, 'core-ssh')).toHaveCount(0);
 		expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+	});
+
+	test('a delete answered 502 by the proxy is reported as unknown, and the list is re-read', async ({ page }) => {
+		const calls = await mockVault(page, { gatewayFailsDelete: true });
+		await page.goto('/admin/vault');
+
+		await row(page, 'core-ssh').getByRole('button', { name: 'Delete entry' }).click();
+		const readsBefore = storeReads(calls).length;
+		await page.getByRole('button', { name: 'Delete', exact: true }).click();
+
+		await expect(page.getByText('The change may or may not have been saved')).toBeVisible();
+		await expect(page.getByText("Couldn't delete the entry")).toHaveCount(0);
+		await expect(page.getByText('Login deleted')).toHaveCount(0);
+		// The backend had made the delete before the proxy lost it.
+		await expect.poll(() => storeReads(calls).length).toBeGreaterThan(readsBefore);
+		await expect(row(page, 'core-ssh')).toHaveCount(0);
+		expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
+	});
+
+	test('a save whose answer breaks partway is reported as unknown, and the list is re-read', async ({ page }) => {
+		// The mocked server applies the edit when the PUT reaches it; only the
+		// answer is cut off on its way back.
+		const calls = await mockVault(page, { echoEdits: true });
+		await breakBody(page, 'PUT', '/credential/c1');
+		await page.goto('/admin/vault');
+
+		await row(page, 'core-ssh').getByRole('button', { name: 'Edit entry' }).click();
+		await nameField(page).fill('half-answered-edit');
+		const readsBefore = storeReads(calls).length;
+		await dialog(page).getByRole('button', { name: 'Save changes' }).click();
+
+		await expect(dialog(page).getByText('The change may or may not have been saved')).toBeVisible();
+		await expect(page.getByText('Please try again')).toHaveCount(0);
+		await expect.poll(() => storeReads(calls).length).toBeGreaterThan(readsBefore);
+		await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+		await expect(row(page, 'half-answered-edit')).toBeVisible();
+		await expect(row(page, 'core-ssh')).toHaveCount(0);
+		await expect(page.getByText('Login updated')).toHaveCount(0);
+		// Sent once, with what was typed, and not sent again on its own.
+		const puts = calls.filter((c) => c.method === 'PUT');
+		expect(puts).toHaveLength(1);
+		expect(puts[0].body).toMatchObject({ name: 'half-answered-edit' });
 	});
 
 	test('a write still waiting its turn is not sent once the Vault has been left', async ({ page }) => {
