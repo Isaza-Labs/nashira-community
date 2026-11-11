@@ -8,15 +8,15 @@ Network operations are Nashira's most extensively validated domain today. The pl
 
 ## What it looks like
 
-<picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/chat-dark.png"><img alt="Nashira chat: the agent reports BGP session state on two edge routers and proposes next steps" src="docs/images/chat-light.png"></picture>
+<img alt="Nashira chat: the agent reports BGP session state on two edge routers and proposes next steps" src="docs/images/chat.png">
 
 Ask in plain language. The agent reads the connected systems, reports what it found and proposes next steps; changes follow the configured permissions, policies and confirmations.
 
 | | |
 | --- | --- |
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/workflow-dark.png"><img alt="A workflow with its execution plan and its non-reversible steps marked" src="docs/images/workflow-light.png"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/run-dark.png"><img alt="One workflow run: status, data flow between steps and inputs" src="docs/images/run-light.png"></picture> |
+| <img alt="A workflow with its execution plan and its non-reversible steps marked" src="docs/images/workflow.png"> | <img alt="One workflow run: status, data flow between steps and inputs" src="docs/images/run.png"> |
 | **Workflow plan.** Each step in order, with the steps that cannot be rolled back automatically marked. | **Run detail.** Status, data flow between steps, inputs and per-step results. |
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/runs-dark.png"><img alt="The list of workflow runs across all workflows" src="docs/images/runs-light.png"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/overview-dark.png"><img alt="The overview dashboard" src="docs/images/overview-light.png"></picture> |
+| <img alt="The list of workflow runs across all workflows" src="docs/images/runs.png"> | <img alt="The overview dashboard" src="docs/images/overview.png"> |
 | **Runs.** Every execution, what started it, and how it ended. | **Overview.** Devices by status, inventory freshness and recent agent activity. |
 
 The screenshots use invented data.

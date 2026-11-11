@@ -14,8 +14,9 @@ import { mockManifest } from './deployment';
 //
 // Not part of the default suite (the file name does not match it). Run:
 //   npx playwright test -c playwright.readme.config.ts
-// The captures land in e2e/shots/readme/, which is not tracked. The copies the
-// README shows live in docs/images/; replace them there when a screen changes.
+// The captures land in e2e/shots/readme/, which is not tracked, in light and dark.
+// The README shows the light ones, copied to docs/images/ without the "-light"
+// suffix; replace them there when a screen changes.
 
 const NOW = Date.parse('2026-11-10T15:00:00Z');
 const ago = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
@@ -50,6 +51,8 @@ const seed = (mode: 'light' | 'dark') => `try {
 
 const json = (route: Route, body: unknown) =>
 	route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
+/** The order the API lists devices and inventory sources in. */
+const byName = <T,>(rows: T[], name: (row: T) => string) => [...rows].sort((a, b) => (name(a) < name(b) ? -1 : name(a) > name(b) ? 1 : 0));
 /** One page of a list, cut by the limit and offset that were asked for. */
 const paged = (route: Route, all: unknown[], fallbackLimit = 50) => {
 	const q = new URL(route.request().url()).searchParams;
@@ -62,9 +65,10 @@ const paged = (route: Route, all: unknown[], fallbackLimit = 50) => {
 const SOURCE = id('source/netbox-prod');
 const LOGIN = id('credential/netops-ssh');
 type Envs = [draft: boolean, qa: boolean, production: boolean];
+let netboxId = 1000;
 const device = (name: string, ip: string, vendor: string, platform: string, os: string, site: string, role: string, status: string, envs: Envs, synced = true) => ({
 	device_id: id(`device/${name}`), device_name: name, ip_address: ip, platform, vendor, os_version: os, site, role, status,
-	credential_id: LOGIN, source_id: synced ? SOURCE : null, external_id: synced ? String(1000 + Number(ip.split('.')[3])) : null,
+	credential_id: LOGIN, source_id: synced ? SOURCE : null, external_id: synced ? String(++netboxId) : null,
 	last_sync_at: synced ? ago(6) : null, properties: null, allow_draft: envs[0], allow_qa: envs[1], allow_production: envs[2],
 	has_host_key_fingerprint: status === 'active', created_at: ago(40 * DAY), updated_at: ago(5 * DAY)
 });
@@ -87,14 +91,14 @@ const byStatus: Record<string, number> = {};
 for (const d of DEVICES) byStatus[d.status] = (byStatus[d.status] ?? 0) + 1;
 
 const SOURCES = [
-	{ inventory_source_id: SOURCE, name: 'netbox-prod', kind: 'netbox', base_url: 'https://netbox.example.com', token_secret_ref: 'netbox-token', site_filter: null, allow_private_network: true, last_synced_at: ago(6), created_at: ago(40 * DAY), updated_at: ago(6) },
-	{ inventory_source_id: id('source/netbox-lab'), name: 'netbox-lab', kind: 'netbox', base_url: 'https://netbox-lab.example.com', token_secret_ref: 'netbox-lab-token', site_filter: 'lab', allow_private_network: true, last_synced_at: ago(5 * 60), created_at: ago(12 * DAY), updated_at: ago(5 * 60) }
+	{ inventory_source_id: SOURCE, name: 'netbox-prod', kind: 'netbox', base_url: 'https://netbox.example.com', token_secret_ref: '${secret:secret:netbox-token:value}', site_filter: null, allow_private_network: true, last_synced_at: ago(6), created_at: ago(40 * DAY), updated_at: ago(6) },
+	{ inventory_source_id: id('source/netbox-lab'), name: 'netbox-lab', kind: 'netbox', base_url: 'https://netbox-lab.example.com', token_secret_ref: '${secret:secret:netbox-lab-token:value}', site_filter: 'lab', allow_private_network: true, last_synced_at: ago(5 * 60), created_at: ago(12 * DAY), updated_at: ago(5 * 60) }
 ];
 
 // ── workflows ────────────────────────────────────────────────────────────────
 const CID = id('conversation/bgp');
 const WF = (name: string, version: number, environment: string, minutes: number, nodes: number, fromChat = false) => ({
-	workflow_id: id(`workflow/${name}`), name, version, environment, schema_hash: `sha256:${id(`hash/${name}`).replace(/-/g, '')}`,
+	workflow_id: id(`workflow/${name}`), name, version, environment, schema_hash: `${id(`hash/${name}`)}${id(`hash2/${name}`)}`.replace(/-/g, ''),
 	last_simulation_id: id(`simulation/${name}`), conversation_id: fromChat ? CID : null, updated_at: ago(minutes), nodes
 });
 const WORKFLOW_ROWS = [
@@ -114,13 +118,21 @@ const BGP = wf('bgp-neighbor-health-check');
 // Node `type` is the schema's (task | decision | subflow); what a node does comes
 // from its snippet, whose handler type decides whether it can be rolled back.
 const NODES = [
-	{ id: 'select_devices', snippet_id: id('snippet/inventory-query'), type: 'task', config_overrides: { site: '{{ input.site }}', role: '{{ input.role }}' } }, // rest_call
-	{ id: 'collect_bgp', snippet_id: id('snippet/show-bgp-summary'), type: 'task', config_overrides: { command: 'show bgp summary' } }, // ssh
-	{ id: 'parse_neighbors', snippet_id: id('snippet/parse-bgp-summary'), type: 'task', config_overrides: {} }, // transform
-	{ id: 'flag_down', snippet_id: id('snippet/sessions-not-established'), type: 'decision', config_overrides: {} }, // transform
-	{ id: 'open_ticket', snippet_id: id('snippet/servicenow-incident'), type: 'task', config_overrides: { short_description: 'BGP sessions down in {{ input.site }}' } }, // integration_action
-	{ id: 'notify_noc', snippet_id: id('snippet/noc-channel-message'), type: 'task', config_overrides: { channel: '#noc' } } // slack_message
+	// rest_call
+	{ id: 'select_devices', snippet_id: id('snippet/inventory-query'), type: 'task', config_overrides: { method: 'GET', url: 'https://netbox.example.com/api/dcim/devices/', query: { site: '{{ input.site }}', role: '{{ input.role }}' } } },
+	// ssh, run once per device, read-only
+	{ id: 'collect_bgp', snippet_id: id('snippet/show-bgp-summary'), type: 'task', config_overrides: { device: '{{ device.name }}', command: 'show bgp summary', changes: false } },
+	// transform
+	{ id: 'parse_neighbors', snippet_id: id('snippet/parse-bgp-summary'), type: 'task', config_overrides: { input: '{{ steps.collect_bgp.output }}' } },
+	// transform
+	{ id: 'flag_down', snippet_id: id('snippet/sessions-not-established'), type: 'decision', config_overrides: { input: '{{ steps.parse_neighbors.output }}' } },
+	// integration_action
+	{ id: 'open_ticket', snippet_id: id('snippet/servicenow-incident'), type: 'task', config_overrides: { integration: 'servicenow', action: 'create_incident', body: { short_description: 'BGP sessions down in {{ input.site }}' } } },
+	// slack_message
+	{ id: 'notify_noc', snippet_id: id('snippet/noc-channel-message'), type: 'task', config_overrides: { channel: '#noc', text: 'BGP sessions down in {{ input.site }}: incident opened' } }
 ];
+// One after another; the plan order below is this chain.
+const EDGES = NODES.slice(1).map((node, i) => ({ source: NODES[i].id, target: node.id, type: 'success' }));
 const SNIPPET_TYPES = ['transform', 'rest_call', 'python_snippet', 'ping', 'ssh', 'ansible_playbook', 'mcp_call', 'integration_action', 'git', 'report', 'email_send', 'email_mailbox', 'slack_message', 'netconf', 'snmp_v3'];
 
 // ── runs ─────────────────────────────────────────────────────────────────────
@@ -160,7 +172,7 @@ const STEPS = STEP_PLAN.map(([node, result, ms, out], sequence) => {
 	return {
 		node_id: node, sequence, result, error_code: null, retryable: false, error: null, attempts: 1,
 		started_at: new Date(started).toISOString(), finished_at: new Date(started + ms).toISOString(), duration_ms: ms,
-		output_chars: out, input_chars: 180, logs_chars: 640, child_run_id: null
+		output_chars: out, input_chars: JSON.stringify(NODES[sequence].config_overrides).length, logs_chars: 640, child_run_id: null
 	};
 });
 
@@ -199,6 +211,7 @@ const CREDENTIALS = [
 ];
 const SECRETS = [
 	{ secret_id: id('secret/netbox-token'), name: 'netbox-token', description: 'NetBox API token (read-only)', has_value: true, created_by: 'admin', created_at: ago(40 * DAY), updated_at: ago(5 * DAY) },
+	{ secret_id: id('secret/netbox-lab-token'), name: 'netbox-lab-token', description: 'NetBox lab API token', has_value: true, created_by: 'admin', created_at: ago(12 * DAY), updated_at: ago(12 * DAY) },
 	{ secret_id: id('secret/slack-webhook'), name: 'slack-webhook', description: 'NOC channel incoming webhook', has_value: true, created_by: 'admin', created_at: ago(30 * DAY), updated_at: ago(11 * DAY) }
 ];
 
@@ -231,12 +244,12 @@ One session is down and one is flapping. Nothing has been changed.
 > Resetting the session on \`bcn-edge-rt-01\` is a change in production and needs your confirmation.
 
 Do you want me to open the incident and schedule the workflow?`;
-const conversation = (key: string, title: string, minutes: number) => ({
+const conversation = (key: string, title: string, minutes: number, createdMinutes = minutes + 8) => ({
 	conversation_id: key === 'bgp' ? CID : id(`conversation/${key}`), title, status: 'active', tokens_in: 18400, tokens_out: 620,
-	created_at: ago(minutes + 8), updated_at: ago(minutes)
+	created_at: ago(createdMinutes), updated_at: ago(minutes)
 });
 const CONVERSATIONS = [
-	conversation('bgp', 'Barcelona edge BGP health', 12),
+	conversation('bgp', 'Barcelona edge BGP health', 12, 21 * DAY),
 	conversation('vlan', 'VLAN 240 rollout plan', 5 * 60),
 	conversation('backup', 'Config backup failures', 26 * 60),
 	conversation('netbox', 'NetBox sync mismatches', 50 * 60)
@@ -250,8 +263,8 @@ async function mockAll(page: Page) {
 	await page.route('**/api/navigation-permissions/me', (route) => json(route, []));
 
 	await page.route('**/api/device/stats', (route) => json(route, { total: DEVICES.length, by_status: byStatus }));
-	await page.route('**/api/device?**', (route) => paged(route, DEVICES, 100));
-	await page.route('**/api/inventory/sources?**', (route) => paged(route, SOURCES));
+	await page.route('**/api/device?**', (route) => paged(route, byName(DEVICES, (d) => d.device_name), 100));
+	await page.route('**/api/inventory/sources?**', (route) => paged(route, byName(SOURCES, (x) => x.name)));
 	await page.route('**/api/knowledge?**', (route) => paged(route, ARTICLES));
 	await page.route('**/api/audit?**', (route) => {
 		const type = new URL(route.request().url()).searchParams.get('entityType');
@@ -269,6 +282,7 @@ async function mockAll(page: Page) {
 			description: 'Collects the BGP summary from every edge and core device in a site, flags sessions that are not established, and opens an incident when any are down.',
 			schema_version: 'v1',
 			nodes: NODES,
+			edges: EDGES,
 			input_schema: { type: 'object', properties: { site: { type: 'string', title: 'Site' }, role: { type: 'string', title: 'Device role', default: 'edge' } }, required: ['site'] },
 			change_summary: 'Notify the NOC channel after the incident is opened',
 			created_at: ago(20 * DAY)
@@ -289,7 +303,7 @@ async function mockAll(page: Page) {
 	await page.route('**/api/credential?**', (route) => paged(route, CREDENTIALS, 100));
 	await page.route('**/api/secrets', (route) => json(route, SECRETS));
 	await page.route('**/api/git/repositories?**', (route) =>
-		paged(route, [{ repository_id: id('repository/config-backups'), auth_credential_id: id('credential/config-backup-repo') }]));
+		paged(route, [{ git_repository_id: id('repository/config-backups'), auth_credential_id: id('credential/config-backup-repo') }]));
 	await page.route('**/api/integrations?**', (route) =>
 		paged(route, [
 			{ integration_id: id('integration/servicenow'), auth_credential_id: id('credential/servicenow-api') },
@@ -340,7 +354,7 @@ const SHOTS: { name: string; path: string; loaded: (page: Page) => Promise<unkno
 			await expect(p.getByText('notify_noc').first()).toBeVisible();
 		}
 	},
-	{ name: 'devices', path: '/devices', loaded: (p) => expect(p.getByText('mad-core-sw-01')).toBeVisible() },
+	{ name: 'devices', path: '/devices', loaded: (p) => expect(p.getByText('mad-core-sw-01').first()).toBeVisible() },
 	{
 		name: 'vault',
 		path: '/admin/vault',
