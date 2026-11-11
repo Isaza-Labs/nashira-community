@@ -165,6 +165,12 @@ public sealed class AgentConversationRunner
         var turnStatus = AgentTurn.StatusCompleted;
         string? turnError = null;
 
+        // What each model call costs, round by round. The turn totals hide the shape:
+        // a turn of five rounds re-sends the whole prompt five times, and only the
+        // per-round numbers show which part grew and how much the cache gave back.
+        var iterationUsage = new List<int[]>();
+        var toolSchemaChars = tools.Sum(t => t.Name.Length + t.Description.Length + t.ParametersSchema.GetRawText().Length);
+
         var maxIterations = _chat.MaxIterations > 0 ? _chat.MaxIterations : 50;
         var maxToolResultChars = _chat.MaxToolResultChars > 0 ? _chat.MaxToolResultChars : 100_000;
 
@@ -172,9 +178,12 @@ public sealed class AgentConversationRunner
             "ai.chat.begin conversation={ConversationId} model={Model} tools={ToolCount} "
             + "messages={MessageCount} deadline_s={DeadlineSeconds} max_iterations={MaxIterations} "
             + "max_tool_result_chars={MaxToolResultChars} prompt_chars={PromptChars} "
+            + "base_prompt_chars={BasePromptChars} scoped_prompt_chars={ScopedPromptChars} "
+            + "tool_schema_chars={ToolSchemaChars} "
             + "scoped_skills={ScopedSkills} topic_skills={TopicSkills} skills_loaded={SkillsLoaded} profile={Profile}",
             conversationId, model, tools.Count, messages.Count, deadlineSeconds, maxIterations, maxToolResultChars,
-            basePrompt.Length + scopedPrompt.Length, scopedSkills.Count, topics.Count,
+            basePrompt.Length + scopedPrompt.Length, basePrompt.Length, scopedPrompt.Length, toolSchemaChars,
+            scopedSkills.Count, topics.Count,
             _turnScope.LoadedSkillIntegrationIds.Count,
             profile is null ? "none" : profile.ProfileName ?? "custom-text");
 
@@ -202,9 +211,16 @@ public sealed class AgentConversationRunner
                 var content = new StringBuilder();
                 var pending = new List<ToolCallResult>();
                 string? stopReason = null;
+                var iterIn = 0;
+                var iterOut = 0;
+                var iterCacheRead = 0;
+                var iterWatch = System.Diagnostics.Stopwatch.StartNew();
+                long firstEventMs = -1;
+                var (systemChars, conversationChars, toolResultChars) = MessageChars(messages);
 
                 await foreach (var evt in llm.ChatWithToolsStreamAsync(messages, tools, model, Temperature, streamCt))
                 {
+                    if (firstEventMs < 0 && evt.Type != "done") firstEventMs = iterWatch.ElapsedMilliseconds;
                     switch (evt.Type)
                     {
                         case "text_delta":
@@ -216,14 +232,28 @@ public sealed class AgentConversationRunner
                             if (evt.ToolCall is not null) pending.Add(evt.ToolCall);
                             break;
                         case "done":
-                            if (evt.InputTokens is int ti) totalIn += ti;
-                            if (evt.OutputTokens is int to) totalOut += to;
-                            if (evt.CacheReadTokens is int cr) totalCacheRead += cr;
+                            if (evt.InputTokens is int ti) { totalIn += ti; iterIn += ti; }
+                            if (evt.OutputTokens is int to) { totalOut += to; iterOut += to; }
+                            if (evt.CacheReadTokens is int cr) { totalCacheRead += cr; iterCacheRead += cr; }
                             if (evt.CacheWriteTokens is int cw) totalCacheWrite += cw;
                             if (evt.StopReason is not null) stopReason = evt.StopReason;
                             break;
                     }
                 }
+
+                iterWatch.Stop();
+                iterationUsage.Add([iterIn, iterCacheRead, iterOut, (int)iterWatch.ElapsedMilliseconds]);
+                _logger.LogInformation(
+                    "ai.chat.iteration conversation={ConversationId} iteration={Iteration} "
+                    + "tokens_in={TokensIn} tokens_cache_read={CacheRead} tokens_out={TokensOut} "
+                    + "first_event_ms={FirstEventMs} elapsed_ms={ElapsedMs} messages={MessageCount} "
+                    + "system_chars={SystemChars} conversation_chars={ConversationChars} "
+                    + "tool_result_chars={ToolResultChars} tool_schema_chars={ToolSchemaChars} "
+                    + "tool_calls={ToolCalls} stop_reason={StopReason}",
+                    conversationId, iterations, iterIn, iterCacheRead, iterOut,
+                    firstEventMs, iterWatch.ElapsedMilliseconds, messages.Count,
+                    systemChars, conversationChars, toolResultChars, toolSchemaChars,
+                    pending.Count, stopReason ?? "none");
 
                 if (OutputCutOff(stopReason))
                 {
@@ -300,7 +330,7 @@ public sealed class AgentConversationRunner
                 if (awaitingConfirmation) break;
             }
 
-            await sink.DoneAsync(totalIn, totalOut, iterations, ct);
+            await sink.DoneAsync(totalIn, totalOut, totalCacheRead, iterations, ct);
         }
         catch (OperationCanceledException) when (deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
@@ -344,6 +374,9 @@ public sealed class AgentConversationRunner
                 iterations, tool_calls = toolCalls.Count,
                 tokens_in = totalIn, tokens_out = totalOut,
                 tokens_cache_read = totalCacheRead, tokens_cache_write = totalCacheWrite,
+                // [tokens_in, cache_read, tokens_out, ms] per model call. Capped so a
+                // long turn cannot push the rest of the row past the metadata limit.
+                rounds = iterationUsage.Take(MaxRoundsInTrace).ToList(),
             };
             // tokens_in is the whole prompt summed over the turn's rounds; the cache
             // fields say how much of it was read back at a tenth of the price, which is
@@ -444,6 +477,34 @@ public sealed class AgentConversationRunner
             Role = "system",
             Content = string.Join("\n\n---\n\n", skills.Select(ScopedSkillCatalog.RenderLoaded)),
         };
+    }
+
+    private const int MaxRoundsInTrace = 24;
+
+    // Characters about to be sent, by kind: system messages, the conversation (user
+    // and assistant text plus tool-call arguments) and tool results. Lengths only —
+    // nothing is serialised, so this costs a pass over strings already in memory.
+    internal static (int System, int Conversation, int ToolResults) MessageChars(IReadOnlyList<LlmMessage> messages)
+    {
+        var system = 0;
+        var conversation = 0;
+        var toolResults = 0;
+        foreach (var m in messages)
+        {
+            var len = m.Content?.Length ?? 0;
+            switch (m.Role)
+            {
+                case "system": system += len; break;
+                case "tool": toolResults += len; break;
+                default:
+                    conversation += len;
+                    if (m.ToolCalls is { } calls)
+                        foreach (var c in calls)
+                            conversation += c.Name.Length + c.Arguments.GetRawText().Length;
+                    break;
+            }
+        }
+        return (system, conversation, toolResults);
     }
 
     // Loads the topic skills a tool belongs to, once per conversation, as a system
