@@ -119,13 +119,13 @@ const BGP = wf('bgp-neighbor-health-check');
 // from its snippet, whose handler type decides whether it can be rolled back.
 const NODES = [
 	// rest_call
-	{ id: 'select_devices', snippet_id: id('snippet/inventory-query'), type: 'task', config_overrides: { method: 'GET', url: 'https://netbox.example.com/api/dcim/devices/', query: { site: '{{ input.site }}', role: '{{ input.role }}' } } },
+	{ id: 'find_devices', snippet_id: id('snippet/inventory-query'), type: 'task', config_overrides: { method: 'GET', url: 'https://netbox.example.com/api/dcim/devices/', query: { site: '{{ input.site }}', role: '{{ input.role }}' } } },
 	// ssh, run once per device, read-only
 	{ id: 'collect_bgp', snippet_id: id('snippet/show-bgp-summary'), type: 'task', config_overrides: { device: '{{ device.name }}', command: 'show bgp summary', changes: false } },
 	// transform
-	{ id: 'parse_neighbors', snippet_id: id('snippet/parse-bgp-summary'), type: 'task', config_overrides: { input: '{{ steps.collect_bgp.output }}' } },
+	{ id: 'parse_bgp', snippet_id: id('snippet/parse-bgp-summary'), type: 'task', config_overrides: { input: '{{ steps.collect_bgp.output }}' } },
 	// transform
-	{ id: 'flag_down', snippet_id: id('snippet/sessions-not-established'), type: 'decision', config_overrides: { input: '{{ steps.parse_neighbors.output }}' } },
+	{ id: 'flag_down', snippet_id: id('snippet/sessions-not-established'), type: 'decision', config_overrides: { input: '{{ steps.parse_bgp.output }}' } },
 	// integration_action
 	{ id: 'open_ticket', snippet_id: id('snippet/servicenow-incident'), type: 'task', config_overrides: { integration: 'servicenow', action: 'create_incident', body: { short_description: 'BGP sessions down in {{ input.site }}' } } },
 	// slack_message
@@ -158,9 +158,9 @@ const RUNS = [
 const DETAIL = RUNS[1];
 // Steps run one after another: each starts when the one before it ended.
 const STEP_PLAN: [node: string, result: string, ms: number, outputChars: number][] = [
-	['select_devices', 'no_change', 240, 310],
+	['find_devices', 'no_change', 240, 310],
 	['collect_bgp', 'no_change', 18_400, 5120],
-	['parse_neighbors', 'no_change', 310, 1840],
+	['parse_bgp', 'no_change', 310, 1840],
 	['flag_down', 'no_change', 40, 220],
 	['open_ticket', 'changed', 1900, 410],
 	['notify_noc', 'changed', 620, 96]
@@ -325,8 +325,8 @@ async function mockAll(page: Page) {
 }
 
 /** Each capture, and the content that proves its data has arrived. */
-const SHOTS: { name: string; path: string; loaded: (page: Page) => Promise<unknown> }[] = [
-	{ name: 'chat', path: `/chat/${CID}`, loaded: (p) => expect(p.getByText('What I would do next')).toBeVisible() },
+const SHOTS: { name: string; path: string; height?: number; loaded: (page: Page) => Promise<unknown> }[] = [
+	{ name: 'chat', path: `/chat/${CID}`, height: 900, loaded: (p) => expect(p.getByText('What I would do next')).toBeVisible() },
 	{
 		name: 'overview',
 		path: '/overview',
@@ -365,8 +365,11 @@ const SHOTS: { name: string; path: string; loaded: (page: Page) => Promise<unkno
 	}
 ];
 
+const WIDTH = 1280;
+
 test.use({
-	viewport: { width: 1440, height: 900 },
+	// A README column is under 900 px wide, so a narrower capture keeps the text readable.
+	viewport: { width: WIDTH, height: 800 },
 	deviceScaleFactor: 2,
 	locale: 'en-US',
 	timezoneId: 'UTC',
@@ -383,6 +386,7 @@ for (const mode of ['light', 'dark'] as const) {
 				// The shell's own session check is left unanswered on purpose, as in the other specs.
 				if (path.startsWith('/api/') && path !== '/api/auth/me') unanswered.push(`${request.method()} ${path}`);
 			});
+			if (shot.height) await page.setViewportSize({ width: WIDTH, height: shot.height });
 			await page.clock.setFixedTime(NOW);
 			await page.addInitScript(seed(mode));
 			await mockAll(page);
