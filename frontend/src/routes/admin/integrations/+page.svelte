@@ -838,7 +838,7 @@
 					emptyLabel="— pick a credential —"
 					allowedMethods={HTTP_CREDENTIAL_METHODS}
 					showMethod
-					hint="Managed in Administration → Credentials. The secret never leaves the server."
+					hint="Managed in Operate → Vault. The secret never leaves the server."
 				/>
 				{#if fCredential}
 					<AuthFields dialect="integration" bind:method={fAuthMethod} bind:draft={fDraft} shapeOnly />

@@ -10,7 +10,7 @@
 	} from '$lib/api/navigation-permissions.api';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { navigationVisibilityStore } from '$lib/stores/navigation-visibility.svelte';
-	import { PAGES, canSee, type NavGroupId } from '$lib/nav/registry';
+	import { PAGES, canSee, predecessorsOf, storedVisibility, type NavGroupId } from '$lib/nav/registry';
 	import { moduleStore } from '$lib/stores/modules.svelte';
 	import {
 		Alert,
@@ -24,7 +24,11 @@
 	} from '$lib/components/ui';
 	import { Eye, EyeOff, RotateCcw } from 'lucide-svelte';
 
-	type Setting = 'inherit' | 'visible' | 'hidden';
+	// 'carried' is not something an admin picks: it is what a page shows when it has
+	// no setting of its own but replaced pages that did (the Vault, after Credentials
+	// and Secrets). It reads as what those old settings amount to, and choosing any of
+	// the three real settings replaces them.
+	type Setting = 'inherit' | 'visible' | 'hidden' | 'carried';
 	type Mode = 'role' | 'user';
 
 	const LOCKED_PAGE = '/admin/navigation-permissions';
@@ -51,6 +55,9 @@
 	let values = $state<Record<string, Setting>>({});
 	let baseline = $state<Record<string, Setting>>({});
 	let roleOverrides = $state<Record<string, boolean>>({});
+	// The rows as stored for the scope being edited, including keys of pages that no
+	// longer exist — a carried-over setting is computed from those.
+	let storedRows = $state<Record<string, boolean>>({});
 	let loadingUsers = $state(true);
 	let loading = $state(false);
 	let saving = $state(false);
@@ -76,12 +83,33 @@
 
 	function toSettings(rows: NavigationVisibility[]): Record<string, Setting> {
 		const stored = new Map(rows.map((row) => [row.pageKey, row.visible]));
+		const record = toVisibility(rows);
 		return Object.fromEntries(
-			deployedPages.map((page) => [
+			deployedPages.map((page): [string, Setting] => [
 				page.href,
-				stored.has(page.href) ? (stored.get(page.href) ? 'visible' : 'hidden') : 'inherit'
+				stored.has(page.href)
+					? stored.get(page.href)
+						? 'visible'
+						: 'hidden'
+					: storedVisibility(page.href, record) !== undefined
+						? 'carried'
+						: 'inherit'
 			])
 		);
+	}
+
+	// "Carried over: Secrets hidden" — which old settings a carried row stands for.
+	function carriedLabel(href: string): string {
+		const parts = predecessorsOf(href)
+			.filter((old) => storedRows[old] !== undefined)
+			.map((old) => `${old.split('/').pop()} ${storedRows[old] ? 'visible' : 'hidden'}`);
+		return `Carried over (${parts.join(', ')})`;
+	}
+
+	function optionsFor(href: string) {
+		return baseline[href] === 'carried'
+			? [{ value: 'carried', label: carriedLabel(href) }, ...SETTING_OPTIONS]
+			: SETTING_OPTIONS;
 	}
 
 	function toVisibility(rows: NavigationVisibility[]): Record<string, boolean> {
@@ -109,6 +137,7 @@
 			if (mode === 'role') {
 				const rows = await getRoleNavigationVisibility(role);
 				if (token !== request) return;
+				storedRows = toVisibility(rows);
 				values = toSettings(rows);
 				roleOverrides = {};
 			} else {
@@ -117,6 +146,7 @@
 					getRoleNavigationVisibility(selectedUser!.role)
 				]);
 				if (token !== request) return;
+				storedRows = toVisibility(userRows);
 				values = toSettings(userRows);
 				roleOverrides = toVisibility(roleRows);
 			}
@@ -154,7 +184,14 @@
 		const setting = values[page.href];
 		if (setting === 'visible') return true;
 		if (setting === 'hidden') return false;
-		return mode === 'user' ? roleOverrides[page.href] !== false : true;
+		// What is stored for a user is laid over what is stored for their role, key
+		// by key, and that merged set is what the shell reads — so a carried setting
+		// is resolved against the same merge, not against the user's rows alone.
+		if (setting === 'carried')
+			return (
+				storedVisibility(page.href, mode === 'user' ? { ...roleOverrides, ...storedRows } : storedRows) !== false
+			);
+		return mode === 'user' ? storedVisibility(page.href, roleOverrides) !== false : true;
 	}
 
 	async function save() {
@@ -166,6 +203,13 @@
 			visible:
 				values[pageKey] === 'inherit' ? null : values[pageKey] === 'visible'
 		}));
+		// A page given a setting of its own stops inheriting from the pages it
+		// replaced, so their stored rows are removed in the same save. Otherwise
+		// "Use default" would fall straight back to the old settings and there would
+		// be no way to clear them from here.
+		for (const pageKey of dirtyKeys)
+			for (const old of predecessorsOf(pageKey))
+				if (storedRows[old] !== undefined) changes.push({ pageKey: old, visible: null });
 		saving = true;
 		try {
 			const rows =
@@ -176,6 +220,7 @@
 				mode === targetMode &&
 				(targetMode === 'role' ? role === targetRole : selectedUserId === targetUserId);
 			if (stillOnSavedScope) {
+				storedRows = toVisibility(rows);
 				values = toSettings(rows);
 				baseline = { ...values };
 			}
@@ -308,7 +353,7 @@
 								<span class="text-xs text-surface-600-400">Minimum: {item.minRole}</span>
 								<Select
 									bind:value={values[item.href]}
-									options={SETTING_OPTIONS}
+									options={optionsFor(item.href)}
 									disabled={locked || unavailable}
 									hint={locked ? 'Always available' : unavailable ? 'Blocked by role' : ''}
 								/>

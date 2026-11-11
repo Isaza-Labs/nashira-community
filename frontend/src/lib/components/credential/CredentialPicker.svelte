@@ -2,7 +2,7 @@
 	import { Select } from '$lib/components/ui';
 	import { AUTH_METHODS, listCredentials, type Credential } from '$lib/api/credentials.api';
 
-	// Picks a credential stored in /admin/credentials. Extracted from DeviceForm and
+	// Picks a credential stored in the Vault (/admin/vault). Extracted from DeviceForm and
 	// RepoForm, which carried the same block verbatim; `allowedMethods` is what the
 	// HTTP-auth callers add, since an SSH private key cannot authenticate a request.
 	//

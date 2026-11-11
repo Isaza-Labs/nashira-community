@@ -25,7 +25,7 @@ export const platform: DocSection[] = [
 				items: [
 					'**A user account** for you, with a role — `/admin/users`. See **Users**.',
 					'**An AI provider**, or chat has no model to talk to — `/admin/providers`. See **AI providers**.',
-					'**A credential** the devices can be reached with — `/admin/credentials`. See **Credentials**.',
+					'**A credential** the devices can be reached with — a Login or SSH key entry in the Vault, `/admin/vault`. See **Credentials**.',
 					'Optionally an **inventory source**, so devices arrive by sync instead of by typing — `/inventory`.'
 				]
 			},
@@ -112,7 +112,7 @@ export const platform: DocSection[] = [
 					{ value: '/chat', desc: 'The agent. Also where `/` sends you.' },
 					{ value: '/overview', desc: 'Devices by status, inventory freshness, recent agent activity.' },
 					{ value: '/devices', desc: 'The inventory a run targets.' },
-					{ value: '/admin/credentials', desc: 'How devices are reached. Admin.' },
+					{ value: '/admin/vault', desc: 'How devices are reached: the Vault holds the logins and keys. Admin.' },
 					{ value: '/workflows', desc: 'Drafts, and the Import action.' },
 					{ value: '/runs', desc: 'What happened, step by step.' },
 					{ value: '/docs', desc: 'These pages.' }
@@ -227,7 +227,7 @@ export const platform: DocSection[] = [
 					{ value: 'Intelligence', desc: 'The agent itself: chat, and the AI Studio that decides what it knows.' },
 					{ value: 'Build', desc: 'What you author: workflows, snippets, git.' },
 					{ value: 'Integrate', desc: 'Systems outside Nashira: connections and vendor commands.' },
-					{ value: 'Operate', desc: 'The day to day: runs, schedules, devices, inventory sources, device pools, credentials, secrets, artifacts.' },
+					{ value: 'Operate', desc: 'The day to day: runs, schedules, devices, inventory sources, device pools, the Vault (credentials and secrets), artifacts.' },
 					{ value: 'Govern', desc: 'Policies, tool permissions, navigation access, the Python allowlist, SLOs, the audit trail, traces, agent sessions, user accounts and runtime settings.' },
 					{ value: 'Help', desc: 'Reference: knowledge and these docs.' }
 				]
@@ -249,7 +249,7 @@ export const platform: DocSection[] = [
 				items: [
 					'`Ctrl`/`⌘` + `K` opens the command palette: every destination, plus create actions that open the right form directly.',
 					'`g` then a letter jumps without opening anything — d devices, w workflows, s snippets, i integrations, k knowledge, r reports, o overview, c chat, h docs.',
-					'A listing with a create action opens its form when reached with `?new=1` — that is what the palette actions link to. That covers devices, pools, workflows (the Import dialog), snippets, knowledge, reports, credentials, secrets, users, policies, integrations, MCP servers, AI providers, prompt skills, API specs, Python modules, vendor commands and the notification, messaging and email channels; other listings ignore it.'
+					'A listing with a create action opens its form when reached with `?new=1` — that is what the palette actions link to. That covers devices, pools, workflows (the Import dialog), snippets, knowledge, reports, the Vault (which opens its type picker), users, policies, integrations, MCP servers, AI providers, prompt skills, API specs, Python modules, vendor commands and the notification, messaging and email channels; other listings ignore it.'
 				]
 			},
 			{

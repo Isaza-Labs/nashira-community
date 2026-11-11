@@ -154,14 +154,27 @@ test('credentials — auth methods + oauth2 form', async ({ page }) => {
 			})
 		})
 	);
-	await page.goto('/admin/credentials');
+	// Credentials and secrets share one screen now: the Vault lists both stores.
+	await page.route('**/api/secrets', (route) =>
+		route.fulfill({
+			contentType: 'application/json',
+			body: JSON.stringify([
+				{ secret_id: 's1', name: 'netbox-token', description: 'NetBox API token', has_value: true, created_by: 'admin', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z' }
+			])
+		})
+	);
+	await page.goto('/admin/vault');
 	await page.getByText('github-pat').waitFor();
+	await page.getByText('netbox-token').first().waitFor();
 	await page.waitForTimeout(300);
 	await page.screenshot({ path: 'e2e/shots/credentials-light.png', fullPage: false });
 
-	// Open the create modal and switch to OAuth2 to capture the dynamic form.
-	await page.getByRole('button', { name: 'New credential' }).click();
-	await page.getByLabel('Auth method').selectOption('oauth2');
+	// Open the type picker and choose OAuth2 to capture that kind's form.
+	await page.getByRole('button', { name: 'New entry' }).click();
+	const dialog = page.getByRole('dialog');
+	await dialog.getByRole('button', { name: /OAuth2 client/ }).click();
+	await expect(dialog.getByLabel('Client ID')).toBeVisible();
+	await expect(dialog.getByLabel('Token URL')).toBeVisible();
 	await page.waitForTimeout(300);
 	await page.screenshot({ path: 'e2e/shots/credentials-oauth2-form.png', fullPage: false });
 });
