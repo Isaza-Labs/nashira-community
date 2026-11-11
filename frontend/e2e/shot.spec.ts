@@ -121,14 +121,18 @@ test('prompt skills — built-in + tenant rows', async ({ page }) => {
 
 	// "Load file" reads a local .md into the editor and names the skill from the
 	// filename — the upload path that replaces copy-pasting by hand.
+	// The page has two file inputs: "Import .md" in the header, which starts a bulk
+	// import, and the editor's own. This is about the editor's, so it is the one
+	// inside the dialog that receives the file.
 	await page.getByRole('button', { name: 'New skill' }).click();
-	await page.setInputFiles('input[type="file"]', {
+	const editor = page.getByRole('dialog');
+	await editor.locator('input[type="file"]').setInputFiles({
 		name: 'vlan-troubleshooting.md',
 		mimeType: 'text/markdown',
 		buffer: Buffer.from('# VLAN troubleshooting\n\n- Check `show vlan brief` first.\n')
 	});
-	await expect(page.getByLabel('Name')).toHaveValue('vlan-troubleshooting');
-	await expect(page.getByLabel('Content')).toHaveValue(/VLAN troubleshooting/);
+	await expect(editor.getByLabel('Name')).toHaveValue('vlan-troubleshooting');
+	await expect(editor.getByLabel('Content')).toHaveValue(/VLAN troubleshooting/);
 	await page.waitForTimeout(300);
 	await page.screenshot({ path: 'e2e/shots/skills-upload.png', fullPage: false });
 });
@@ -206,8 +210,17 @@ test('permissions — selecting a user renders the matrix without crashing', asy
 			})
 		})
 	);
+	// What a permission can name: objects with a key, kind and label (it was once a
+	// bare list of domain names, which is what this mock used to return).
 	await page.route('**/api/permissions/domains', (route) =>
-		route.fulfill({ contentType: 'application/json', body: JSON.stringify(['devices', 'inventory', 'knowledge']) })
+		route.fulfill({
+			contentType: 'application/json',
+			body: JSON.stringify([
+				{ key: 'devices', kind: 'domain', label: 'Devices', description: 'Inventory devices and what runs on them' },
+				{ key: 'inventory', kind: 'domain', label: 'Inventory', description: null },
+				{ key: 'knowledge', kind: 'domain', label: 'Knowledge', description: null }
+			])
+		})
 	);
 	await page.route('**/api/permissions/users/**', (route) =>
 		route.fulfill({
@@ -219,8 +232,13 @@ test('permissions — selecting a user renders the matrix without crashing', asy
 	await page.goto('/admin/permissions');
 	await page.getByRole('heading', { name: 'Permissions', level: 1 }).waitFor();
 	await page.locator('select').selectOption('u1');
-	// The matrix must render (Read column header) — the pre-fix bug crashed here.
-	await page.getByRole('columnheader', { name: 'Read' }).waitFor();
+	// The targets must render — the pre-fix bug crashed here. The user's one stored
+	// restriction (devices: read only) shows as Restricted with Read ticked; the
+	// targets without one stay on the role default and show no checkboxes at all.
+	await expect(page.getByText('1 restricted').first()).toBeVisible();
+	await expect(page.getByLabel('Read')).toHaveCount(1);
+	await expect(page.getByLabel('Read')).toBeChecked();
+	await expect(page.getByLabel('Write')).not.toBeChecked();
 	await page.waitForTimeout(300);
 	await page.screenshot({ path: 'e2e/shots/permissions-light.png', fullPage: false });
 
