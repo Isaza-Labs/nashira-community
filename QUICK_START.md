@@ -238,7 +238,7 @@ at promotion, so running one is not re-litigated tool by tool.
 Follow the in-app guide — **`/docs/quick-start`** — which is written against the
 running UI. A concrete read-only first run:
 
-1. **Credential** → `/admin/credentials`. How devices are reached. The value
+1. **Credential** → `/admin/vault` (the Vault: add a Login or SSH key entry). How devices are reached. The value
    never leaves the server; responses carry `has_password`, never the password.
 2. **Device** → `/devices`. `device_name` and `ip_address` are required; set
    `platform` too, or vendor-command resolution has nothing to key on.
