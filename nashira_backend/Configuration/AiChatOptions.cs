@@ -68,6 +68,24 @@ public class AiChatOptions
     // Override with `AiChat__HistoryCharBudget`.
     public int HistoryCharBudget { get; set; } = 60_000;
 
+    // Where the guidance message goes in a request. It is the second system message:
+    // the topic-guide index, the text of the guides in play and the guidance for the
+    // integrations in play, so it differs from one conversation to the next. Sent
+    // second (the default), it comes ahead of the tool definitions in a prompt whose
+    // chat template renders the tools after the first system message, as DeepSeek's
+    // does, and a server that reuses a prompt it has already read can reuse nothing past
+    // the first difference: a question that brings a guide in makes a local model read
+    // all the tool definitions again. True sends the same message, unchanged, right
+    // behind the user's message instead, so the part every conversation shares (the base
+    // prompt and the tool definitions) stays identical. Nothing is added or removed, but
+    // the model sees the guidance after the question rather than before it, which is why
+    // this is a switch. It applies to OpenAI-compatible providers only: Anthropic would
+    // render a system message there as user text and Gemini lifts every system message
+    // into its leading instruction; Ollama keeps the position but is left out until it
+    // is measured with its own templates. Override with
+    // `AiChat__ScopedPromptAfterUserMessage`.
+    public bool ScopedPromptAfterUserMessage { get; set; }
+
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the
     // budget and deliberately not configurable: it exists only so a wedged socket
     // cannot hold a turn open forever, and its one requirement is that it stay well

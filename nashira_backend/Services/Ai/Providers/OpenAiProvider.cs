@@ -152,6 +152,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
                         Type = "done",
                         InputTokens = u0.TryGetProperty("prompt_tokens", out var pt0) && pt0.ValueKind == JsonValueKind.Number ? pt0.GetInt32() : 0,
                         OutputTokens = u0.TryGetProperty("completion_tokens", out var cpt0) && cpt0.ValueKind == JsonValueKind.Number ? cpt0.GetInt32() : 0,
+                        CacheReadTokens = ReadCachedTokens(u0),
                         StopReason = finishReason,
                     };
                 }
@@ -212,10 +213,33 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
                     Type = "done",
                     InputTokens = usage.TryGetProperty("prompt_tokens", out var pt) && pt.ValueKind == JsonValueKind.Number ? pt.GetInt32() : 0,
                     OutputTokens = usage.TryGetProperty("completion_tokens", out var cpt) && cpt.ValueKind == JsonValueKind.Number ? cpt.GetInt32() : 0,
+                    CacheReadTokens = ReadCachedTokens(usage),
                     StopReason = finishReason,
                 };
             }
         }
+    }
+
+    // The part of prompt_tokens the server served from its prompt cache, or null
+    // when it does not say. Two spellings exist for the same number: OpenAI's
+    // `prompt_tokens_details.cached_tokens` (also what vLLM-style local servers
+    // send) and DeepSeek's top-level `prompt_cache_hit_tokens`. They are
+    // alternatives, never summed: a server that sends both is reporting one count
+    // twice. Already included in prompt_tokens, so this never changes InputTokens.
+    internal static int? ReadCachedTokens(JsonElement usage)
+    {
+        if (usage.ValueKind != JsonValueKind.Object) return null;
+        if (usage.TryGetProperty("prompt_tokens_details", out var details)
+            && details.ValueKind == JsonValueKind.Object
+            && details.TryGetProperty("cached_tokens", out var cached)
+            && cached.ValueKind == JsonValueKind.Number
+            && cached.TryGetInt32(out var fromDetails))
+            return fromDetails;
+        if (usage.TryGetProperty("prompt_cache_hit_tokens", out var hit)
+            && hit.ValueKind == JsonValueKind.Number
+            && hit.TryGetInt32(out var fromHit))
+            return fromHit;
+        return null;
     }
 
     private string BuildBody(
@@ -378,6 +402,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
                 && it.ValueKind == JsonValueKind.Number ? it.GetInt32() : 0,
             OutputTokens = hasUsage && usage.TryGetProperty("completion_tokens", out var ot)
                 && ot.ValueKind == JsonValueKind.Number ? ot.GetInt32() : 0,
+            CacheReadTokens = hasUsage ? ReadCachedTokens(usage) ?? 0 : 0,
             StopReason = choice.ValueKind == JsonValueKind.Object
                 && choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String
                     ? fr.GetString() : null,

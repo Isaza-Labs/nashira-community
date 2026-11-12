@@ -144,8 +144,9 @@ public sealed class AgentConversationRunner
         _dispatcher.ApproveTools(approvals);
         var newlyApproved = approvals.Count > previouslyApproved.Count;
         var composedMessage = ComposeUserMessage(request.Message, request.Attachments);
+        var scopedAfterUser = ScopedPromptAfterUserFor(_chat.ScopedPromptAfterUserMessage, llm);
         var messages = await BuildInitialMessagesAsync(
-            basePrompt, scopedPrompt, profileMessage, composedMessage, request.ConversationId, streamCt);
+            basePrompt, scopedPrompt, profileMessage, composedMessage, request.ConversationId, scopedAfterUser, streamCt);
 
         var finalText = new StringBuilder();
         var totalIn = 0;
@@ -165,6 +166,12 @@ public sealed class AgentConversationRunner
         var turnStatus = AgentTurn.StatusCompleted;
         string? turnError = null;
 
+        // What each model call costs, round by round. The turn totals hide the shape:
+        // a turn of five rounds re-sends the whole prompt five times, and only the
+        // per-round numbers show which part grew and how much the cache gave back.
+        var iterationUsage = new List<int[]>();
+        var toolSchemaChars = tools.Sum(t => t.Name.Length + t.Description.Length + t.ParametersSchema.GetRawText().Length);
+
         var maxIterations = _chat.MaxIterations > 0 ? _chat.MaxIterations : 50;
         var maxToolResultChars = _chat.MaxToolResultChars > 0 ? _chat.MaxToolResultChars : 100_000;
 
@@ -172,9 +179,12 @@ public sealed class AgentConversationRunner
             "ai.chat.begin conversation={ConversationId} model={Model} tools={ToolCount} "
             + "messages={MessageCount} deadline_s={DeadlineSeconds} max_iterations={MaxIterations} "
             + "max_tool_result_chars={MaxToolResultChars} prompt_chars={PromptChars} "
+            + "base_prompt_chars={BasePromptChars} scoped_prompt_chars={ScopedPromptChars} "
+            + "tool_schema_chars={ToolSchemaChars} "
             + "scoped_skills={ScopedSkills} topic_skills={TopicSkills} skills_loaded={SkillsLoaded} profile={Profile}",
             conversationId, model, tools.Count, messages.Count, deadlineSeconds, maxIterations, maxToolResultChars,
-            basePrompt.Length + scopedPrompt.Length, scopedSkills.Count, topics.Count,
+            basePrompt.Length + scopedPrompt.Length, basePrompt.Length, scopedPrompt.Length, toolSchemaChars,
+            scopedSkills.Count, topics.Count,
             _turnScope.LoadedSkillIntegrationIds.Count,
             profile is null ? "none" : profile.ProfileName ?? "custom-text");
 
@@ -202,9 +212,14 @@ public sealed class AgentConversationRunner
                 var content = new StringBuilder();
                 var pending = new List<ToolCallResult>();
                 string? stopReason = null;
+                var callUsage = new CallUsage();
+                var iterWatch = System.Diagnostics.Stopwatch.StartNew();
+                long firstEventMs = -1;
+                var (systemChars, conversationChars, toolResultChars) = MessageChars(messages);
 
                 await foreach (var evt in llm.ChatWithToolsStreamAsync(messages, tools, model, Temperature, streamCt))
                 {
+                    if (firstEventMs < 0 && evt.Type != "done") firstEventMs = iterWatch.ElapsedMilliseconds;
                     switch (evt.Type)
                     {
                         case "text_delta":
@@ -216,14 +231,29 @@ public sealed class AgentConversationRunner
                             if (evt.ToolCall is not null) pending.Add(evt.ToolCall);
                             break;
                         case "done":
-                            if (evt.InputTokens is int ti) totalIn += ti;
-                            if (evt.OutputTokens is int to) totalOut += to;
-                            if (evt.CacheReadTokens is int cr) totalCacheRead += cr;
-                            if (evt.CacheWriteTokens is int cw) totalCacheWrite += cw;
+                            // Counted as it arrives, so a call that later fails or is
+                            // cancelled still has what it reported in the turn's totals.
+                            var (addIn, addOut, addRead, addWrite) = callUsage.Add(evt);
+                            totalIn += addIn; totalOut += addOut; totalCacheRead += addRead; totalCacheWrite += addWrite;
                             if (evt.StopReason is not null) stopReason = evt.StopReason;
                             break;
                     }
                 }
+
+                iterWatch.Stop();
+                var (iterIn, iterOut, iterCacheRead) = (callUsage.Input, callUsage.Output, callUsage.CacheRead);
+                iterationUsage.Add([iterIn, iterCacheRead, iterOut, (int)iterWatch.ElapsedMilliseconds]);
+                _logger.LogInformation(
+                    "ai.chat.iteration conversation={ConversationId} iteration={Iteration} "
+                    + "tokens_in={TokensIn} tokens_cache_read={CacheRead} tokens_out={TokensOut} "
+                    + "first_event_ms={FirstEventMs} elapsed_ms={ElapsedMs} messages={MessageCount} "
+                    + "system_chars={SystemChars} conversation_chars={ConversationChars} "
+                    + "tool_result_chars={ToolResultChars} tool_schema_chars={ToolSchemaChars} "
+                    + "tool_calls={ToolCalls} stop_reason={StopReason}",
+                    conversationId, iterations, iterIn, iterCacheRead, iterOut,
+                    firstEventMs, iterWatch.ElapsedMilliseconds, messages.Count,
+                    systemChars, conversationChars, toolResultChars, toolSchemaChars,
+                    pending.Count, stopReason ?? "none");
 
                 if (OutputCutOff(stopReason))
                 {
@@ -300,7 +330,7 @@ public sealed class AgentConversationRunner
                 if (awaitingConfirmation) break;
             }
 
-            await sink.DoneAsync(totalIn, totalOut, iterations, ct);
+            await sink.DoneAsync(totalIn, totalOut, totalCacheRead, iterations, ct);
         }
         catch (OperationCanceledException) when (deadlineCts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
@@ -344,6 +374,9 @@ public sealed class AgentConversationRunner
                 iterations, tool_calls = toolCalls.Count,
                 tokens_in = totalIn, tokens_out = totalOut,
                 tokens_cache_read = totalCacheRead, tokens_cache_write = totalCacheWrite,
+                // [tokens_in, cache_read, tokens_out, ms] per model call. Capped so a
+                // long turn cannot push the rest of the row past the metadata limit.
+                rounds = iterationUsage.Take(MaxRoundsInTrace).ToList(),
             };
             // tokens_in is the whole prompt summed over the turn's rounds; the cache
             // fields say how much of it was read back at a tenth of the price, which is
@@ -444,6 +477,34 @@ public sealed class AgentConversationRunner
             Role = "system",
             Content = string.Join("\n\n---\n\n", skills.Select(ScopedSkillCatalog.RenderLoaded)),
         };
+    }
+
+    private const int MaxRoundsInTrace = 24;
+
+    // Characters about to be sent, by kind: system messages, the conversation (user
+    // and assistant text plus tool-call arguments) and tool results. Lengths only —
+    // nothing is serialised, so this costs a pass over strings already in memory.
+    internal static (int System, int Conversation, int ToolResults) MessageChars(IReadOnlyList<LlmMessage> messages)
+    {
+        var system = 0;
+        var conversation = 0;
+        var toolResults = 0;
+        foreach (var m in messages)
+        {
+            var len = m.Content?.Length ?? 0;
+            switch (m.Role)
+            {
+                case "system": system += len; break;
+                case "tool": toolResults += len; break;
+                default:
+                    conversation += len;
+                    if (m.ToolCalls is { } calls)
+                        foreach (var c in calls)
+                            conversation += c.Name.Length + c.Arguments.GetRawText().Length;
+                    break;
+            }
+        }
+        return (system, conversation, toolResults);
     }
 
     // Loads the topic skills a tool belongs to, once per conversation, as a system
@@ -562,13 +623,10 @@ public sealed class AgentConversationRunner
 
     private async Task<List<LlmMessage>> BuildInitialMessagesAsync(
         string systemPrompt, string scopedPrompt, string? profileMessage, string userMessage,
-        Guid? conversationId, CancellationToken ct)
+        Guid? conversationId, bool scopedAfterUser, CancellationToken ct)
     {
-        var msgs = new List<LlmMessage> { new() { Role = "system", Content = systemPrompt } };
-        if (!string.IsNullOrEmpty(scopedPrompt))
-            msgs.Add(new LlmMessage { Role = "system", Content = scopedPrompt });
-        if (profileMessage is not null)
-            msgs.Add(new LlmMessage { Role = "system", Content = profileMessage });
+        // Earlier turns of the conversation, with the note that says some were left out.
+        var earlier = new List<LlmMessage>();
 
         if (conversationId.HasValue)
         {
@@ -598,12 +656,44 @@ public sealed class AgentConversationRunner
                 _logger.LogInformation(
                     "ai.chat.history_windowed conversation={ConversationId} sent={Sent} omitted={Omitted} budget_chars={Budget}",
                     conversationId, kept.Count, omitted, _chat.HistoryCharBudget);
-                msgs.Add(new LlmMessage { Role = "system", Content = HistoryOmittedNote(omitted) });
+                earlier.Add(new LlmMessage { Role = "system", Content = HistoryOmittedNote(omitted) });
             }
-            msgs.AddRange(kept);
+            earlier.AddRange(kept);
         }
 
+        return ArrangeMessages(
+            systemPrompt, scopedPrompt, profileMessage, earlier, userMessage, scopedAfterUser);
+    }
+
+    // Whether the guidance message goes behind the user's message for this provider.
+    // Only for the OpenAI-compatible adapter, which sends a system message where it
+    // stands and is the one measured. Anthropic would turn a system message behind the
+    // user's into user text and Gemini lifts every system message to the top, so for
+    // them the switch would change who is speaking, or nothing at all; Ollama keeps the
+    // position but is left out until it is measured with its own templates.
+    internal static bool ScopedPromptAfterUserFor(bool switchOn, ILlmProvider provider)
+        => switchOn && provider is OpenAiProvider;
+
+    // The order a turn's opening messages are sent in. By default: base prompt, the
+    // topic-guide message, the persona, earlier turns, the user's message. With
+    // `scopedAfterUser` the topic-guide message moves, unchanged, to the end, so that
+    // everything ahead of the conversation is the same for every request (see
+    // AiChatOptions.ScopedPromptAfterUserMessage). Later rounds of the turn append
+    // behind whatever this returns, so either order only ever grows at its end.
+    internal static List<LlmMessage> ArrangeMessages(
+        string systemPrompt, string scopedPrompt, string? profileMessage,
+        IReadOnlyList<LlmMessage> earlier, string userMessage, bool scopedAfterUser)
+    {
+        var hasScoped = !string.IsNullOrEmpty(scopedPrompt);
+        var msgs = new List<LlmMessage> { new() { Role = "system", Content = systemPrompt } };
+        if (hasScoped && !scopedAfterUser)
+            msgs.Add(new LlmMessage { Role = "system", Content = scopedPrompt });
+        if (profileMessage is not null)
+            msgs.Add(new LlmMessage { Role = "system", Content = profileMessage });
+        msgs.AddRange(earlier);
         msgs.Add(new LlmMessage { Role = "user", Content = userMessage });
+        if (hasScoped && scopedAfterUser)
+            msgs.Add(new LlmMessage { Role = "system", Content = scopedPrompt });
         return msgs;
     }
 
@@ -883,4 +973,32 @@ public sealed class AgentConversationRunner
         [property: JsonPropertyName("attachments")]
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         List<string>? Attachments = null);
+}
+
+/// <summary>
+/// One model call's token counts, from the "done" events its stream reports. Every
+/// adapter reports a running total for the call, not a slice of it: Anthropic, Gemini
+/// and Ollama once, at the end; an OpenAI-compatible server can send the same totals
+/// twice (on the last content chunk and again in a usage-only chunk) or a growing total
+/// on every chunk. So each count is the largest one seen, never the sum: adding them
+/// up counted such a call twice or more. <see cref="Add"/> returns how much each count
+/// grew, so a caller can keep running totals as reports arrive and lose nothing when a
+/// call ends early.
+/// </summary>
+internal sealed class CallUsage
+{
+    public int Input { get; private set; }
+    public int Output { get; private set; }
+    public int CacheRead { get; private set; }
+    public int CacheWrite { get; private set; }
+
+    public (int Input, int Output, int CacheRead, int CacheWrite) Add(ChatStreamEvent evt)
+    {
+        var before = (Input, Output, CacheRead, CacheWrite);
+        if (evt.InputTokens is int i) Input = Math.Max(Input, i);
+        if (evt.OutputTokens is int o) Output = Math.Max(Output, o);
+        if (evt.CacheReadTokens is int r) CacheRead = Math.Max(CacheRead, r);
+        if (evt.CacheWriteTokens is int w) CacheWrite = Math.Max(CacheWrite, w);
+        return (Input - before.Input, Output - before.Output, CacheRead - before.CacheRead, CacheWrite - before.CacheWrite);
+    }
 }

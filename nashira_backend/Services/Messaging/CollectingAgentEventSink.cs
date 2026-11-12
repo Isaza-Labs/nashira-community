@@ -63,7 +63,7 @@ public sealed class CollectingAgentEventSink : IAgentEventSink
         return Task.CompletedTask;
     }
 
-    public Task DoneAsync(int tokensIn, int tokensOut, int iterations, CancellationToken ct)
+    public Task DoneAsync(int tokensIn, int tokensOut, int cacheRead, int iterations, CancellationToken ct)
     {
         TokensIn = tokensIn;
         TokensOut = tokensOut;
