@@ -211,9 +211,7 @@ public sealed class AgentConversationRunner
                 var content = new StringBuilder();
                 var pending = new List<ToolCallResult>();
                 string? stopReason = null;
-                var iterIn = 0;
-                var iterOut = 0;
-                var iterCacheRead = 0;
+                var callUsage = new CallUsage();
                 var iterWatch = System.Diagnostics.Stopwatch.StartNew();
                 long firstEventMs = -1;
                 var (systemChars, conversationChars, toolResultChars) = MessageChars(messages);
@@ -232,16 +230,17 @@ public sealed class AgentConversationRunner
                             if (evt.ToolCall is not null) pending.Add(evt.ToolCall);
                             break;
                         case "done":
-                            if (evt.InputTokens is int ti) { totalIn += ti; iterIn += ti; }
-                            if (evt.OutputTokens is int to) { totalOut += to; iterOut += to; }
-                            if (evt.CacheReadTokens is int cr) { totalCacheRead += cr; iterCacheRead += cr; }
-                            if (evt.CacheWriteTokens is int cw) totalCacheWrite += cw;
+                            // Counted as it arrives, so a call that later fails or is
+                            // cancelled still has what it reported in the turn's totals.
+                            var (addIn, addOut, addRead, addWrite) = callUsage.Add(evt);
+                            totalIn += addIn; totalOut += addOut; totalCacheRead += addRead; totalCacheWrite += addWrite;
                             if (evt.StopReason is not null) stopReason = evt.StopReason;
                             break;
                     }
                 }
 
                 iterWatch.Stop();
+                var (iterIn, iterOut, iterCacheRead) = (callUsage.Input, callUsage.Output, callUsage.CacheRead);
                 iterationUsage.Add([iterIn, iterCacheRead, iterOut, (int)iterWatch.ElapsedMilliseconds]);
                 _logger.LogInformation(
                     "ai.chat.iteration conversation={ConversationId} iteration={Iteration} "
@@ -944,4 +943,32 @@ public sealed class AgentConversationRunner
         [property: JsonPropertyName("attachments")]
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
         List<string>? Attachments = null);
+}
+
+/// <summary>
+/// One model call's token counts, from the "done" events its stream reports. Every
+/// adapter reports a running total for the call, not a slice of it: Anthropic, Gemini
+/// and Ollama once, at the end; an OpenAI-compatible server can send the same totals
+/// twice (on the last content chunk and again in a usage-only chunk) or a growing total
+/// on every chunk. So each count is the largest one seen, never the sum: adding them
+/// up counted such a call twice or more. <see cref="Add"/> returns how much each count
+/// grew, so a caller can keep running totals as reports arrive and lose nothing when a
+/// call ends early.
+/// </summary>
+internal sealed class CallUsage
+{
+    public int Input { get; private set; }
+    public int Output { get; private set; }
+    public int CacheRead { get; private set; }
+    public int CacheWrite { get; private set; }
+
+    public (int Input, int Output, int CacheRead, int CacheWrite) Add(ChatStreamEvent evt)
+    {
+        var before = (Input, Output, CacheRead, CacheWrite);
+        if (evt.InputTokens is int i) Input = Math.Max(Input, i);
+        if (evt.OutputTokens is int o) Output = Math.Max(Output, o);
+        if (evt.CacheReadTokens is int r) CacheRead = Math.Max(CacheRead, r);
+        if (evt.CacheWriteTokens is int w) CacheWrite = Math.Max(CacheWrite, w);
+        return (Input - before.Input, Output - before.Output, CacheRead - before.CacheRead, CacheWrite - before.CacheWrite);
+    }
 }
