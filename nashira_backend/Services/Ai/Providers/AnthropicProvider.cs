@@ -415,10 +415,23 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
             // A turn that ends up with no blocks (an assistant message that was only an
             // empty string) is dropped: the API rejects an empty content array.
             if (openRole is not null && blocks.Count > 0)
+            {
+                // In the user turn that answers a tool round, every tool_result has to
+                // come before any text: a result that follows a text block is not
+                // counted as answering its tool_use, and the request is refused with
+                // "tool_use ids were found without tool_result blocks immediately
+                // after". The runner adds a system message behind a tool result when a
+                // skill auto-loads, so in a parallel round that note can land between
+                // two results. Results first, text after, each in the order it arrived.
+                if (openRole == "user" && blocks.Any(IsToolResult))
+                    blocks = [.. blocks.Where(IsToolResult), .. blocks.Where(b => !IsToolResult(b))];
                 mapped.Add(new Dictionary<string, object?> { ["role"] = openRole, ["content"] = blocks });
+            }
             blocks = [];
             openRole = null;
         }
+
+        static bool IsToolResult(Dictionary<string, object?> block) => (string?)block["type"] == "tool_result";
 
         void Open(string role)
         {
