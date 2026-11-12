@@ -709,6 +709,47 @@ test.describe('when a store fails or lags', () => {
 	});
 });
 
+test.describe('layout', () => {
+	// The table used to be wider than the page at every desktop width, so the
+	// Delete buttons sat behind a horizontal scroll and looked missing. Playwright
+	// scrolls before it clicks, so no other test notices.
+	for (const width of [1280, 1440, 1920])
+		test(`every row's actions are on screen at ${width}px, long names and all`, async ({ page }) => {
+			await page.setViewportSize({ width, height: 900 });
+			await mockVault(page, {
+				secrets: [
+					...SECRETS,
+					{ secret_id: 's3', name: 'servicenow-production-oauth-client-secret', description: 'Client secret for the ServiceNow production instance', has_value: true, created_by: 'admin', created_at: TS, updated_at: TS }
+				]
+			});
+			await page.goto('/admin/vault');
+			await expect(row(page, 'core-ssh')).toContainText('2 devices');
+
+			const fit = await page.evaluate(() => {
+				const wrap = document.querySelector('table')!.parentElement!;
+				const right = wrap.getBoundingClientRect().right;
+				const deletes = [...document.querySelectorAll('[aria-label="Delete entry"]')];
+				return { overflow: wrap.scrollWidth - wrap.clientWidth, cut: deletes.filter((b) => b.getBoundingClientRect().right > right + 1).length };
+			});
+			expect(fit).toEqual({ overflow: 0, cut: 0 });
+		});
+
+	test('form titles keep the capitals of SSH, API and OAuth2', async ({ page }) => {
+		await mockVault(page);
+		await page.goto('/admin/vault');
+		await page.getByRole('button', { name: 'New entry' }).click();
+		await dialog(page).getByRole('button', { name: /^API key/ }).click();
+		await expect(dialog(page)).toContainText('New API key');
+		await dialog(page).getByRole('button', { name: 'Type' }).click();
+		await dialog(page).getByRole('button', { name: /^Login/ }).click();
+		await expect(dialog(page)).toContainText('New login');
+		await dialog(page).getByRole('button', { name: 'Cancel' }).click();
+
+		await row(page, 'legacy-oauth').getByRole('button', { name: 'Edit entry' }).click();
+		await expect(dialog(page)).toContainText('Edit OAuth2 client');
+	});
+});
+
 test.describe('the entry form', () => {
 	test('renaming an older key keeps it a key and sends no secret material', async ({ page }) => {
 		const calls = await mockVault(page);
@@ -769,11 +810,89 @@ test.describe('the entry form', () => {
 
 		await expect.poll(() => sent(calls, 'POST', 'credential')?.body).toMatchObject({
 			name: 'new-one',
-			type: 'ssh',
+			// The tag followed the type: the admin never wrote one.
+			type: 'token',
 			auth_method: 'token',
 			token: 'tok-1',
 			password: null
 		});
+	});
+
+	test('a new entry shows the tag it will be stored with, and the tag follows the type until the admin writes one', async ({
+		page
+	}) => {
+		const calls = await mockVault(page);
+		await page.goto('/admin/vault');
+		await expect(page.getByText('core-ssh')).toBeVisible();
+
+		await page.getByRole('button', { name: 'New entry' }).click();
+		await dialog(page).getByRole('button', { name: /^API key/ }).click();
+		await expect(dialog(page).getByLabel('Tag')).toHaveValue('api_key');
+
+		// Another type: the untouched tag goes with it.
+		await dialog(page).getByRole('button', { name: 'Type' }).click();
+		await dialog(page).getByRole('button', { name: /^OAuth2 client/ }).click();
+		await expect(dialog(page).getByLabel('Tag')).toHaveValue('oauth2');
+
+		// A tag the admin wrote stays when the type changes.
+		await dialog(page).getByLabel('Tag').fill('servicenow');
+		await dialog(page).getByRole('button', { name: 'Type' }).click();
+		await dialog(page).getByRole('button', { name: /^API key/ }).click();
+		await expect(dialog(page).getByLabel('Tag')).toHaveValue('servicenow');
+
+		// Cleared: the kind's default is stored, not the server's blanket "ssh".
+		await dialog(page).getByLabel('Tag').fill('');
+		await nameField(page).fill('snow-key');
+		await dialog(page).getByLabel('API key value').fill('k-1');
+		await dialog(page).getByRole('button', { name: 'Add to Vault' }).click();
+		await expect.poll(() => sent(calls, 'POST', 'credential')?.body).toMatchObject({ type: 'api_key', auth_method: 'api_key' });
+	});
+
+	test('a credential form cannot be edited while its save is in flight', async ({ page }) => {
+		const calls = await mockVault(page, { echoEdits: true, holdFirstPut: true });
+		await page.goto('/admin/vault');
+
+		await row(page, 'core-ssh').getByRole('button', { name: 'Edit entry' }).click();
+		await nameField(page).fill('core-ssh-renamed');
+		await dialog(page).getByRole('button', { name: 'Save changes' }).click();
+		await calls.put.arrived;
+
+		// Typing now would be lost when the save closes the form.
+		await expect(nameField(page)).toBeDisabled();
+		await expect(dialog(page).getByLabel('Tag')).toBeDisabled();
+		await expect(dialog(page).getByLabel('Username')).toBeDisabled();
+		await expect(dialog(page).getByLabel('Password')).toBeDisabled();
+
+		calls.put.release();
+		await expect(dialog(page)).toBeHidden();
+		await expect(row(page, 'core-ssh-renamed')).toBeVisible();
+	});
+
+	test('known links are read again after a credential is saved or deleted', async ({ page }) => {
+		const calls = await mockVault(page, { echoEdits: true });
+		await page.goto('/admin/vault');
+		await expect(row(page, 'core-ssh')).toContainText('2 devices');
+		await expect(row(page, 'legacy-key')).not.toContainText('device');
+
+		// A device is moved onto legacy-key elsewhere; saving the entry brings it in.
+		await page.route('**/api/device?**', (route) =>
+			json(route, { total: 2, limit: 200, offset: 0, items: [{ device_id: 'd1', credential_id: 'c1' }, { device_id: 'd2', credential_id: 'c2' }] })
+		);
+		await row(page, 'legacy-key').getByRole('button', { name: 'Edit entry' }).click();
+		await nameField(page).fill('legacy-key-2');
+		await dialog(page).getByRole('button', { name: 'Save changes' }).click();
+		await expect(row(page, 'legacy-key-2')).toContainText('1 device');
+		await expect(row(page, 'core-ssh')).toContainText('1 device');
+
+		// And after a delete.
+		await page.route('**/api/device?**', (route) =>
+			json(route, { total: 1, limit: 200, offset: 0, items: [{ device_id: 'd2', credential_id: 'c2' }] })
+		);
+		await row(page, 'core-ssh').getByRole('button', { name: 'Delete entry' }).click();
+		await page.getByRole('button', { name: 'Delete', exact: true }).click();
+		await expect(row(page, 'core-ssh')).toHaveCount(0);
+		await expect(row(page, 'legacy-key-2')).toContainText('1 device');
+		expect(sent(calls, 'DELETE', 'credential/c1')).toBeDefined();
 	});
 
 	test('a secret name is fixed, a bad one is refused, and a description edit leaves the value alone', async ({ page }) => {

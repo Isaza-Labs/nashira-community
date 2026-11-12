@@ -56,7 +56,7 @@
 	import { errorMessage, isOfflineError } from '$lib/api/client';
 	import { navigationVisibilityStore } from '$lib/stores/navigation-visibility.svelte';
 	import { vaultStoreVisible } from '$lib/nav/registry';
-	import { VAULT_KINDS, kindInfo, kindOfCredential, isVaultKind, type VaultKind } from '$lib/vault/kinds';
+	import { VAULT_KINDS, kindInfo, kindNoun, kindOfCredential, isVaultKind, type VaultKind } from '$lib/vault/kinds';
 	import { Plus, Pencil, Trash2, RefreshCw, Copy, ChevronLeft } from 'lucide-svelte';
 
 	// One row of the list, whichever store it came from.
@@ -249,7 +249,7 @@
 				: 'These entries could not be loaded — see the message above.';
 		}
 		if (searching && anyForFilter) return 'Nothing matches this search.';
-		if (filter !== 'all') return `No ${kindInfo(filter).label.toLowerCase()} entries yet.`;
+		if (filter !== 'all') return `No ${kindNoun(filter)} entries yet.`;
 		return 'The Vault is empty — add the logins, keys, tokens and secret values that devices, repositories, integrations and workflows need.';
 	});
 
@@ -265,7 +265,7 @@
 			sortValue: (e: Entry) => (e.credential ? e.credential.username || null : e.secret?.description || null)
 		},
 		{ key: 'value', header: 'Value', sortValue: (e: Entry) => e.hasValue },
-		{ key: 'links', header: 'Known links', sortable: false, width: '9rem' },
+		{ key: 'links', header: 'Known links', sortable: false },
 		{ key: 'updated', header: 'Updated', sortValue: (e: Entry) => e.updatedAt },
 		{ key: 'actions', header: '', align: 'right', sortable: false }
 	];
@@ -376,10 +376,15 @@
 		}
 	}
 
-	// Reads both stores side by side; neither waits for the other. Known links are
-	// read after the credentials they describe.
+	// Credentials, then the known links that describe them. Every re-read of the
+	// credential store goes through here, so a write's links are never left stale.
+	function reloadCredentials() {
+		return loadCredentials().then(loadLinks);
+	}
+
+	// Reads both stores side by side; neither waits for the other.
 	function load() {
-		void loadCredentials().then(loadLinks);
+		void reloadCredentials();
 		void loadSecrets();
 	}
 
@@ -567,6 +572,9 @@
 		formError = '';
 	}
 
+	// The tag a new credential of this kind starts with; '' for a secret value.
+	const defaultTagOf = (k: VaultKind) => kindInfo(k).defaultTag ?? '';
+
 	const FORM = '[data-vault-form]';
 
 	async function focusFirstField() {
@@ -584,6 +592,7 @@
 		if (allowed) {
 			kind = allowed;
 			formKind = allowed;
+			fTag = defaultTagOf(allowed);
 			step = 'form';
 			focusFirstField();
 		} else {
@@ -597,6 +606,8 @@
 	// typed for the old one.
 	function pick(k: VaultKind) {
 		if (k !== kind) clearMaterial();
+		// The tag follows the type until the admin writes one of their own.
+		if (!editing && (!fTag.trim() || fTag === defaultTagOf(kind))) fTag = defaultTagOf(k);
 		kind = k;
 		formKind = k;
 		formError = '';
@@ -845,7 +856,8 @@
 		} else {
 			const payload = {
 				name: fName.trim(),
-				type: fTag.trim() || 'ssh',
+				// A cleared tag gets the kind's default, not the server's blanket "ssh".
+				type: fTag.trim() || defaultTagOf(submittedKind) || 'ssh',
 				username: fUsername.trim(),
 				authMethod: kindInfo(submittedKind).authMethod ?? 'password',
 				password: fPassword,
@@ -866,7 +878,7 @@
 		try {
 			// Not yet sent when its turn comes: only if the form it was submitted from
 			// is still the open one and the store is still this user's to change.
-			const reread = () => void (submittedKind === 'secret' ? loadSecrets() : loadCredentials());
+			const reread = () => void (submittedKind === 'secret' ? loadSecrets() : reloadCredentials());
 			const written = await inOrder(
 				run,
 				() => kindAllowed(submittedKind) && modalOpen && submitted === formId,
@@ -880,7 +892,7 @@
 				void loadSecrets();
 			} else {
 				putCredential(written as Credential);
-				void loadCredentials();
+				void reloadCredentials();
 			}
 			if (modalOpen && submitted === formId) closeForm();
 			toast.success(entry ? `${label} updated` : `${label} added to the Vault`);
@@ -897,12 +909,12 @@
 			// Never answered: the list is the only way to learn whether it was saved,
 			// and the admin is told exactly that rather than "it failed".
 			const unanswered = outcomeUnknown(e);
-			if (unanswered) void (submittedKind === 'secret' ? loadSecrets() : loadCredentials());
+			if (unanswered) void (submittedKind === 'secret' ? loadSecrets() : reloadCredentials());
 			// Shown in the form it came from. If that form is gone, the failure still
 			// has to reach the admin, so it becomes a toast.
 			if (!gone && modalOpen && submitted === formId) formError = unanswered ? outcomeUnknownText(e) : errorMessage(e);
 			else if (unanswered) toast.error(outcomeUnknownText(e));
-			else toast.fromError(e, `Failed to save the ${label.toLowerCase()}`);
+			else toast.fromError(e, `Failed to save the ${kindNoun(submittedKind)}`);
 		} finally {
 			if (savingForm === submitted) savingForm = null;
 		}
@@ -932,14 +944,14 @@
 				await inOrder(
 					() => deleteCredential(id),
 					() => kindAllowed(e.kind),
-					() => void loadCredentials()
+					() => void reloadCredentials()
 				);
 				credentialsGeneration++;
 				credentialsLoading = false;
 				credentials = credentials.filter((c) => c.id !== id);
 				const { [id]: _gone, ...rest } = links;
 				links = rest;
-				void loadCredentials();
+				void reloadCredentials();
 			} else if (e.secret) {
 				const id = e.secret.id;
 				await inOrder(
@@ -962,7 +974,7 @@
 				return;
 			}
 			if (outcomeUnknown(err)) {
-				void (e.secret ? loadSecrets() : loadCredentials());
+				void (e.secret ? loadSecrets() : reloadCredentials());
 				toast.error(outcomeUnknownText(err));
 				return;
 			}
@@ -1099,7 +1111,7 @@
 			<Alert tone="error" title="Logins, keys and tokens could not be loaded">
 				<div class="flex flex-wrap items-center gap-3 text-sm">
 					<span>{errorMessage(credentialsError)} Secret values below are unaffected.</span>
-					<Button variant="ghost" onclick={() => void loadCredentials().then(loadLinks)}>Retry</Button>
+					<Button variant="ghost" onclick={() => void reloadCredentials()}>Retry</Button>
 				</div>
 			</Alert>
 		</div>
@@ -1123,7 +1135,7 @@
 						It changed while it was being read, or holds more than {PAGE * MAX_PAGES} entries. The rows shown are
 						real; counts and search may miss some.
 					</span>
-					<Button variant="ghost" onclick={() => void loadCredentials().then(loadLinks)}>Read again</Button>
+					<Button variant="ghost" onclick={() => void reloadCredentials()}>Read again</Button>
 				</div>
 			</Alert>
 		</div>
@@ -1165,17 +1177,19 @@
 			{#snippet cell(row, col)}
 				{#if col.key === 'name'}
 					{#if row.secret}
-						<span class="block min-w-[9rem] break-words font-mono text-sm">{row.name}</span>
+						<span class="block min-w-[9rem] max-w-[16rem] font-mono text-sm [overflow-wrap:anywhere]">{row.name}</span>
+						<!-- w-0 + min-w-full: the reference takes the width the name gives the
+							     column and truncates there, instead of widening the column itself. -->
 						<button
 							type="button"
-							class="block max-w-[16rem] truncate text-left font-mono text-xs text-surface-500 hover:text-surface-950-50 lg:max-w-[26rem]"
+							class="block w-0 min-w-full truncate text-left font-mono text-xs text-surface-500 hover:text-surface-950-50"
 							title="Copy this reference to paste into a configuration"
 							onclick={() => copyRef(row.secret!)}
 						>
 							{secretRef(row.name)}
 						</button>
 					{:else}
-						<span class="block min-w-[9rem] break-words font-medium">{row.name}</span>
+						<span class="block min-w-[9rem] max-w-[16rem] font-medium [overflow-wrap:anywhere]">{row.name}</span>
 					{/if}
 				{:else if col.key === 'kind'}
 					{@const info = kindInfo(row.kind)}
@@ -1185,12 +1199,16 @@
 				{:else if col.key === 'tag'}
 					<span class="text-surface-600-400">{row.tag || '—'}</span>
 				{:else if col.key === 'detail'}
-					<span class="block text-surface-600-400 lg:min-w-[12rem]">{row.detail || '—'}</span>
+					<span class="block min-w-[8rem] text-surface-600-400 [overflow-wrap:anywhere]">{row.detail || '—'}</span>
 				{:else if col.key === 'value'}
 					{#if row.hasValue}<Badge tone="success">set</Badge>{:else}<Badge tone="error">empty</Badge>{/if}
 				{:else if col.key === 'links'}
 					{#if row.credential && links[row.credential.id]}
-						<span class="whitespace-nowrap text-surface-600-400">{links[row.credential.id].join(', ')}</span>
+						<!-- Each link stays on one line ("1 repository"); lines break only between links. -->
+						<span class="text-surface-600-400"
+							>{#each links[row.credential.id] as link, i (link)}{#if i}, {/if}<span class="whitespace-nowrap">{link}</span
+								>{/each}</span
+						>
 					{:else}
 						<span
 							class="text-surface-500"
@@ -1223,7 +1241,7 @@
 <Modal
 	bind:open={modalOpen}
 	onclose={onFormClosed}
-	title={editing ? `Edit ${kindInfo(kind).label.toLowerCase()}` : step === 'pick' ? 'New Vault entry' : `New ${kindInfo(kind).label.toLowerCase()}`}
+	title={editing ? `Edit ${kindNoun(kind)}` : step === 'pick' ? 'New Vault entry' : `New ${kindNoun(kind)}`}
 >
 	<div data-vault-form>
 	{#if step === 'pick'}
@@ -1283,63 +1301,67 @@
 				{/if}
 			{:else}
 				<div class="grid gap-3 sm:grid-cols-2">
-					<Input label="Name" bind:value={fName} required />
+					<Input label="Name" bind:value={fName} disabled={saving} required />
 					{#if editing}
-						<Select label="Type" bind:value={kind} options={credentialKindOptions} />
+						<Select label="Type" bind:value={kind} disabled={saving} options={credentialKindOptions} />
 					{:else}
-						<Input label="Tag" bind:value={fTag} placeholder="ssh" hint="Optional label for grouping, e.g. ssh, git_token, netbox" />
+						<Input label="Tag" bind:value={fTag} disabled={saving} placeholder={defaultTagOf(kind)} hint="Optional label for grouping, e.g. ssh, git_token, netbox" />
 					{/if}
 				</div>
 				{#if editing}
-					<Input label="Tag" bind:value={fTag} placeholder="ssh" hint="Optional label for grouping, e.g. ssh, git_token, netbox" />
+					<Input label="Tag" bind:value={fTag} disabled={saving} placeholder={defaultTagOf(kind)} hint="Optional label for grouping, e.g. ssh, git_token, netbox" />
 				{/if}
 
 				{#if kind === 'login'}
 					<div class="grid gap-3 sm:grid-cols-2">
-						<Input label="Username" bind:value={fUsername} />
-						<Input label="Password" bind:value={fPassword} type="password" hint={editing ? 'Leave blank to keep' : ''} />
+						<Input label="Username" bind:value={fUsername} disabled={saving} />
+						<Input label="Password" bind:value={fPassword} disabled={saving} type="password" hint={editing ? 'Leave blank to keep' : ''} />
 					</div>
 				{:else if kind === 'ssh_key'}
-					<Input label="Username" bind:value={fUsername} />
-					<Textarea label="Private key" bind:value={fKey} rows={4} hint={editing ? 'Leave blank to keep' : 'PEM contents'} />
+					<Input label="Username" bind:value={fUsername} disabled={saving} />
+					<Textarea label="Private key" bind:value={fKey} disabled={saving} rows={4} hint={editing ? 'Leave blank to keep' : 'PEM contents'} />
 					<Input
 						label="Key passphrase"
 						bind:value={fPassphrase}
+						disabled={saving}
 						type="password"
 						hint={editing ? 'Leave blank to keep' : 'Optional'}
 					/>
 				{:else if kind === 'token'}
 					<div class="grid gap-3 sm:grid-cols-2">
-						<Input label="Username" bind:value={fUsername} hint="Optional; e.g. the PAT owner (git uses it)" />
+						<Input label="Username" bind:value={fUsername} disabled={saving} hint="Optional; e.g. the PAT owner (git uses it)" />
 						<Input
 							label="Token"
 							bind:value={fToken}
+							disabled={saving}
 							type="password"
 							hint={editing ? 'Leave blank to keep' : 'Bearer token or personal access token'}
 						/>
 					</div>
 				{:else if kind === 'api_key'}
 					<div class="grid gap-3 sm:grid-cols-2">
-						<Input label="API key value" bind:value={fToken} type="password" hint={editing ? 'Leave blank to keep' : ''} />
+						<Input label="API key value" bind:value={fToken} disabled={saving} type="password" hint={editing ? 'Leave blank to keep' : ''} />
 						<Input
 							label="Header name"
 							bind:value={fApiKeyHeader}
+							disabled={saving}
 							placeholder="X-API-Key"
 							hint="Blank → X-API-Key, unless the integration or MCP server using it names another"
 						/>
 					</div>
 				{:else if kind === 'oauth2'}
 					<div class="grid gap-3 sm:grid-cols-2">
-						<Input label="Client ID" bind:value={fClientId} required />
+						<Input label="Client ID" bind:value={fClientId} disabled={saving} required />
 						<Input
 							label="Client secret"
 							bind:value={fClientSecret}
+							disabled={saving}
 							type="password"
 							hint={editing ? 'Leave blank to keep' : ''}
 						/>
 					</div>
-					<Input label="Token URL" bind:value={fTokenUrl} placeholder="https://idp.example.com/oauth2/token" required />
-					<Input label="Scopes" bind:value={fScopes} hint="Space-separated, e.g. read:devices write:configs" />
+					<Input label="Token URL" bind:value={fTokenUrl} disabled={saving} placeholder="https://idp.example.com/oauth2/token" required />
+					<Input label="Scopes" bind:value={fScopes} disabled={saving} hint="Space-separated, e.g. read:devices write:configs" />
 				{/if}
 			{/if}
 		</div>
