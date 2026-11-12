@@ -236,6 +236,62 @@ public class AnthropicProviderStreamTests
         Assert.Equal(["tool_result", "tool_result", "text"], resultBlocks.Select(b => (string?)b["type"]));
     }
 
+    // A skill can auto-load behind the FIRST result of a parallel round, which puts
+    // its note between two results. The API only counts a tool_result as answering
+    // its tool_use while no text block precedes it in that turn, so a note left in
+    // the middle gets the whole request refused.
+    [Fact]
+    public void MapMessages_keeps_every_tool_result_ahead_of_notes_added_between_them()
+    {
+        var args = JsonDocument.Parse("{}").RootElement;
+        var (_, mapped) = AnthropicProvider.MapMessages(
+        [
+            new LlmMessage { Role = "system", Content = "you are an agent" },
+            new LlmMessage { Role = "user", Content = "what are you connected to?" },
+            new LlmMessage
+            {
+                Role = "assistant",
+                Content = "",
+                ToolCalls =
+                [
+                    new ToolCallResult { Id = "toolu_1", Name = "list_mcp_tools", Arguments = args },
+                    new ToolCallResult { Id = "toolu_2", Name = "list_integrations", Arguments = args },
+                    new ToolCallResult { Id = "toolu_3", Name = "list_apis", Arguments = args },
+                ],
+            },
+            new LlmMessage { Role = "tool", Content = "mcp", ToolCallId = "toolu_1" },
+            new LlmMessage { Role = "system", Content = "skill: netbox" },
+            new LlmMessage { Role = "tool", Content = "integrations", ToolCallId = "toolu_2" },
+            new LlmMessage { Role = "system", Content = "skill: splunk" },
+            new LlmMessage { Role = "tool", Content = "apis", ToolCallId = "toolu_3" },
+        ]);
+
+        Assert.Equal(3, mapped.Count);
+        var blocks = (List<Dictionary<string, object?>>)mapped[2]["content"]!;
+        Assert.Equal("user", mapped[2]["role"]);
+        Assert.Equal(
+            ["tool_result", "tool_result", "tool_result", "text", "text"],
+            blocks.Select(b => (string?)b["type"]));
+        // Nothing is lost and nothing changes places within its own kind.
+        Assert.Equal(["toolu_1", "toolu_2", "toolu_3"], blocks.Take(3).Select(b => (string?)b["tool_use_id"]));
+        Assert.Equal(["skill: netbox", "skill: splunk"], blocks.Skip(3).Select(b => (string?)b["text"]));
+    }
+
+    // An ordinary user turn has no tool results, and its text stays exactly as sent.
+    [Fact]
+    public void MapMessages_leaves_a_plain_user_turn_in_the_order_it_was_written()
+    {
+        var (_, mapped) = AnthropicProvider.MapMessages(
+        [
+            new LlmMessage { Role = "user", Content = "first" },
+            new LlmMessage { Role = "system", Content = "note" },
+            new LlmMessage { Role = "user", Content = "second" },
+        ]);
+
+        var blocks = (List<Dictionary<string, object?>>)Assert.Single(mapped)["content"]!;
+        Assert.Equal(["first", "note", "second"], blocks.Select(b => (string?)b["text"]));
+    }
+
     // Sending `temperature` to a current model is a 400, not a warning; sending it to
     // an older one is what the tenant configured. Both directions matter.
     [Theory]
