@@ -85,15 +85,47 @@ public class TopicGuidePlacementTests
 
         foreach (var p in others)
         {
-            Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(true, p), p.GetType().Name);
-            Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(false, p), p.GetType().Name);
+            Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(true, null, p), p.GetType().Name);
+            Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(false, null, p), p.GetType().Name);
         }
         foreach (var p in compatible)
         {
-            Assert.True(AgentConversationRunner.ScopedPromptAfterUserFor(true, p), p.ProviderType);
-            Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(false, p), p.ProviderType);
+            Assert.True(AgentConversationRunner.ScopedPromptAfterUserFor(true, null, p), p.ProviderType);
+            Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(false, null, p), p.ProviderType);
         }
     }
+
+    // A provider row's own setting (Config.guidance_after_question) wins over the
+    // server-wide switch in both directions; without one the switch decides. It still
+    // never applies to the other adapters.
+    [Theory]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, null, true)]
+    [InlineData(false, null, false)]
+    public void A_providers_own_setting_wins_over_the_server_switch(bool switchOn, bool? providerSetting, bool expected)
+    {
+        using var http = new HttpClient(new FakeHttpMessageHandler(HttpStatusCode.OK));
+        var ring = new OpenAiProvider(http, "k", "https://ring.example/v1", null, "custom");
+
+        Assert.Equal(expected, AgentConversationRunner.ScopedPromptAfterUserFor(switchOn, providerSetting, ring));
+        Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(switchOn, true, new AnthropicProvider(http, "k")));
+        Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(switchOn, true, new GeminiProvider(http, "k")));
+        Assert.False(AgentConversationRunner.ScopedPromptAfterUserFor(switchOn, true, new OllamaProvider(http, "")));
+    }
+
+    // The setting is read from operator-edited JSON: only a real true/false counts, so
+    // a typo such as "yes" leaves the decision to the server switch.
+    [Theory]
+    [InlineData("""{"guidance_after_question":true}""", true)]
+    [InlineData("""{"guidance_after_question":false}""", false)]
+    [InlineData("""{}""", null)]
+    [InlineData("""{"guidance_after_question":"yes"}""", null)]
+    [InlineData("""{"guidance_after_question":1}""", null)]
+    [InlineData("""[]""", null)]
+    public void The_provider_setting_is_read_only_from_a_json_boolean(string config, bool? expected)
+        => Assert.Equal(expected, LlmProviderFactory.ConfigBool(
+            JsonDocument.Parse(config).RootElement, LlmProviderFactory.GuidanceAfterQuestionConfigKey));
 
     private static async Task<JsonElement> SentMessages(List<LlmMessage> messages)
     {

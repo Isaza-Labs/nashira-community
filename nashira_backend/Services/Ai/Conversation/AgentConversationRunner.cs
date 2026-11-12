@@ -144,7 +144,8 @@ public sealed class AgentConversationRunner
         _dispatcher.ApproveTools(approvals);
         var newlyApproved = approvals.Count > previouslyApproved.Count;
         var composedMessage = ComposeUserMessage(request.Message, request.Attachments);
-        var scopedAfterUser = ScopedPromptAfterUserFor(_chat.ScopedPromptAfterUserMessage, llm);
+        var scopedAfterUser = ScopedPromptAfterUserFor(
+            _chat.ScopedPromptAfterUserMessage, resolved.GuidanceAfterQuestion, llm);
         var messages = await BuildInitialMessagesAsync(
             basePrompt, scopedPrompt, profileMessage, composedMessage, request.ConversationId, scopedAfterUser, streamCt);
 
@@ -666,13 +667,15 @@ public sealed class AgentConversationRunner
     }
 
     // Whether the guidance message goes behind the user's message for this provider.
-    // Only for the OpenAI-compatible adapter, which sends a system message where it
-    // stands and is the one measured. Anthropic would turn a system message behind the
-    // user's into user text and Gemini lifts every system message to the top, so for
-    // them the switch would change who is speaking, or nothing at all; Ollama keeps the
-    // position but is left out until it is measured with its own templates.
-    internal static bool ScopedPromptAfterUserFor(bool switchOn, ILlmProvider provider)
-        => switchOn && provider is OpenAiProvider;
+    // The provider's own setting (Config.guidance_after_question) wins; without one,
+    // the server-wide switch decides. Either way only the OpenAI-compatible adapter
+    // moves it: it sends a system message where it stands, and it is the one measured.
+    // Anthropic would turn a system message behind the user's into user text and
+    // Gemini lifts every system message to the top, so for them the setting would
+    // change who is speaking, or nothing at all; Ollama keeps the position but is left
+    // out until it is measured with its own templates.
+    internal static bool ScopedPromptAfterUserFor(bool switchOn, bool? providerSetting, ILlmProvider provider)
+        => provider is OpenAiProvider && (providerSetting ?? switchOn);
 
     // The order a turn's opening messages are sent in. By default: base prompt, the
     // topic-guide message, the persona, earlier turns, the user's message. With
