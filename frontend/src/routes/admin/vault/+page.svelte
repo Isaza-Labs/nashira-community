@@ -53,7 +53,7 @@
 	} from '$lib/components/ui';
 	import { absolute, timeAgo } from '$lib/utils/time';
 	import { copyText } from '$lib/utils/clipboard';
-	import { errorMessage, isOfflineError } from '$lib/api/client';
+	import { ApiError, errorMessage, isOfflineError } from '$lib/api/client';
 	import { navigationVisibilityStore } from '$lib/stores/navigation-visibility.svelte';
 	import { vaultStoreVisible } from '$lib/nav/registry';
 	import { VAULT_KINDS, kindInfo, kindNoun, kindOfCredential, isVaultKind, type VaultKind } from '$lib/vault/kinds';
@@ -751,8 +751,16 @@
 	// deadline: it was sent, and the server may have made the change before the
 	// answer was lost. So it is reported the same way and the store is re-read,
 	// rather than the admin being told it failed and invited to send it again.
+	//
+	// Two more endings say nothing about what the server did. A 502 or 504 comes
+	// from whatever stands in front of the API (the app's own proxy answers 502
+	// when its connection to the backend breaks), not from the backend's handling
+	// of the write. And a failure that is not an API error at all is an answer that
+	// began and then could not be read: the status said yes and the body was lost.
 	const NO_ANSWER = 'No answer came back from the server. The change may or may not have been saved — check the list.';
-	const outcomeUnknown = (e: unknown) => e instanceof Unanswered || isOfflineError(e);
+	const outcomeUnknown = (e: unknown) =>
+		!(e instanceof Withdrawn) &&
+		(e instanceof Unanswered || isOfflineError(e) || !(e instanceof ApiError) || e.status === 502 || e.status === 504);
 	const outcomeUnknownText = (e: unknown) => (e instanceof Unanswered ? e.message : NO_ANSWER);
 
 	// `onLate` runs if the operation settles after its deadline has already

@@ -6,6 +6,30 @@ The AI layer interprets requests and helps assemble operations. Execution is per
 
 Network operations are Nashira's most extensively validated domain today. The platform model is broader: integrations, API specifications, skills and MCP servers extend the systems that Nashira can operate.
 
+## What it looks like
+
+<p align="center"><img alt="Nashira chat: the agent reports BGP session state on two edge routers and proposes next steps" src="docs/images/chat.png" width="900"></p>
+
+Ask in plain language. The agent reads the connected systems, reports what it found and proposes next steps; changes follow the configured permissions, policies and confirmations.
+
+**Workflow plan.** Each step in order, with the steps that cannot be rolled back automatically marked.
+
+<p align="center"><img alt="A workflow with its execution plan and its non-reversible steps marked" src="docs/images/workflow.png" width="900"></p>
+
+**Run detail.** Status, data flow between steps, inputs and per-step results.
+
+<p align="center"><img alt="One workflow run: status, data flow between steps and inputs" src="docs/images/run.png" width="900"></p>
+
+**Runs.** Every execution, what started it, and how it ended.
+
+<p align="center"><img alt="The list of workflow runs across all workflows" src="docs/images/runs.png" width="900"></p>
+
+**Overview.** Devices by status, inventory freshness and recent agent activity.
+
+<p align="center"><img alt="The overview dashboard" src="docs/images/overview.png" width="900"></p>
+
+The screenshots use invented data.
+
 ## Start here
 
 - [Quick start](QUICK_START.md)

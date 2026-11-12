@@ -38,8 +38,12 @@ public sealed class SseAgentEventSink : IAgentEventSink
     public Task ConfirmationRequiredAsync(string name, JsonElement args, string tier, CancellationToken ct)
         => WriteAsync(new { type = "confirmation_required", name, args, tier }, ct);
 
-    public Task DoneAsync(int tokensIn, int tokensOut, int iterations, CancellationToken ct)
-        => WriteAsync(new { type = "done", tokens_in = tokensIn, tokens_out = tokensOut, iterations }, ct);
+    public Task DoneAsync(int tokensIn, int tokensOut, int cacheRead, int iterations, CancellationToken ct)
+        => WriteAsync(new
+        {
+            type = "done", tokens_in = tokensIn, tokens_out = tokensOut,
+            tokens_cache_read = cacheRead, iterations,
+        }, ct);
 
     public Task ErrorAsync(string message, string? code, CancellationToken ct)
         => WriteAsync(new { type = "error", message, code }, ct);

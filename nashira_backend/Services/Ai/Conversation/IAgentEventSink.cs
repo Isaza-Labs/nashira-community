@@ -20,6 +20,8 @@ public interface IAgentEventSink
     // The agent wants to run a tool that requires the user's confirmation; the turn
     // pauses here until the user re-sends with the tool approved.
     Task ConfirmationRequiredAsync(string name, JsonElement args, string tier, CancellationToken ct);
-    Task DoneAsync(int tokensIn, int tokensOut, int iterations, CancellationToken ct);
+    // cacheRead is the part of tokensIn the provider served from its prompt cache
+    // (zero when it does not report one). It is already counted inside tokensIn.
+    Task DoneAsync(int tokensIn, int tokensOut, int cacheRead, int iterations, CancellationToken ct);
     Task ErrorAsync(string message, string? code, CancellationToken ct);
 }

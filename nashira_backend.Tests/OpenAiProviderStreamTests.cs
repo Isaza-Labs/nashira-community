@@ -129,4 +129,87 @@ public class OpenAiProviderStreamTests
         Assert.DoesNotContain(events, e => e.Type == "tool_call");
         Assert.Equal("length", events.Single(e => e.Type == "done").StopReason);
     }
+
+    // How much of the prompt the server read back from its cache. Local
+    // OpenAI-compatible servers and OpenAI itself say it in
+    // usage.prompt_tokens_details.cached_tokens; without reading it, a working
+    // prefix cache and a broken one both look like zero.
+    [Theory]
+    [InlineData("{\"prompt_tokens\":6038,\"completion_tokens\":8,\"prompt_tokens_details\":{\"cached_tokens\":4096}}", 4096)]
+    [InlineData("{\"prompt_tokens\":6038,\"completion_tokens\":8,\"prompt_cache_hit_tokens\":4096,\"prompt_cache_miss_tokens\":1942}", 4096)]
+    // Both spellings on one response are the same count twice, not two counts.
+    [InlineData("{\"prompt_tokens\":6038,\"completion_tokens\":8,\"prompt_cache_hit_tokens\":4096,\"prompt_tokens_details\":{\"cached_tokens\":4096}}", 4096)]
+    [InlineData("{\"prompt_tokens\":6038,\"completion_tokens\":8,\"prompt_tokens_details\":{\"cached_tokens\":0}}", 0)]
+    public async Task Stream_reports_cached_prompt_tokens_on_done(string usageJson, int expectedCached)
+    {
+        var sse = string.Join("\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}",
+            "data: {\"choices\":[],\"usage\":" + usageJson + "}",
+            "data: [DONE]",
+            "");
+
+        using var http = new HttpClient(new CannedHandler(sse));
+        var provider = new OpenAiProvider(http, "test-key");
+
+        var events = new List<ChatStreamEvent>();
+        await foreach (var e in provider.ChatWithToolsStreamAsync(
+            [new LlmMessage { Role = "user", Content = "hi" }], [], "gpt-x", 0.0, CancellationToken.None))
+        {
+            events.Add(e);
+        }
+
+        var usage = events.Single(e => e.Type == "done" && e.InputTokens is not null);
+        // The cached part is inside prompt_tokens, never added to it.
+        Assert.Equal(6038, usage.InputTokens);
+        Assert.Equal(expectedCached, usage.CacheReadTokens);
+    }
+
+    // A server that says nothing about its cache reports null, not a made-up zero:
+    // the runner's totals then stay at zero without claiming the cache missed.
+    [Fact]
+    public async Task Stream_leaves_cached_tokens_null_when_the_server_does_not_report_them()
+    {
+        var sse = string.Join("\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}",
+            "data: {\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":7}}",
+            "data: [DONE]",
+            "");
+
+        using var http = new HttpClient(new CannedHandler(sse));
+        var provider = new OpenAiProvider(http, "test-key");
+
+        var events = new List<ChatStreamEvent>();
+        await foreach (var e in provider.ChatWithToolsStreamAsync(
+            [new LlmMessage { Role = "user", Content = "hi" }], [], "gpt-x", 0.0, CancellationToken.None))
+        {
+            events.Add(e);
+        }
+
+        var usage = events.Single(e => e.Type == "done" && e.InputTokens is not null);
+        Assert.Null(usage.CacheReadTokens);
+    }
+
+    // The usage object can also ride on a chunk that still has choices (some
+    // servers attach it to the last content chunk instead of a chunk of its own).
+    [Fact]
+    public async Task Stream_reads_cached_tokens_from_a_usage_object_on_a_content_chunk()
+    {
+        var sse = string.Join("\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":1,\"prompt_tokens_details\":{\"cached_tokens\":512}}}",
+            "data: [DONE]",
+            "");
+
+        using var http = new HttpClient(new CannedHandler(sse));
+        var provider = new OpenAiProvider(http, "test-key");
+
+        var events = new List<ChatStreamEvent>();
+        await foreach (var e in provider.ChatWithToolsStreamAsync(
+            [new LlmMessage { Role = "user", Content = "hi" }], [], "gpt-x", 0.0, CancellationToken.None))
+        {
+            events.Add(e);
+        }
+
+        var usage = events.Single(e => e.Type == "done" && e.InputTokens is not null);
+        Assert.Equal(512, usage.CacheReadTokens);
+    }
 }
