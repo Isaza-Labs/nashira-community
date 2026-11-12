@@ -218,43 +218,62 @@ public sealed class AgentConversationRunner
                 long firstEventMs = -1;
                 var (systemChars, conversationChars, toolResultChars) = MessageChars(messages);
 
-                await foreach (var evt in llm.ChatWithToolsStreamAsync(messages, tools, model, Temperature, streamCt))
+                // "completed", "failed" or "cancelled": the round is logged either way, so a
+                // call that breaks mid-stream still shows up with what it reported. The
+                // turn's totals already include that, as reports arrive.
+                var outcome = "completed";
+                try
                 {
-                    if (firstEventMs < 0 && evt.Type != "done") firstEventMs = iterWatch.ElapsedMilliseconds;
-                    switch (evt.Type)
+                    await foreach (var evt in llm.ChatWithToolsStreamAsync(messages, tools, model, Temperature, streamCt))
                     {
-                        case "text_delta":
-                            content.Append(evt.TextDelta);
-                            finalText.Append(evt.TextDelta);
-                            await sink.TextAsync(evt.TextDelta ?? string.Empty, ct);
-                            break;
-                        case "tool_call":
-                            if (evt.ToolCall is not null) pending.Add(evt.ToolCall);
-                            break;
-                        case "done":
-                            // Counted as it arrives, so a call that later fails or is
-                            // cancelled still has what it reported in the turn's totals.
-                            var (addIn, addOut, addRead, addWrite) = callUsage.Add(evt);
-                            totalIn += addIn; totalOut += addOut; totalCacheRead += addRead; totalCacheWrite += addWrite;
-                            if (evt.StopReason is not null) stopReason = evt.StopReason;
-                            break;
+                        if (firstEventMs < 0 && evt.Type != "done") firstEventMs = iterWatch.ElapsedMilliseconds;
+                        switch (evt.Type)
+                        {
+                            case "text_delta":
+                                content.Append(evt.TextDelta);
+                                finalText.Append(evt.TextDelta);
+                                await sink.TextAsync(evt.TextDelta ?? string.Empty, ct);
+                                break;
+                            case "tool_call":
+                                if (evt.ToolCall is not null) pending.Add(evt.ToolCall);
+                                break;
+                            case "done":
+                                // Counted as it arrives, so a call that later fails or is
+                                // cancelled still has what it reported in the turn's totals.
+                                var (addIn, addOut, addRead, addWrite) = callUsage.Add(evt);
+                                totalIn += addIn; totalOut += addOut; totalCacheRead += addRead; totalCacheWrite += addWrite;
+                                if (evt.StopReason is not null) stopReason = evt.StopReason;
+                                break;
+                        }
                     }
                 }
-
-                iterWatch.Stop();
-                var (iterIn, iterOut, iterCacheRead) = (callUsage.Input, callUsage.Output, callUsage.CacheRead);
-                iterationUsage.Add([iterIn, iterCacheRead, iterOut, (int)iterWatch.ElapsedMilliseconds]);
-                _logger.LogInformation(
-                    "ai.chat.iteration conversation={ConversationId} iteration={Iteration} "
-                    + "tokens_in={TokensIn} tokens_cache_read={CacheRead} tokens_out={TokensOut} "
-                    + "first_event_ms={FirstEventMs} elapsed_ms={ElapsedMs} messages={MessageCount} "
-                    + "system_chars={SystemChars} conversation_chars={ConversationChars} "
-                    + "tool_result_chars={ToolResultChars} tool_schema_chars={ToolSchemaChars} "
-                    + "tool_calls={ToolCalls} stop_reason={StopReason}",
-                    conversationId, iterations, iterIn, iterCacheRead, iterOut,
-                    firstEventMs, iterWatch.ElapsedMilliseconds, messages.Count,
-                    systemChars, conversationChars, toolResultChars, toolSchemaChars,
-                    pending.Count, stopReason ?? "none");
+                catch (OperationCanceledException)
+                {
+                    outcome = "cancelled";
+                    throw;
+                }
+                catch
+                {
+                    outcome = "failed";
+                    throw;
+                }
+                finally
+                {
+                    iterWatch.Stop();
+                    var (iterIn, iterOut, iterCacheRead) = (callUsage.Input, callUsage.Output, callUsage.CacheRead);
+                    iterationUsage.Add([iterIn, iterCacheRead, iterOut, (int)iterWatch.ElapsedMilliseconds]);
+                    _logger.LogInformation(
+                        "ai.chat.iteration conversation={ConversationId} iteration={Iteration} "
+                        + "tokens_in={TokensIn} tokens_cache_read={CacheRead} tokens_out={TokensOut} "
+                        + "first_event_ms={FirstEventMs} elapsed_ms={ElapsedMs} messages={MessageCount} "
+                        + "system_chars={SystemChars} conversation_chars={ConversationChars} "
+                        + "tool_result_chars={ToolResultChars} tool_schema_chars={ToolSchemaChars} "
+                        + "tool_calls={ToolCalls} stop_reason={StopReason} outcome={Outcome}",
+                        conversationId, iterations, iterIn, iterCacheRead, iterOut,
+                        firstEventMs, iterWatch.ElapsedMilliseconds, messages.Count,
+                        systemChars, conversationChars, toolResultChars, toolSchemaChars,
+                        pending.Count, stopReason ?? "none", outcome);
+                }
 
                 if (OutputCutOff(stopReason))
                 {
