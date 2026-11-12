@@ -144,8 +144,9 @@ public sealed class AgentConversationRunner
         _dispatcher.ApproveTools(approvals);
         var newlyApproved = approvals.Count > previouslyApproved.Count;
         var composedMessage = ComposeUserMessage(request.Message, request.Attachments);
+        var scopedAfterUser = ScopedPromptAfterUserFor(_chat.ScopedPromptAfterUserMessage, llm);
         var messages = await BuildInitialMessagesAsync(
-            basePrompt, scopedPrompt, profileMessage, composedMessage, request.ConversationId, streamCt);
+            basePrompt, scopedPrompt, profileMessage, composedMessage, request.ConversationId, scopedAfterUser, streamCt);
 
         var finalText = new StringBuilder();
         var totalIn = 0;
@@ -622,13 +623,10 @@ public sealed class AgentConversationRunner
 
     private async Task<List<LlmMessage>> BuildInitialMessagesAsync(
         string systemPrompt, string scopedPrompt, string? profileMessage, string userMessage,
-        Guid? conversationId, CancellationToken ct)
+        Guid? conversationId, bool scopedAfterUser, CancellationToken ct)
     {
-        var msgs = new List<LlmMessage> { new() { Role = "system", Content = systemPrompt } };
-        if (!string.IsNullOrEmpty(scopedPrompt))
-            msgs.Add(new LlmMessage { Role = "system", Content = scopedPrompt });
-        if (profileMessage is not null)
-            msgs.Add(new LlmMessage { Role = "system", Content = profileMessage });
+        // Earlier turns of the conversation, with the note that says some were left out.
+        var earlier = new List<LlmMessage>();
 
         if (conversationId.HasValue)
         {
@@ -658,12 +656,44 @@ public sealed class AgentConversationRunner
                 _logger.LogInformation(
                     "ai.chat.history_windowed conversation={ConversationId} sent={Sent} omitted={Omitted} budget_chars={Budget}",
                     conversationId, kept.Count, omitted, _chat.HistoryCharBudget);
-                msgs.Add(new LlmMessage { Role = "system", Content = HistoryOmittedNote(omitted) });
+                earlier.Add(new LlmMessage { Role = "system", Content = HistoryOmittedNote(omitted) });
             }
-            msgs.AddRange(kept);
+            earlier.AddRange(kept);
         }
 
+        return ArrangeMessages(
+            systemPrompt, scopedPrompt, profileMessage, earlier, userMessage, scopedAfterUser);
+    }
+
+    // Whether the guidance message goes behind the user's message for this provider.
+    // Only for the OpenAI-compatible adapter, which sends a system message where it
+    // stands and is the one measured. Anthropic would turn a system message behind the
+    // user's into user text and Gemini lifts every system message to the top, so for
+    // them the switch would change who is speaking, or nothing at all; Ollama keeps the
+    // position but is left out until it is measured with its own templates.
+    internal static bool ScopedPromptAfterUserFor(bool switchOn, ILlmProvider provider)
+        => switchOn && provider is OpenAiProvider;
+
+    // The order a turn's opening messages are sent in. By default: base prompt, the
+    // topic-guide message, the persona, earlier turns, the user's message. With
+    // `scopedAfterUser` the topic-guide message moves, unchanged, to the end, so that
+    // everything ahead of the conversation is the same for every request (see
+    // AiChatOptions.ScopedPromptAfterUserMessage). Later rounds of the turn append
+    // behind whatever this returns, so either order only ever grows at its end.
+    internal static List<LlmMessage> ArrangeMessages(
+        string systemPrompt, string scopedPrompt, string? profileMessage,
+        IReadOnlyList<LlmMessage> earlier, string userMessage, bool scopedAfterUser)
+    {
+        var hasScoped = !string.IsNullOrEmpty(scopedPrompt);
+        var msgs = new List<LlmMessage> { new() { Role = "system", Content = systemPrompt } };
+        if (hasScoped && !scopedAfterUser)
+            msgs.Add(new LlmMessage { Role = "system", Content = scopedPrompt });
+        if (profileMessage is not null)
+            msgs.Add(new LlmMessage { Role = "system", Content = profileMessage });
+        msgs.AddRange(earlier);
         msgs.Add(new LlmMessage { Role = "user", Content = userMessage });
+        if (hasScoped && scopedAfterUser)
+            msgs.Add(new LlmMessage { Role = "system", Content = scopedPrompt });
         return msgs;
     }
 
