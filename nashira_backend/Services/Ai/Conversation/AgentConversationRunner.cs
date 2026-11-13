@@ -207,8 +207,12 @@ public sealed class AgentConversationRunner
 
         try
         {
-            for (var iter = 0; iter < maxIterations && !streamCt.IsCancellationRequested; iter++)
+            for (var iter = 0; iter < maxIterations; iter++)
             {
+                // A deadline that passed between rounds ends the turn as a timeout. As a
+                // loop condition it ended the loop instead, and the turn was reported as
+                // completed with whatever the last round had said.
+                streamCt.ThrowIfCancellationRequested();
                 iterations = iter + 1;
                 var content = new StringBuilder();
                 var pending = new List<ToolCallResult>();
@@ -246,6 +250,11 @@ public sealed class AgentConversationRunner
                                 break;
                         }
                     }
+                    // The providers stop reading when the token is cancelled without
+                    // throwing (`while (!ct.IsCancellationRequested)`), so a deadline that
+                    // passes while an event is being handled ends the stream as if the
+                    // model had finished. That is a cancelled round, not a short answer.
+                    streamCt.ThrowIfCancellationRequested();
                 }
                 catch (OperationCanceledException)
                 {
