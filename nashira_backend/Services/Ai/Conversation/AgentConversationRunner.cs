@@ -386,6 +386,7 @@ public sealed class AgentConversationRunner
                 resolved.ProviderId, model);
             await RecordTurnAsync(new TurnRecord(
                 conversationId, model, request.Message, assistantText, toolCalls, totalIn, totalOut,
+                totalCacheRead, totalCacheWrite,
                 iterations, turnStatus, turnError, startedAt, (int)turnStopwatch.ElapsedMilliseconds));
 
             var summary = new
@@ -749,10 +750,35 @@ public sealed class AgentConversationRunner
         $"[Context note: the {omitted} earliest messages of this conversation were left out to fit the "
         + "model's context window. If the user refers to something from them, ask rather than assume.]";
 
-    private sealed record TurnRecord(
+    internal sealed record TurnRecord(
         Guid ConversationId, string Model, string UserMessage, string AssistantText,
-        IReadOnlyList<ToolTelemetryEntry> ToolCalls, int TokensIn, int TokensOut, int Iterations,
+        IReadOnlyList<ToolTelemetryEntry> ToolCalls, int TokensIn, int TokensOut,
+        int TokensCacheRead, int TokensCacheWrite, int Iterations,
         string Status, string? Error, DateTime StartedAt, int ElapsedMs);
+
+    // The stored row for a turn. Separate from RecordTurnAsync so what is kept can be
+    // tested without a database that survives SaveChanges.
+    internal static AgentTurn ToAgentTurn(TurnRecord turn, Guid? userId) => new()
+    {
+        AgentTurnId = Guid.NewGuid(),
+        ConversationId = turn.ConversationId,
+        UserId = userId,
+        Model = turn.Model,
+        UserMessage = ToolTelemetry.Cap(turn.UserMessage),
+        AssistantText = ToolTelemetry.Cap(turn.AssistantText),
+        ToolCallsJson = ToolTelemetry.Serialize(turn.ToolCalls),
+        ToolCallCount = turn.ToolCalls.Count,
+        TokensIn = turn.TokensIn,
+        TokensOut = turn.TokensOut,
+        TokensCacheRead = turn.TokensCacheRead,
+        TokensCacheWrite = turn.TokensCacheWrite,
+        Iterations = turn.Iterations,
+        Status = turn.Status,
+        Error = turn.Error is { Length: > 500 } ? turn.Error[..500] : turn.Error,
+        StartedAt = turn.StartedAt,
+        FinishedAt = turn.StartedAt.AddMilliseconds(turn.ElapsedMs),
+        ElapsedMs = turn.ElapsedMs,
+    };
 
     // The forensic row. Written after the conversation is persisted and swallowing its
     // own failures: telemetry that can break a turn is worse than telemetry that is
@@ -761,25 +787,7 @@ public sealed class AgentConversationRunner
     {
         try
         {
-            _db.AgentTurns.Add(new AgentTurn
-            {
-                AgentTurnId = Guid.NewGuid(),
-                ConversationId = turn.ConversationId,
-                UserId = _user.IsAuthenticated ? _user.UserId : null,
-                Model = turn.Model,
-                UserMessage = ToolTelemetry.Cap(turn.UserMessage),
-                AssistantText = ToolTelemetry.Cap(turn.AssistantText),
-                ToolCallsJson = ToolTelemetry.Serialize(turn.ToolCalls),
-                ToolCallCount = turn.ToolCalls.Count,
-                TokensIn = turn.TokensIn,
-                TokensOut = turn.TokensOut,
-                Iterations = turn.Iterations,
-                Status = turn.Status,
-                Error = turn.Error is { Length: > 500 } ? turn.Error[..500] : turn.Error,
-                StartedAt = turn.StartedAt,
-                FinishedAt = turn.StartedAt.AddMilliseconds(turn.ElapsedMs),
-                ElapsedMs = turn.ElapsedMs,
-            });
+            _db.AgentTurns.Add(ToAgentTurn(turn, _user.IsAuthenticated ? _user.UserId : null));
             await _db.SaveChangesAsync(CancellationToken.None);
         }
         catch (Exception ex)
