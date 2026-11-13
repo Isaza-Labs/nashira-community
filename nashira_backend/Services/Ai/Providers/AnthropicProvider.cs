@@ -35,6 +35,8 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
     private readonly ILogger<AnthropicProvider>? _logger;
     private readonly string _messagesUrl;
     private readonly ModelLimits? _limits;
+    // How long a reply that has started may stay silent; see StreamLineReader.
+    private readonly TimeSpan _streamIdle;
     private readonly string? _workspaceId;
 
     // Provider Config key holding the workspace this deployment acts in. An
@@ -48,13 +50,14 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
     public AnthropicProvider(
         HttpClient http, string apiKey, string? baseUrl = null, ILogger<AnthropicProvider>? logger = null,
-        ModelLimits? limits = null, string? workspaceId = null)
+        ModelLimits? limits = null, string? workspaceId = null, TimeSpan? streamIdle = null)
     {
         _http = http;
         _apiKey = apiKey;
         _baseUrl = (baseUrl ?? "https://api.anthropic.com").TrimEnd('/');
         _logger = logger;
         _limits = limits;
+        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
         _workspaceId = string.IsNullOrWhiteSpace(workspaceId) ? null : workspaceId.Trim();
         // A base URL pasted with the version on it ("…/v1") would otherwise become
         // /v1/v1/messages. See LlmHttp.CombineUrl.
@@ -84,7 +87,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
         var body = BuildBody(messages, tools, model, temperature, stream: true);
         using var response = await PostAsync(body, ct);
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var reader = new StreamReader(stream);
+        using var lines = new StreamLineReader(stream, _streamIdle);
 
         // A tool call arrives as a content block that opens with its id and name and
         // is then filled by input_json_delta fragments. Keyed by block index, held
@@ -101,7 +104,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
         while (!ct.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(ct);
+            var line = await lines.ReadLineAsync(ct);
             if (line is null) break; // end of stream
             // The `event:` line repeats the payload's own "type" field, so only the
             // data is read; blank lines separate events.
@@ -144,6 +147,8 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
                 case "content_block_start":
                 {
+                    // Any block: text, a tool call, thinking. The model is answering.
+                    lines.ReplyStarted();
                     if (!evt.TryGetProperty("content_block", out var block)
                         || block.ValueKind != JsonValueKind.Object) break;
                     if (!block.TryGetProperty("type", out var bt) || bt.GetString() != "tool_use") break;
@@ -165,6 +170,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
                 case "content_block_delta":
                 {
+                    lines.ReplyStarted();
                     if (!evt.TryGetProperty("delta", out var delta)
                         || delta.ValueKind != JsonValueKind.Object) break;
                     var dt = delta.TryGetProperty("type", out var dte) && dte.ValueKind == JsonValueKind.String
