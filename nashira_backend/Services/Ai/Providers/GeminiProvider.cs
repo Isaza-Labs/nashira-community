@@ -49,7 +49,7 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
         _baseUrl = (baseUrl ?? "https://generativelanguage.googleapis.com").TrimEnd('/');
         _logger = logger;
         _limits = limits;
-        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
+        _streamIdle = streamIdle ?? TimeSpan.Zero;
     }
 
     public async Task<ChatResult> ChatAsync(

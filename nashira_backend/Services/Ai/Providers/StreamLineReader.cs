@@ -5,7 +5,7 @@ namespace nashira_backend.Services.Ai.Providers;
 // The message reaches the person in the chat, after whatever text had already
 // streamed, so it says what happened in their terms rather than the socket's.
 public sealed class LlmStreamStalledException(TimeSpan limit)
-    : Exception($"The model stopped sending for {limit.TotalSeconds:0} s before finishing its reply, so the reply may be cut off. Try again.")
+    : Exception($"The model stopped sending for {limit.TotalSeconds:0.#} s before finishing its reply, so the reply may be cut off. Try again.")
 {
     public TimeSpan Limit { get; } = limit;
 }
@@ -42,10 +42,9 @@ public sealed class LlmStreamStalledException(TimeSpan limit)
 //    model is busy (TensorFold sends one after 15 s of silence).
 internal sealed class StreamLineReader : IDisposable
 {
-    // Process-wide default, set once at startup from AiChat:StreamIdleSeconds, for a
-    // provider whose Config has no stream_idle_seconds. Providers take their own value
-    // so tests never have to change this one.
-    internal static TimeSpan DefaultLimit { get; set; } = TimeSpan.FromSeconds(AiChatDefaults.StreamIdleSeconds);
+    // The longest limit there is. Nothing longer is a limit on a chat turn, and a
+    // timer does not accept much more: past about 49 days CancelAfter throws.
+    internal static readonly TimeSpan MaxLimit = TimeSpan.FromDays(1);
 
     private readonly StreamReader _reader;
     private readonly TimeSpan _limit;
@@ -56,7 +55,7 @@ internal sealed class StreamLineReader : IDisposable
 
     public StreamLineReader(Stream stream, TimeSpan limit)
     {
-        _limit = limit;
+        _limit = limit > MaxLimit ? MaxLimit : limit;
         _reader = new StreamReader(new ReadNotifyingStream(stream, BytesArrived));
     }
 
@@ -140,11 +139,4 @@ internal sealed class StreamLineReader : IDisposable
 
         public override ValueTask DisposeAsync() => inner.DisposeAsync();
     }
-}
-
-// Defaults shared by AiChatOptions and the providers, so neither restates the other.
-internal static class AiChatDefaults
-{
-    // Off: see StreamLineReader for why a limit on silence is opt-in.
-    public const int StreamIdleSeconds = 0;
 }

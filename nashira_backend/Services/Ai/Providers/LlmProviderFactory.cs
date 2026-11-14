@@ -39,16 +39,25 @@ public class LlmProviderFactory
     // which is off unless set. See StreamLineReader for when it is safe to set.
     public const string StreamIdleSecondsConfigKey = "stream_idle_seconds";
 
+    // A provider's limit is 0 or between these. Under a second is not a limit a
+    // working stream survives, and a value that small would otherwise round to 0
+    // and switch the limit off without saying so.
+    internal const double MinStreamIdleSeconds = 1;
+    internal static readonly double MaxStreamIdleSeconds = StreamLineReader.MaxLimit.TotalSeconds;
+
     private readonly AppDbContext _db;
     private readonly ICurrentUser _user;
     private readonly IHttpClientFactory _httpFactory;
     private readonly ISecretProtector _crypto;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly TimeSpan _serverStreamIdle;
 
     public LlmProviderFactory(
         AppDbContext db, ICurrentUser user, IHttpClientFactory httpFactory,
-        ISecretProtector crypto, ILoggerFactory loggerFactory)
+        ISecretProtector crypto, ILoggerFactory loggerFactory,
+        Microsoft.Extensions.Options.IOptions<nashira_backend.Configuration.AiChatOptions>? chat = null)
     {
+        _serverStreamIdle = ServerStreamIdle(chat?.Value.StreamIdleSeconds ?? 0);
         _db = db;
         _user = user;
         _httpFactory = httpFactory;
@@ -132,14 +141,16 @@ public class LlmProviderFactory
             || !config.TryGetProperty(StreamIdleSecondsConfigKey, out var node)
             || node.ValueKind != System.Text.Json.JsonValueKind.Number
             || !node.TryGetDouble(out var seconds)
-            || !(seconds >= 0) || seconds > MaxStreamIdleSeconds)
+            || !(seconds == 0 || (seconds >= MinStreamIdleSeconds && seconds <= MaxStreamIdleSeconds)))
             return null;
         return TimeSpan.FromSeconds(seconds);
     }
 
-    // A day. Nothing longer is a limit on a chat turn, and it keeps the value inside
-    // what a timer accepts.
-    internal const double MaxStreamIdleSeconds = 86_400;
+    // The server-wide limit from AiChat:StreamIdleSeconds, for a provider with none of
+    // its own. Out of range is brought into range rather than refused: a negative
+    // value is off, and one above the maximum is the maximum.
+    internal static TimeSpan ServerStreamIdle(int seconds) =>
+        TimeSpan.FromSeconds(Math.Clamp(seconds, 0, MaxStreamIdleSeconds));
 
     private ResolvedLlm Resolve(AIProvider row, string? modelOverride) => new(
         Build(row),
@@ -160,8 +171,8 @@ public class LlmProviderFactory
         // Config.model_limits, when the row has one; null keeps each provider's own
         // default. Read here, once per resolve, so the providers stay config-free.
         var limits = ModelLimits.FromConfig(provider.Config);
-        // Null leaves each provider on the server-wide default.
-        var streamIdle = ConfigStreamIdle(provider.Config);
+        // The provider's own limit, or the server-wide one when it has none.
+        var streamIdle = ConfigStreamIdle(provider.Config) ?? _serverStreamIdle;
 
         // A blank base URL means "the vendor's own endpoint"; a filled one is a
         // proxy, a self-hosted deployment, or — for `custom` — the only address

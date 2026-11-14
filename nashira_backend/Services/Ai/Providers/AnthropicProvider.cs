@@ -57,7 +57,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
         _baseUrl = (baseUrl ?? "https://api.anthropic.com").TrimEnd('/');
         _logger = logger;
         _limits = limits;
-        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
+        _streamIdle = streamIdle ?? TimeSpan.Zero;
         _workspaceId = string.IsNullOrWhiteSpace(workspaceId) ? null : workspaceId.Trim();
         // A base URL pasted with the version on it ("…/v1") would otherwise become
         // /v1/v1/messages. See LlmHttp.CombineUrl.

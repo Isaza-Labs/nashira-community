@@ -116,8 +116,8 @@ public class AiChatOptions
     // those replies. Turn it on for a provider whose server keeps the connection busy
     // with Config.stream_idle_seconds on that provider, which wins over this setting;
     // this one, `AiChat__StreamIdleSeconds`, applies to every provider that has none.
-    // See StreamLineReader.
-    public int StreamIdleSeconds { get; set; } = Services.Ai.Providers.AiChatDefaults.StreamIdleSeconds;
+    // A negative value counts as 0 and one above a day as a day. See StreamLineReader.
+    public int StreamIdleSeconds { get; set; }
 
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the
     // budget and deliberately not configurable; its one requirement is that it stay

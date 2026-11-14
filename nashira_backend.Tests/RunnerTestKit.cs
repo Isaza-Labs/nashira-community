@@ -56,10 +56,11 @@ internal sealed class RunnerTestKit : IAsyncDisposable
         Db.SaveChanges();
 
         var user = caller ?? new SignedInUser();
+        var chat = Options.Create(new AiChatOptions { StreamDeadlineSeconds = deadlineSeconds });
         var registry = new ToolRegistry(NullLogger<ToolRegistry>.Instance);
         Runner = new AgentConversationRunner(
             Db,
-            new LlmProviderFactory(Db, user, http, new PassthroughProtector(), NullLoggerFactory.Instance),
+            new LlmProviderFactory(Db, user, http, new PassthroughProtector(), NullLoggerFactory.Instance, chat),
             registry,
             // An unregistered tool is answered before the guard, autonomy, audit and
             // self-correction services are reached, so those stay null.
@@ -73,7 +74,7 @@ internal sealed class RunnerTestKit : IAsyncDisposable
             new AgentTurnScope(),
             Log,
             new NoopTrace(),
-            Options.Create(new AiChatOptions { StreamDeadlineSeconds = deadlineSeconds }));
+            chat);
     }
 
     public Task RunAsync(string message = "hello", CancellationToken ct = default) =>

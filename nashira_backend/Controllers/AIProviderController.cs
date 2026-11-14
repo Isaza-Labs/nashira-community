@@ -227,8 +227,8 @@ public class AIProviderController : ControllerBase
         if (value.TryGetProperty(LlmProviderFactory.StreamIdleSecondsConfigKey, out _)
             && LlmProviderFactory.ConfigStreamIdle(value) is null)
             throw new ValidationException(
-                $"config.{LlmProviderFactory.StreamIdleSecondsConfigKey} must be a number of seconds, "
-                + $"from 0 (off) to {LlmProviderFactory.MaxStreamIdleSeconds:0}");
+                $"config.{LlmProviderFactory.StreamIdleSecondsConfigKey} must be 0 (off) or a number of seconds "
+                + $"from {LlmProviderFactory.MinStreamIdleSeconds:0} to {LlmProviderFactory.MaxStreamIdleSeconds:0}");
 
         // Cloned: the JsonElement handed in by the model binder is backed by the
         // request's buffer, which is recycled once the response is written.

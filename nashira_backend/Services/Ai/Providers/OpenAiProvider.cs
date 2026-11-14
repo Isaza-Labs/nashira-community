@@ -57,7 +57,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
         _logger = logger;
         _providerType = providerType;
         _limits = limits;
-        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
+        _streamIdle = streamIdle ?? TimeSpan.Zero;
         // A base URL pasted with the version on it ("https://api.deepseek.com/v1",
         // which is what DeepSeek's own docs publish) would otherwise become
         // /v1/v1/chat/completions. See LlmHttp.CombineUrl.

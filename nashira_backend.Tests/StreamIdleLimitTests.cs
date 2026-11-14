@@ -4,6 +4,9 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
+using nashira_backend.Configuration;
+using nashira_backend.Controllers;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
 using nashira_backend.Services.Ai.Providers;
@@ -32,6 +35,8 @@ public class StreamIdleLimitTests
         public Stream Stream => _pipe.Reader.AsStream();
         public async Task WriteAsync(string text) => await _pipe.Writer.WriteAsync(Encoding.UTF8.GetBytes(text));
         public Task CompleteAsync() => _pipe.Writer.CompleteAsync().AsTask();
+        public Task BreakAsync(Exception error) => _pipe.Writer.CompleteAsync(error).AsTask();
+        public async Task WriteAsync(byte[] bytes) => await _pipe.Writer.WriteAsync(bytes);
     }
 
     private sealed class BodyHandler(OpenBody body) : HttpMessageHandler
@@ -117,15 +122,15 @@ public class StreamIdleLimitTests
 
         var writer = Task.Run(async () =>
         {
-            for (var i = 0; i < 9; i++)
+            for (var i = 0; i < 18; i++)
             {
                 await body.WriteAsync("ab");
-                await Task.Delay(Limit / 3);
+                await Task.Delay(Limit / 6);
             }
             await body.WriteAsync("\n");
         });
 
-        Assert.Equal(string.Concat(Enumerable.Repeat("ab", 9)), await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
+        Assert.Equal(string.Concat(Enumerable.Repeat("ab", 18)), await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
         await writer;
     }
 
@@ -152,9 +157,9 @@ public class StreamIdleLimitTests
 
         var writer = Task.Run(async () =>
         {
-            for (var i = 0; i < 6; i++)
+            for (var i = 0; i < 12; i++)
             {
-                await Task.Delay(Limit / 3);
+                await Task.Delay(Limit / 6);
                 await body.WriteAsync(": keepalive\n");
             }
             await body.WriteAsync("data: [DONE]\n");
@@ -165,7 +170,7 @@ public class StreamIdleLimitTests
         while (await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound) is { } line) seen.Add(line);
         await writer;
 
-        Assert.Equal(6, seen.Count(l => l == ": keepalive"));
+        Assert.Equal(12, seen.Count(l => l == ": keepalive"));
         Assert.Equal("data: [DONE]", seen[^1]);
     }
 
@@ -247,6 +252,7 @@ public class StreamIdleLimitTests
 
     [Theory]
     [InlineData("{\"reasoning_content\":\"thinking\"}")]
+    [InlineData("{\"reasoning\":\"thinking\"}")]
     [InlineData("{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"whoami\",\"arguments\":\"\"}}]}")]
     public async Task OpenAi_reasoning_or_a_tool_call_also_starts_the_limit(string delta)
     {
@@ -414,23 +420,92 @@ public class StreamIdleLimitTests
         Assert.Equal("hola", await reply.WaitAsync(Bound));
     }
 
+    [Theory]
+    [InlineData("{\"role\":\"assistant\",\"content\":\"\",\"thinking\":\"Let me see.\"}")]
+    [InlineData("{\"role\":\"assistant\",\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"lookup\",\"arguments\":{}}}]}")]
+    public async Task Ollama_thinking_or_a_tool_call_starts_the_limit(string message)
+    {
+        var body = new OpenBody();
+        await body.WriteAsync("{\"message\":" + message + ",\"done\":false}\n");
+        var provider = new OllamaProvider(new HttpClient(new BodyHandler(body)), "", "http://ollama.example", streamIdle: Limit);
+
+        await Assert.ThrowsAsync<LlmStreamStalledException>(
+            () => Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None))).WaitAsync(Bound);
+    }
+
+    // ── what the reader leaves alone ────────────────────────────────────────
+
+    [Fact]
+    public async Task A_character_split_across_two_reads_is_decoded_whole()
+    {
+        var body = new OpenBody();
+        using var lines = new StreamLineReader(body.Stream, Limit);
+        lines.ReplyStarted();
+        var bytes = Encoding.UTF8.GetBytes("señal ✓\n");
+        var cut = Array.IndexOf(bytes, (byte)0xC3) + 1; // between the two bytes of "ñ"
+
+        await body.WriteAsync(bytes[..cut]);
+        var line = lines.ReadLineAsync(CancellationToken.None);
+        await Task.Delay(Limit / 6);
+        await body.WriteAsync(bytes[cut..]);
+
+        Assert.Equal("señal ✓", await line.WaitAsync(Bound));
+    }
+
+    [Fact]
+    public async Task A_broken_connection_is_reported_as_what_it_was_not_as_a_stall()
+    {
+        var body = new OpenBody();
+        using var lines = new StreamLineReader(body.Stream, Limit);
+        lines.ReplyStarted();
+        await body.BreakAsync(new IOException("the connection was reset"));
+
+        var error = await Assert.ThrowsAsync<IOException>(
+            () => lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
+        Assert.Equal("the connection was reset", error.Message);
+    }
+
+    [Theory]
+    [InlineData(60, "60 s")]
+    [InlineData(2.5, "2.5 s")]
+    [InlineData(1, "1 s")]
+    public void The_message_names_the_limit_as_it_was_set(double seconds, string shown)
+    {
+        Assert.Contains($"stopped sending for {shown} ", new LlmStreamStalledException(TimeSpan.FromSeconds(seconds)).Message);
+    }
+
+    [Fact]
+    public async Task A_limit_longer_than_a_timer_accepts_does_not_break_the_stream()
+    {
+        var body = new OpenBody();
+        using var lines = new StreamLineReader(body.Stream, TimeSpan.FromSeconds(5_000_000));
+        lines.ReplyStarted();
+        await body.WriteAsync("data: one\n");
+
+        Assert.Equal("data: one", await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
+    }
+
     // ── the setting ─────────────────────────────────────────────────────────
 
     [Fact]
     public void The_limit_is_off_unless_it_is_set()
     {
-        Assert.Equal(0, new nashira_backend.Configuration.AiChatOptions().StreamIdleSeconds);
-        Assert.Equal(TimeSpan.Zero, StreamLineReader.DefaultLimit);
+        Assert.Equal(0, new AiChatOptions().StreamIdleSeconds);
     }
 
     [Theory]
     [InlineData("""{"stream_idle_seconds":60}""", 60.0)]
     [InlineData("""{"stream_idle_seconds":0}""", 0.0)]
     [InlineData("""{"stream_idle_seconds":2.5}""", 2.5)]
+    [InlineData("""{"stream_idle_seconds":1}""", 1.0)]
+    [InlineData("""{"stream_idle_seconds":86400}""", 86400.0)]
     [InlineData("""{"models":["m2"]}""", null)]
     [InlineData("""{"stream_idle_seconds":"60"}""", null)]
     [InlineData("""{"stream_idle_seconds":true}""", null)]
     [InlineData("""{"stream_idle_seconds":-1}""", null)]
+    [InlineData("""{"stream_idle_seconds":0.3}""", null)]
+    [InlineData("""{"stream_idle_seconds":1e-100}""", null)]
+    [InlineData("""{"stream_idle_seconds":86401}""", null)]
     [InlineData("""{"stream_idle_seconds":1e12}""", null)]
     public void A_providers_own_limit_is_read_from_its_config(string config, double? seconds)
     {
@@ -440,13 +515,25 @@ public class StreamIdleLimitTests
     }
 
     [Theory]
+    [InlineData(0, 0)]
+    [InlineData(60, 60)]
+    [InlineData(-5, 0)]
+    [InlineData(5_000_000, 86_400)]
+    [InlineData(int.MaxValue, 86_400)]
+    public void The_server_wide_limit_is_brought_into_range(int setting, double seconds)
+    {
+        Assert.Equal(seconds, LlmProviderFactory.ServerStreamIdle(setting).TotalSeconds);
+    }
+
+    [Theory]
     [InlineData("""{"stream_idle_seconds":60}""")]
     [InlineData("""{"stream_idle_seconds":0}""")]
     [InlineData("""{"stream_idle_seconds":2.5,"models":["m2"]}""")]
+    [InlineData("""{"stream_idle_seconds":86400}""")]
     [InlineData("""{"models":["m2"]}""")]
     public void Saving_a_provider_accepts_a_limit_in_seconds(string config)
     {
-        var saved = nashira_backend.Controllers.AIProviderController.NormalizeConfig(JsonDocument.Parse(config).RootElement);
+        var saved = AIProviderController.NormalizeConfig(JsonDocument.Parse(config).RootElement);
 
         Assert.Equal(JsonDocument.Parse(config).RootElement.GetRawText(), saved.GetRawText());
     }
@@ -456,11 +543,14 @@ public class StreamIdleLimitTests
     [InlineData("""{"stream_idle_seconds":true}""")]
     [InlineData("""{"stream_idle_seconds":-1}""")]
     [InlineData("""{"stream_idle_seconds":null}""")]
+    [InlineData("""{"stream_idle_seconds":0.3}""")]
+    [InlineData("""{"stream_idle_seconds":1e-100}""")]
+    [InlineData("""{"stream_idle_seconds":86401}""")]
     [InlineData("""{"stream_idle_seconds":1e12}""")]
     public void Saving_a_provider_refuses_a_limit_that_would_be_ignored(string config)
     {
         var error = Assert.ThrowsAny<Exception>(
-            () => nashira_backend.Controllers.AIProviderController.NormalizeConfig(JsonDocument.Parse(config).RootElement));
+            () => AIProviderController.NormalizeConfig(JsonDocument.Parse(config).RootElement));
 
         Assert.Contains("config.stream_idle_seconds", error.Message);
     }
@@ -480,7 +570,7 @@ public class StreamIdleLimitTests
     {
         var body = new OpenBody();
         await body.WriteAsync(reply);
-        var provider = await StoredProviderAsync(type, """{"stream_idle_seconds":0.3}""", body);
+        var provider = await StoredProviderAsync(type, """{"stream_idle_seconds":1}""", body);
 
         await Assert.ThrowsAsync<LlmStreamStalledException>(
             () => Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None))).WaitAsync(Bound);
@@ -495,16 +585,87 @@ public class StreamIdleLimitTests
         var provider = await StoredProviderAsync(type, "{}", body);
         var text = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
 
-        await Task.Delay(Limit * 3);
+        await Task.Delay(TimeSpan.FromSeconds(2));
         Assert.False(text.IsCompleted);
         await body.CompleteAsync();
 
         Assert.Equal("hola", await text.WaitAsync(Bound));
     }
 
+    [Fact]
+    public async Task The_server_wide_setting_applies_to_a_provider_with_none_of_its_own()
+    {
+        var body = new OpenBody();
+        await body.WriteAsync(OpenReplies.First()[1].ToString()!);
+        var provider = await StoredProviderAsync("custom", "{}", body, serverWideSeconds: 1);
+
+        await Assert.ThrowsAsync<LlmStreamStalledException>(
+            () => Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None))).WaitAsync(Bound);
+    }
+
+    [Fact]
+    public async Task A_provider_set_to_zero_stays_off_under_a_server_wide_setting()
+    {
+        var body = new OpenBody();
+        await body.WriteAsync(OpenReplies.First()[1].ToString()!);
+        var provider = await StoredProviderAsync("custom", """{"stream_idle_seconds":0}""", body, serverWideSeconds: 1);
+        var text = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
+
+        await Task.Delay(TimeSpan.FromSeconds(2.5));
+        Assert.False(text.IsCompleted);
+        await body.CompleteAsync();
+
+        Assert.Equal("hola", await text.WaitAsync(Bound));
+    }
+
+    [Fact]
+    public async Task A_server_wide_setting_far_out_of_range_does_not_break_a_healthy_reply()
+    {
+        var body = new OpenBody();
+        await body.WriteAsync(OpenReplies.First()[1].ToString()!);
+        var provider = await StoredProviderAsync("custom", "{}", body, serverWideSeconds: 5_000_000);
+        var text = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
+
+        await body.WriteAsync("data: {\"choices\":[{\"delta\":{\"content\":\" mundo\"}}]}\n\ndata: [DONE]\n\n");
+        await body.CompleteAsync();
+
+        Assert.Equal("hola mundo", await text.WaitAsync(Bound));
+    }
+
+    // ── a whole turn ────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task A_turn_whose_reply_goes_silent_keeps_its_text_and_is_stored_as_an_error()
+    {
+        // The model says something and reports its usage, then the server goes silent
+        // with the connection open. The provider's limit is one second; the turn's
+        // deadline is the default four minutes.
+        var reply = new ScriptedBody(
+            RunnerTestKit.Sse(
+                "{\"choices\":[{\"delta\":{\"content\":\"Par\"}}]}",
+                "{\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5}}"),
+            ScriptedBody.Ending.Hang);
+        await using var kit = new RunnerTestKit(new ScriptedHttp(reply), providerConfig: """{"stream_idle_seconds":1}""");
+
+        await kit.RunAsync().WaitAsync(Bound);
+
+        Assert.Equal(["Par"], kit.Sink.Text);
+        Assert.True(kit.Sink.Errored);
+        Assert.Null(kit.Sink.ErrorCode);
+        Assert.Contains("stopped sending for 1 s", kit.Sink.ErrorMessage);
+        Assert.False(kit.Sink.Done);
+        var turn = await kit.StoredTurnAsync();
+        Assert.Equal(AgentTurn.StatusError, turn.Status);
+        Assert.Equal("Par", turn.AssistantText);
+        Assert.Contains("stopped sending", turn.Error);
+        Assert.Equal((100, 5), (turn.TokensIn, turn.TokensOut));
+        Assert.Contains(" outcome=failed", Assert.Single(kit.Log.Rounds));
+    }
+
     // The provider a chat turn would get for a stored row: built by LlmProviderFactory
-    // from the row's Config.
-    private static async Task<IStreamingToolCallingLlmProvider> StoredProviderAsync(string type, string config, OpenBody body)
+    // from the row's Config and the server-wide setting.
+    private static async Task<IStreamingToolCallingLlmProvider> StoredProviderAsync(
+        string type, string config, OpenBody body, int serverWideSeconds = 0)
     {
         var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase($"stream-idle-{Guid.NewGuid()}").Options);
@@ -521,7 +682,8 @@ public class StreamIdleLimitTests
         });
         await db.SaveChangesAsync();
         var factory = new LlmProviderFactory(
-            db, new NoUser(), new BodyClients(body), new PlainProtector(), NullLoggerFactory.Instance);
+            db, new NoUser(), new BodyClients(body), new PlainProtector(), NullLoggerFactory.Instance,
+            Options.Create(new AiChatOptions { StreamIdleSeconds = serverWideSeconds }));
         return (await factory.ResolveAsync(id, null, CancellationToken.None)).Provider;
     }
 

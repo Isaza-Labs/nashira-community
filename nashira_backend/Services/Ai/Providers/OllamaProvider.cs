@@ -60,7 +60,7 @@ public sealed class OllamaProvider : IStreamingToolCallingLlmProvider
         _baseUrl = (baseUrl ?? "http://localhost:11434").TrimEnd('/');
         _logger = logger;
         _limits = limits;
-        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
+        _streamIdle = streamIdle ?? TimeSpan.Zero;
         // A base URL pasted as "http://host/api" would otherwise become /api/api/chat.
         _chatUrl = LlmHttp.CombineUrl(_baseUrl, "/api/chat");
     }
