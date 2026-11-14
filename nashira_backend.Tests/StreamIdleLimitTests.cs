@@ -1,12 +1,20 @@
 using System.IO.Pipelines;
 using System.Net;
 using System.Text;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
+using nashira_backend.Data.Db;
+using nashira_backend.Data.Models;
 using nashira_backend.Services.Ai.Providers;
+using nashira_backend.Services.Identity;
+using nashira_backend.Services.Security;
 
 namespace nashira_backend.Tests;
 
-// A reply that goes silent part-way through ends after the idle limit instead of
-// holding the turn until its deadline. Everything else behaves as before: a server
+// With the idle limit set, a reply that goes silent part-way through ends after it
+// instead of holding the turn until its deadline. The limit is off unless a provider's
+// Config or the server-wide setting turns it on. Everything else behaves as before: a server
 // that is slow to start (whatever it sends first), a line that arrives in pieces,
 // keepalives and the caller's own cancellation.
 //
@@ -406,9 +414,134 @@ public class StreamIdleLimitTests
         Assert.Equal("hola", await reply.WaitAsync(Bound));
     }
 
+    // ── the setting ─────────────────────────────────────────────────────────
+
     [Fact]
-    public void The_default_is_sixty_seconds_and_the_setting_says_so()
+    public void The_limit_is_off_unless_it_is_set()
     {
-        Assert.Equal(60, new nashira_backend.Configuration.AiChatOptions().StreamIdleSeconds);
+        Assert.Equal(0, new nashira_backend.Configuration.AiChatOptions().StreamIdleSeconds);
+        Assert.Equal(TimeSpan.Zero, StreamLineReader.DefaultLimit);
+    }
+
+    [Theory]
+    [InlineData("""{"stream_idle_seconds":60}""", 60.0)]
+    [InlineData("""{"stream_idle_seconds":0}""", 0.0)]
+    [InlineData("""{"stream_idle_seconds":2.5}""", 2.5)]
+    [InlineData("""{"models":["m2"]}""", null)]
+    [InlineData("""{"stream_idle_seconds":"60"}""", null)]
+    [InlineData("""{"stream_idle_seconds":true}""", null)]
+    [InlineData("""{"stream_idle_seconds":-1}""", null)]
+    [InlineData("""{"stream_idle_seconds":1e12}""", null)]
+    public void A_providers_own_limit_is_read_from_its_config(string config, double? seconds)
+    {
+        var limit = LlmProviderFactory.ConfigStreamIdle(JsonDocument.Parse(config).RootElement);
+
+        Assert.Equal(seconds, limit?.TotalSeconds);
+    }
+
+    [Theory]
+    [InlineData("""{"stream_idle_seconds":60}""")]
+    [InlineData("""{"stream_idle_seconds":0}""")]
+    [InlineData("""{"stream_idle_seconds":2.5,"models":["m2"]}""")]
+    [InlineData("""{"models":["m2"]}""")]
+    public void Saving_a_provider_accepts_a_limit_in_seconds(string config)
+    {
+        var saved = nashira_backend.Controllers.AIProviderController.NormalizeConfig(JsonDocument.Parse(config).RootElement);
+
+        Assert.Equal(JsonDocument.Parse(config).RootElement.GetRawText(), saved.GetRawText());
+    }
+
+    [Theory]
+    [InlineData("""{"stream_idle_seconds":"60"}""")]
+    [InlineData("""{"stream_idle_seconds":true}""")]
+    [InlineData("""{"stream_idle_seconds":-1}""")]
+    [InlineData("""{"stream_idle_seconds":null}""")]
+    [InlineData("""{"stream_idle_seconds":1e12}""")]
+    public void Saving_a_provider_refuses_a_limit_that_would_be_ignored(string config)
+    {
+        var error = Assert.ThrowsAny<Exception>(
+            () => nashira_backend.Controllers.AIProviderController.NormalizeConfig(JsonDocument.Parse(config).RootElement));
+
+        Assert.Contains("config.stream_idle_seconds", error.Message);
+    }
+
+    // What each kind of provider sends once its model has said "hola" and gone silent.
+    public static TheoryData<string, string> OpenReplies => new()
+    {
+        { "custom", "data: {\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}\n\n" },
+        { "anthropic", AnthropicStart + AnthropicText },
+        { "gemini", "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hola\"}]}}]}\n\n" },
+        { "ollama", "{\"message\":{\"role\":\"assistant\",\"content\":\"hola\"},\"done\":false}\n" },
+    };
+
+    [Theory]
+    [MemberData(nameof(OpenReplies))]
+    public async Task A_stored_provider_with_the_setting_ends_a_silent_reply(string type, string reply)
+    {
+        var body = new OpenBody();
+        await body.WriteAsync(reply);
+        var provider = await StoredProviderAsync(type, """{"stream_idle_seconds":0.3}""", body);
+
+        await Assert.ThrowsAsync<LlmStreamStalledException>(
+            () => Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None))).WaitAsync(Bound);
+    }
+
+    [Theory]
+    [MemberData(nameof(OpenReplies))]
+    public async Task A_stored_provider_without_the_setting_is_left_to_the_turn_deadline(string type, string reply)
+    {
+        var body = new OpenBody();
+        await body.WriteAsync(reply);
+        var provider = await StoredProviderAsync(type, "{}", body);
+        var text = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
+
+        await Task.Delay(Limit * 3);
+        Assert.False(text.IsCompleted);
+        await body.CompleteAsync();
+
+        Assert.Equal("hola", await text.WaitAsync(Bound));
+    }
+
+    // The provider a chat turn would get for a stored row: built by LlmProviderFactory
+    // from the row's Config.
+    private static async Task<IStreamingToolCallingLlmProvider> StoredProviderAsync(string type, string config, OpenBody body)
+    {
+        var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
+            .UseInMemoryDatabase($"stream-idle-{Guid.NewGuid()}").Options);
+        var id = Guid.NewGuid();
+        db.AIProviders.Add(new AIProvider
+        {
+            AIProviderId = id,
+            Name = "p",
+            Type = type,
+            BaseURL = "https://model.example",
+            DefaultModel = "m",
+            EncryptedApiKey = Encoding.UTF8.GetBytes("k"),
+            Config = JsonDocument.Parse(config).RootElement,
+        });
+        await db.SaveChangesAsync();
+        var factory = new LlmProviderFactory(
+            db, new NoUser(), new BodyClients(body), new PlainProtector(), NullLoggerFactory.Instance);
+        return (await factory.ResolveAsync(id, null, CancellationToken.None)).Provider;
+    }
+
+    private sealed class BodyClients(OpenBody body) : IHttpClientFactory
+    {
+        public HttpClient CreateClient(string name) => new(new BodyHandler(body));
+    }
+
+    private sealed class PlainProtector : ISecretProtector
+    {
+        public byte[]? Encrypt(string? plaintext) => plaintext is null ? null : Encoding.UTF8.GetBytes(plaintext);
+        public string? Decrypt(byte[]? ciphertext) =>
+            ciphertext is null || ciphertext.Length == 0 ? null : Encoding.UTF8.GetString(ciphertext);
+    }
+
+    private sealed class NoUser : ICurrentUser
+    {
+        public Guid UserId => throw new InvalidOperationException("anonymous");
+        public string? Username => null;
+        public IReadOnlyList<string> Roles => [];
+        public bool IsAuthenticated => false;
     }
 }

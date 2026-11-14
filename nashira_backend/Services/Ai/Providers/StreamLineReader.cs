@@ -15,10 +15,19 @@ public sealed class LlmStreamStalledException(TimeSpan limit)
 // The turn deadline (AiChat:StreamDeadlineSeconds) is the only other bound on a
 // stream, and the "llm" HttpClient's Timeout stops applying once the response
 // headers have arrived (the providers read with ResponseHeadersRead). So a server
-// that stops sending part-way through a reply without closing the connection held
-// the turn until the deadline: measured with DeepSeek-V4.1 on TensorFold, a reply
-// the server had finished in seven seconds sat for four minutes because its last
-// lines never arrived.
+// that stops sending part-way through a reply without closing the connection holds
+// the turn until the deadline: in one observed case a reply the server had finished
+// in seven seconds sat for four minutes because its last lines never arrived.
+//
+// Off unless it is set, because silence is not always a stall. Some providers send
+// nothing while the model builds a tool call: Anthropic holds each tool parameter
+// back until it is whole, and Gemini delivers a function call in one piece. A reply
+// that says a sentence and then writes a large tool call is silent for as long as
+// that takes, and a limit shorter than that ends a healthy reply. It is safe where
+// the server keeps the connection busy while the model works, with keepalive
+// comments or with tool calls streamed as they are generated. Set it per provider
+// with Config.stream_idle_seconds, or for every provider that has none with
+// AiChat:StreamIdleSeconds.
 //
 // The limit is on silence, and only once the model has started its reply:
 //
@@ -33,8 +42,9 @@ public sealed class LlmStreamStalledException(TimeSpan limit)
 //    model is busy (TensorFold sends one after 15 s of silence).
 internal sealed class StreamLineReader : IDisposable
 {
-    // Process-wide default, set once at startup from AiChat:StreamIdleSeconds.
-    // Providers take their own value so tests never have to change this one.
+    // Process-wide default, set once at startup from AiChat:StreamIdleSeconds, for a
+    // provider whose Config has no stream_idle_seconds. Providers take their own value
+    // so tests never have to change this one.
     internal static TimeSpan DefaultLimit { get; set; } = TimeSpan.FromSeconds(AiChatDefaults.StreamIdleSeconds);
 
     private readonly StreamReader _reader;
@@ -135,5 +145,6 @@ internal sealed class StreamLineReader : IDisposable
 // Defaults shared by AiChatOptions and the providers, so neither restates the other.
 internal static class AiChatDefaults
 {
-    public const int StreamIdleSeconds = 60;
+    // Off: see StreamLineReader for why a limit on silence is opt-in.
+    public const int StreamIdleSeconds = 0;
 }

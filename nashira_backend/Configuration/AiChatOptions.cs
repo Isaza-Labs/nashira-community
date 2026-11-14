@@ -109,9 +109,14 @@ public class AiChatOptions
     // cut off. Any bytes reset it, keepalive comments included, and it does not start
     // until the model has generated something, so a server still reading a long
     // prompt is never cut off by it, whatever it sends first.
-    // Without it a server that stopped sending part-way through without closing the
-    // connection held the turn until StreamDeadlineSeconds. 0 turns it off. Override
-    // with `AiChat__StreamIdleSeconds`; see StreamLineReader.
+    // 0, the default, is off: a server that stops sending part-way through without
+    // closing the connection then holds the turn until StreamDeadlineSeconds, as it
+    // always did. It is off by default because some providers are silent while the
+    // model builds a large tool call (Anthropic and Gemini are), and a limit would end
+    // those replies. Turn it on for a provider whose server keeps the connection busy
+    // with Config.stream_idle_seconds on that provider, which wins over this setting;
+    // this one, `AiChat__StreamIdleSeconds`, applies to every provider that has none.
+    // See StreamLineReader.
     public int StreamIdleSeconds { get; set; } = Services.Ai.Providers.AiChatDefaults.StreamIdleSeconds;
 
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the

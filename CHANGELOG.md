@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-13 — A limit for a reply that goes silent, per provider
+
+A model server that stops sending part-way through a reply, without closing the
+connection, holds the turn until the turn deadline (240 s by default). A provider can
+now have a quiet-stream limit: set `stream_idle_seconds` in the provider's Config (for
+example `{"stream_idle_seconds": 60}`) and a reply that sends nothing for that long,
+after the model has started it, ends with the text that had arrived and a message that
+it may be cut off. `AiChat__StreamIdleSeconds` sets the same limit for every provider
+that has none of its own.
+
+**It is off unless you set it, and it is not safe for every provider.** Some send
+nothing while the model builds a tool call: Anthropic holds each tool parameter back
+until it is whole, and Gemini delivers a function call in one piece. A reply that says
+a sentence and then writes a large tool call is silent for as long as that takes, and a
+limit shorter than that would end a healthy reply. Set it for a server that keeps the
+connection busy while the model works, with keepalive comments or with tool calls
+streamed as they are generated.
+
 ## 2026-11-12 — Token usage counted once, and prompt-cache figures kept
 
 **Token totals recorded before this release can be too high for OpenAI-compatible
