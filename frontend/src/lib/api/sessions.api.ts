@@ -46,6 +46,9 @@ export type SessionTurn = {
 	toolCallCount: number;
 	tokensIn: number;
 	tokensOut: number;
+	// Null for a turn recorded before cache figures were kept.
+	tokensCacheRead: number | null;
+	tokensCacheWrite: number | null;
 	iterations: number;
 	status: string;
 	error: string | null;
@@ -83,6 +86,8 @@ interface TurnShape {
 	tool_call_count: number;
 	tokens_in: number;
 	tokens_out: number;
+	tokens_cache_read?: number | null;
+	tokens_cache_write?: number | null;
 	iterations: number;
 	status: string;
 	error: string | null;
@@ -124,6 +129,8 @@ function toTurn(t: TurnShape): SessionTurn {
 		toolCallCount: t.tool_call_count,
 		tokensIn: t.tokens_in,
 		tokensOut: t.tokens_out,
+		tokensCacheRead: t.tokens_cache_read ?? null,
+		tokensCacheWrite: t.tokens_cache_write ?? null,
 		iterations: t.iterations,
 		status: t.status,
 		error: t.error,

@@ -47,7 +47,10 @@ public sealed class ChatResult
 
 public sealed class ChatStreamEvent
 {
-    public required string Type { get; init; } // "text_delta" | "tool_call" | "done" | "error"
+    public required string Type { get; init; } // "text_delta" | "tool_call" | "done" | "error" | "progress"
+    // "progress" carries nothing: a provider may send one when the model starts
+    // producing output it does not hand over yet (reasoning, a tool call still
+    // streaming), so a caller timing the call can tell waiting from generating.
     public string? TextDelta { get; init; }
     public ToolCallResult? ToolCall { get; init; }
     public int? InputTokens { get; init; }

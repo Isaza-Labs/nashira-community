@@ -80,6 +80,9 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
 
         var toolCallCount = 0;
         int inputTokens = 0, outputTokens = 0;
+        // Part of promptTokenCount served from Gemini's context cache (implicit or
+        // explicit); null until a chunk reports one.
+        int? cacheRead = null;
         // finishReason rides on the candidate of the last chunk ("STOP",
         // "MAX_TOKENS", ...). Kept so the synthesised `done` can carry it.
         string? finishReason = null;
@@ -138,6 +141,9 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             {
                 inputTokens = ReadInt(usage, "promptTokenCount", inputTokens);
                 outputTokens = ReadInt(usage, "candidatesTokenCount", outputTokens);
+                if (usage.TryGetProperty("cachedContentTokenCount", out var cachedEl)
+                    && cachedEl.ValueKind == JsonValueKind.Number)
+                    cacheRead = cachedEl.GetInt32();
             }
         }
 
@@ -150,6 +156,8 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             Type = "done",
             InputTokens = inputTokens,
             OutputTokens = outputTokens,
+            // Already included in promptTokenCount, as the runner expects.
+            CacheReadTokens = cacheRead,
             // "MAX_TOKENS" is Gemini's spelling of a cut-off answer; the runner reads
             // it as one alongside OpenAI's "length" and Anthropic's "max_tokens".
             StopReason = finishReason,
@@ -621,6 +629,7 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
             InputTokens = ReadInt(usage, "promptTokenCount", 0),
             OutputTokens = ReadInt(usage, "candidatesTokenCount", 0),
+            CacheReadTokens = ReadInt(usage, "cachedContentTokenCount", 0),
             StopReason = candidate.ValueKind == JsonValueKind.Object
                 && candidate.TryGetProperty("finishReason", out var fr)
                 && fr.ValueKind == JsonValueKind.String

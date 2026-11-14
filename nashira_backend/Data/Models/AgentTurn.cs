@@ -43,6 +43,16 @@ public class AgentTurn
 
     public int TokensIn { get; set; }
     public int TokensOut { get; set; }
+
+    // How much of TokensIn the provider served from its prompt cache, and how much it
+    // wrote to it (Anthropic only). Zero means the provider reported none; null means
+    // the turn was recorded before these were kept. Turns recorded before token usage
+    // was counted once per model call (Nov 12, 2026) may also overstate TokensIn and
+    // TokensOut for OpenAI-compatible providers, so this column being null is the
+    // signal not to compare such a turn's totals with a newer one.
+    public int? TokensCacheRead { get; set; }
+    public int? TokensCacheWrite { get; set; }
+
     public int Iterations { get; set; }
 
     public string Status { get; set; } = StatusCompleted;

@@ -20,8 +20,10 @@ public interface IAgentEventSink
     // The agent wants to run a tool that requires the user's confirmation; the turn
     // pauses here until the user re-sends with the tool approved.
     Task ConfirmationRequiredAsync(string name, JsonElement args, string tier, CancellationToken ct);
-    // cacheRead is the part of tokensIn the provider served from its prompt cache
-    // (zero when it does not report one). It is already counted inside tokensIn.
+    // cacheRead is the part of tokensIn the provider reported as served from its
+    // prompt cache, already counted inside tokensIn. Zero means none was reported,
+    // not that nothing was cached: Ollama reports no cache figure at all, and
+    // whether its input count includes a reused prefix depends on the server.
     Task DoneAsync(int tokensIn, int tokensOut, int cacheRead, int iterations, CancellationToken ct);
     Task ErrorAsync(string message, string? code, CancellationToken ct);
 }

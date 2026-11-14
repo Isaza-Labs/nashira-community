@@ -144,7 +144,8 @@ public sealed class AgentConversationRunner
         _dispatcher.ApproveTools(approvals);
         var newlyApproved = approvals.Count > previouslyApproved.Count;
         var composedMessage = ComposeUserMessage(request.Message, request.Attachments);
-        var scopedAfterUser = ScopedPromptAfterUserFor(_chat.ScopedPromptAfterUserMessage, llm);
+        var scopedAfterUser = ScopedPromptAfterUserFor(
+            _chat.ScopedPromptAfterUserMessage, resolved.GuidanceAfterQuestion, llm);
         var messages = await BuildInitialMessagesAsync(
             basePrompt, scopedPrompt, profileMessage, composedMessage, request.ConversationId, scopedAfterUser, streamCt);
 
@@ -206,8 +207,12 @@ public sealed class AgentConversationRunner
 
         try
         {
-            for (var iter = 0; iter < maxIterations && !streamCt.IsCancellationRequested; iter++)
+            for (var iter = 0; iter < maxIterations; iter++)
             {
+                // A deadline that passed between rounds ends the turn as a timeout. As a
+                // loop condition it ended the loop instead, and the turn was reported as
+                // completed with whatever the last round had said.
+                streamCt.ThrowIfCancellationRequested();
                 iterations = iter + 1;
                 var content = new StringBuilder();
                 var pending = new List<ToolCallResult>();
@@ -217,43 +222,67 @@ public sealed class AgentConversationRunner
                 long firstEventMs = -1;
                 var (systemChars, conversationChars, toolResultChars) = MessageChars(messages);
 
-                await foreach (var evt in llm.ChatWithToolsStreamAsync(messages, tools, model, Temperature, streamCt))
+                // "completed", "failed" or "cancelled": the round is logged either way, so a
+                // call that breaks mid-stream still shows up with what it reported. The
+                // turn's totals already include that, as reports arrive.
+                var outcome = "completed";
+                try
                 {
-                    if (firstEventMs < 0 && evt.Type != "done") firstEventMs = iterWatch.ElapsedMilliseconds;
-                    switch (evt.Type)
+                    await foreach (var evt in llm.ChatWithToolsStreamAsync(messages, tools, model, Temperature, streamCt))
                     {
-                        case "text_delta":
-                            content.Append(evt.TextDelta);
-                            finalText.Append(evt.TextDelta);
-                            await sink.TextAsync(evt.TextDelta ?? string.Empty, ct);
-                            break;
-                        case "tool_call":
-                            if (evt.ToolCall is not null) pending.Add(evt.ToolCall);
-                            break;
-                        case "done":
-                            // Counted as it arrives, so a call that later fails or is
-                            // cancelled still has what it reported in the turn's totals.
-                            var (addIn, addOut, addRead, addWrite) = callUsage.Add(evt);
-                            totalIn += addIn; totalOut += addOut; totalCacheRead += addRead; totalCacheWrite += addWrite;
-                            if (evt.StopReason is not null) stopReason = evt.StopReason;
-                            break;
+                        if (firstEventMs < 0 && evt.Type != "done") firstEventMs = iterWatch.ElapsedMilliseconds;
+                        switch (evt.Type)
+                        {
+                            case "text_delta":
+                                content.Append(evt.TextDelta);
+                                finalText.Append(evt.TextDelta);
+                                await sink.TextAsync(evt.TextDelta ?? string.Empty, ct);
+                                break;
+                            case "tool_call":
+                                if (evt.ToolCall is not null) pending.Add(evt.ToolCall);
+                                break;
+                            case "done":
+                                // Counted as it arrives, so a call that later fails or is
+                                // cancelled still has what it reported in the turn's totals.
+                                var (addIn, addOut, addRead, addWrite) = callUsage.Add(evt);
+                                totalIn += addIn; totalOut += addOut; totalCacheRead += addRead; totalCacheWrite += addWrite;
+                                if (evt.StopReason is not null) stopReason = evt.StopReason;
+                                break;
+                        }
                     }
+                    // The providers stop reading when the token is cancelled without
+                    // throwing (`while (!ct.IsCancellationRequested)`), so a deadline that
+                    // passes while an event is being handled ends the stream as if the
+                    // model had finished. That is a cancelled round, not a short answer.
+                    streamCt.ThrowIfCancellationRequested();
                 }
-
-                iterWatch.Stop();
-                var (iterIn, iterOut, iterCacheRead) = (callUsage.Input, callUsage.Output, callUsage.CacheRead);
-                iterationUsage.Add([iterIn, iterCacheRead, iterOut, (int)iterWatch.ElapsedMilliseconds]);
-                _logger.LogInformation(
-                    "ai.chat.iteration conversation={ConversationId} iteration={Iteration} "
-                    + "tokens_in={TokensIn} tokens_cache_read={CacheRead} tokens_out={TokensOut} "
-                    + "first_event_ms={FirstEventMs} elapsed_ms={ElapsedMs} messages={MessageCount} "
-                    + "system_chars={SystemChars} conversation_chars={ConversationChars} "
-                    + "tool_result_chars={ToolResultChars} tool_schema_chars={ToolSchemaChars} "
-                    + "tool_calls={ToolCalls} stop_reason={StopReason}",
-                    conversationId, iterations, iterIn, iterCacheRead, iterOut,
-                    firstEventMs, iterWatch.ElapsedMilliseconds, messages.Count,
-                    systemChars, conversationChars, toolResultChars, toolSchemaChars,
-                    pending.Count, stopReason ?? "none");
+                catch (OperationCanceledException)
+                {
+                    outcome = "cancelled";
+                    throw;
+                }
+                catch
+                {
+                    outcome = "failed";
+                    throw;
+                }
+                finally
+                {
+                    iterWatch.Stop();
+                    var (iterIn, iterOut, iterCacheRead) = (callUsage.Input, callUsage.Output, callUsage.CacheRead);
+                    iterationUsage.Add([iterIn, iterCacheRead, iterOut, (int)iterWatch.ElapsedMilliseconds]);
+                    _logger.LogInformation(
+                        "ai.chat.iteration conversation={ConversationId} iteration={Iteration} "
+                        + "tokens_in={TokensIn} tokens_cache_read={CacheRead} tokens_out={TokensOut} "
+                        + "first_event_ms={FirstEventMs} elapsed_ms={ElapsedMs} messages={MessageCount} "
+                        + "system_chars={SystemChars} conversation_chars={ConversationChars} "
+                        + "tool_result_chars={ToolResultChars} tool_schema_chars={ToolSchemaChars} "
+                        + "tool_calls={ToolCalls} stop_reason={StopReason} outcome={Outcome}",
+                        conversationId, iterations, iterIn, iterCacheRead, iterOut,
+                        firstEventMs, iterWatch.ElapsedMilliseconds, messages.Count,
+                        systemChars, conversationChars, toolResultChars, toolSchemaChars,
+                        pending.Count, stopReason ?? "none", outcome);
+                }
 
                 if (OutputCutOff(stopReason))
                 {
@@ -366,6 +395,7 @@ public sealed class AgentConversationRunner
                 resolved.ProviderId, model);
             await RecordTurnAsync(new TurnRecord(
                 conversationId, model, request.Message, assistantText, toolCalls, totalIn, totalOut,
+                totalCacheRead, totalCacheWrite,
                 iterations, turnStatus, turnError, startedAt, (int)turnStopwatch.ElapsedMilliseconds));
 
             var summary = new
@@ -666,13 +696,15 @@ public sealed class AgentConversationRunner
     }
 
     // Whether the guidance message goes behind the user's message for this provider.
-    // Only for the OpenAI-compatible adapter, which sends a system message where it
-    // stands and is the one measured. Anthropic would turn a system message behind the
-    // user's into user text and Gemini lifts every system message to the top, so for
-    // them the switch would change who is speaking, or nothing at all; Ollama keeps the
-    // position but is left out until it is measured with its own templates.
-    internal static bool ScopedPromptAfterUserFor(bool switchOn, ILlmProvider provider)
-        => switchOn && provider is OpenAiProvider;
+    // The provider's own setting (Config.guidance_after_question) wins; without one,
+    // the server-wide switch decides. Either way only the OpenAI-compatible adapter
+    // moves it: it sends a system message where it stands, and it is the one measured.
+    // Anthropic would turn a system message behind the user's into user text and
+    // Gemini lifts every system message to the top, so for them the setting would
+    // change who is speaking, or nothing at all; Ollama keeps the position but is left
+    // out until it is measured with its own templates.
+    internal static bool ScopedPromptAfterUserFor(bool switchOn, bool? providerSetting, ILlmProvider provider)
+        => provider is OpenAiProvider && (providerSetting ?? switchOn);
 
     // The order a turn's opening messages are sent in. By default: base prompt, the
     // topic-guide message, the persona, earlier turns, the user's message. With
@@ -727,10 +759,35 @@ public sealed class AgentConversationRunner
         $"[Context note: the {omitted} earliest messages of this conversation were left out to fit the "
         + "model's context window. If the user refers to something from them, ask rather than assume.]";
 
-    private sealed record TurnRecord(
+    internal sealed record TurnRecord(
         Guid ConversationId, string Model, string UserMessage, string AssistantText,
-        IReadOnlyList<ToolTelemetryEntry> ToolCalls, int TokensIn, int TokensOut, int Iterations,
+        IReadOnlyList<ToolTelemetryEntry> ToolCalls, int TokensIn, int TokensOut,
+        int TokensCacheRead, int TokensCacheWrite, int Iterations,
         string Status, string? Error, DateTime StartedAt, int ElapsedMs);
+
+    // The stored row for a turn. Separate from RecordTurnAsync so what is kept can be
+    // tested without a database that survives SaveChanges.
+    internal static AgentTurn ToAgentTurn(TurnRecord turn, Guid? userId) => new()
+    {
+        AgentTurnId = Guid.NewGuid(),
+        ConversationId = turn.ConversationId,
+        UserId = userId,
+        Model = turn.Model,
+        UserMessage = ToolTelemetry.Cap(turn.UserMessage),
+        AssistantText = ToolTelemetry.Cap(turn.AssistantText),
+        ToolCallsJson = ToolTelemetry.Serialize(turn.ToolCalls),
+        ToolCallCount = turn.ToolCalls.Count,
+        TokensIn = turn.TokensIn,
+        TokensOut = turn.TokensOut,
+        TokensCacheRead = turn.TokensCacheRead,
+        TokensCacheWrite = turn.TokensCacheWrite,
+        Iterations = turn.Iterations,
+        Status = turn.Status,
+        Error = turn.Error is { Length: > 500 } ? turn.Error[..500] : turn.Error,
+        StartedAt = turn.StartedAt,
+        FinishedAt = turn.StartedAt.AddMilliseconds(turn.ElapsedMs),
+        ElapsedMs = turn.ElapsedMs,
+    };
 
     // The forensic row. Written after the conversation is persisted and swallowing its
     // own failures: telemetry that can break a turn is worse than telemetry that is
@@ -739,25 +796,7 @@ public sealed class AgentConversationRunner
     {
         try
         {
-            _db.AgentTurns.Add(new AgentTurn
-            {
-                AgentTurnId = Guid.NewGuid(),
-                ConversationId = turn.ConversationId,
-                UserId = _user.IsAuthenticated ? _user.UserId : null,
-                Model = turn.Model,
-                UserMessage = ToolTelemetry.Cap(turn.UserMessage),
-                AssistantText = ToolTelemetry.Cap(turn.AssistantText),
-                ToolCallsJson = ToolTelemetry.Serialize(turn.ToolCalls),
-                ToolCallCount = turn.ToolCalls.Count,
-                TokensIn = turn.TokensIn,
-                TokensOut = turn.TokensOut,
-                Iterations = turn.Iterations,
-                Status = turn.Status,
-                Error = turn.Error is { Length: > 500 } ? turn.Error[..500] : turn.Error,
-                StartedAt = turn.StartedAt,
-                FinishedAt = turn.StartedAt.AddMilliseconds(turn.ElapsedMs),
-                ElapsedMs = turn.ElapsedMs,
-            });
+            _db.AgentTurns.Add(ToAgentTurn(turn, _user.IsAuthenticated ? _user.UserId : null));
             await _db.SaveChangesAsync(CancellationToken.None);
         }
         catch (Exception ex)
