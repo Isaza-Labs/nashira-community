@@ -61,7 +61,9 @@ public class MessagingAgentTurnTests
         new(kit.Db, null!, null!, kit.Runner, caller,
             Options.Create(new MessagingOptions()), NullLogger<MessagingJobProcessor>.Instance);
 
-    // The rows the webhook ingest leaves behind for one inbound message, and its job.
+    // The user, channel and conversation the webhook ingest leaves behind for one inbound
+    // message, and its job. The inbound audit row is left out, so the claim on it is
+    // not exercised here: it is a bulk update, which EF InMemory cannot run.
     private static async Task<(Job Job, User User)> InboundMessageAsync(RunnerTestKit kit, string text)
     {
         var now = DateTime.UtcNow;

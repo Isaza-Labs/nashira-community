@@ -19,8 +19,8 @@ public class RoundDeadlineTests
             "[DONE]");
         await using var kit = new RunnerTestKit(
             new ScriptedHttp(body),
-            new RecordingSink(textDelay: TimeSpan.FromMilliseconds(1_500)),
-            deadlineSeconds: 1);
+            new RecordingSink(textDelay: TimeSpan.FromSeconds(4)),
+            deadlineSeconds: 2);
 
         await kit.RunAsync();
 
@@ -43,8 +43,8 @@ public class RoundDeadlineTests
             "[DONE]");
         await using var kit = new RunnerTestKit(
             new ScriptedHttp(roundOne),
-            new RecordingSink(toolResultDelay: TimeSpan.FromMilliseconds(1_500)),
-            deadlineSeconds: 1);
+            new RecordingSink(toolResultDelay: TimeSpan.FromSeconds(4)),
+            deadlineSeconds: 2);
 
         await kit.RunAsync();
 

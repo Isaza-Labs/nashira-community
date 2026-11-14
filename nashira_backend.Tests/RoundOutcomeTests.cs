@@ -41,9 +41,9 @@ public class RoundOutcomeTests
         // The server sends some text and its usage, then goes silent with the
         // connection open until the turn's deadline cancels the read.
         var body = new ScriptedBody(RunnerTestKit.Sse(TextChunk, Usage100With80Cached), ScriptedBody.Ending.Hang);
-        await using var kit = new RunnerTestKit(new ScriptedHttp(body), deadlineSeconds: 1);
+        await using var kit = new RunnerTestKit(new ScriptedHttp(body), deadlineSeconds: 2);
 
-        await kit.RunAsync().WaitAsync(TimeSpan.FromSeconds(20));
+        await kit.RunAsync().WaitAsync(TimeSpan.FromSeconds(30));
 
         var round = Assert.Single(kit.Log.Rounds);
         Assert.Contains(" outcome=cancelled", round);
@@ -58,12 +58,14 @@ public class RoundOutcomeTests
     [Fact]
     public async Task A_finished_turn_stores_the_cache_figures_summed_over_its_rounds()
     {
-        // Round one calls a tool and reports nothing cached; round two answers and
-        // reports 120 of its 150 prompt tokens as cached.
+        // Round one calls a tool and reports 80 of its 100 prompt tokens as cached;
+        // round two answers and reports 120 of its 150. The turn's figure is the sum,
+        // not the last round's.
         var roundOne = RunnerTestKit.Sse(
             "{\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"not_a_tool\",\"arguments\":\"{}\"}}]}}]}",
             "{\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}",
-            "{\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5}}",
+            "{\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,"
+            + "\"prompt_tokens_details\":{\"cached_tokens\":80}}}",
             "[DONE]");
         var roundTwo = RunnerTestKit.Sse(
             "{\"choices\":[{\"delta\":{\"content\":\"Done.\"},\"finish_reason\":\"stop\"}]}",
@@ -76,16 +78,16 @@ public class RoundOutcomeTests
 
         Assert.Equal(2, kit.Http.Calls);
         Assert.True(kit.Sink.Done);
-        Assert.Equal((250, 12, 120, 2), kit.Sink.Totals);
+        Assert.Equal((250, 12, 200, 2), kit.Sink.Totals);
         var turn = await kit.StoredTurnAsync();
         Assert.Equal(AgentTurn.StatusCompleted, turn.Status);
-        Assert.Equal((250, 12, 120, 0), (turn.TokensIn, turn.TokensOut, turn.TokensCacheRead, turn.TokensCacheWrite));
+        Assert.Equal((250, 12, 200, 0), (turn.TokensIn, turn.TokensOut, turn.TokensCacheRead, turn.TokensCacheWrite));
         Assert.Equal(2, turn.Iterations);
 
         Assert.Collection(kit.Log.Rounds,
             first =>
             {
-                Assert.Contains(" tokens_in=100 tokens_cache_read=0 tokens_out=5 ", first);
+                Assert.Contains(" tokens_in=100 tokens_cache_read=80 tokens_out=5 ", first);
                 Assert.Contains(" outcome=completed", first);
             },
             second =>

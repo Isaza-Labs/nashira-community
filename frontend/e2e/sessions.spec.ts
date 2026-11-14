@@ -92,6 +92,15 @@ test('a turn that also wrote to the cache shows both figures', async ({ page }) 
 	await expect(line).toContainText(/50,000 in\s*\(300 cached\)\s*· 50 written to cache\s*\/ 120\s+out/);
 });
 
+test('a turn that only wrote to the cache shows what it wrote', async ({ page }) => {
+	// The first call to a provider that caches: nothing to read yet, everything written.
+	await openSession(page, [turn('t6', 'write only', { tokens_cache_read: 0, tokens_cache_write: 50 })]);
+
+	const line = await tokenLine(page, 'write only');
+	await expect(line).toContainText(/50,000 in\s*· 50 written to cache\s*\/ 120\s+out/);
+	await expect(line).not.toContainText('cached)');
+});
+
 test('a turn with nothing cached shows the plain line', async ({ page }) => {
 	await openSession(page, [turn('t3', 'nothing cached', { tokens_cache_read: 0, tokens_cache_write: 0 })]);
 

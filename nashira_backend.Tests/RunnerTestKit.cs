@@ -33,7 +33,7 @@ internal sealed class RunnerTestKit : IAsyncDisposable
 
     public RunnerTestKit(
         ScriptedHttp http, RecordingSink? sink = null, int deadlineSeconds = 240, string providerType = "custom",
-        ICurrentUser? caller = null)
+        ICurrentUser? caller = null, string providerConfig = "{}")
     {
         Http = http;
         Sink = sink ?? new RecordingSink();
@@ -47,7 +47,7 @@ internal sealed class RunnerTestKit : IAsyncDisposable
             BaseURL = "https://model.example/v1",
             DefaultModel = "m",
             EncryptedApiKey = Encoding.UTF8.GetBytes("k"),
-            Config = JsonDocument.Parse("{}").RootElement,
+            Config = JsonDocument.Parse(providerConfig).RootElement,
             Enabled = true,
             IsActive = true,
             CreatedAt = DateTime.UtcNow,
