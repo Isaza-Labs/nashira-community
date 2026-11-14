@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-12 — Token usage counted once, and prompt-cache figures kept
+
+**Token totals recorded before this release can be too high for OpenAI-compatible
+providers.** Until Nov 12, 2026 the chat added up every usage report a model call
+sent, and an OpenAI-compatible server (OpenAI, DeepSeek, Kimi or a `custom` endpoint)
+can report the same totals twice for one call, or a growing total on every chunk. Each
+call is now counted once. A before-and-after comparison of `tokens_in` and `tokens_out`
+in `/admin/sessions`, the conversation totals or the logs will show a drop that is
+partly this correction, not a real saving. Anthropic, Gemini and Ollama report once
+per call and were not affected.
+
+Each recorded turn now also keeps how much of its prompt the provider served from its
+cache (`tokens_cache_read`) and, for Anthropic, how much it wrote to it
+(`tokens_cache_write`). `/admin/sessions` shows the cached part beside each turn's
+token counts. Both are `null` on turns recorded before this release, which is also the
+mark of a turn whose totals may be overstated as described above; `0` means the
+provider reported none.
+
 ## 2026-09-08 — One image, the deployment it was sold, and nothing else
 
 **Nashira now ships as a set of capabilities an operator selects, instead of a product

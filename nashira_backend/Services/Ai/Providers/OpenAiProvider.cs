@@ -87,6 +87,8 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
         // Last non-null finish_reason seen on a choice. OpenAI sends it once, on the
         // final content chunk; it is reported on every "done" event that follows.
         string? finishReason = null;
+        // Whether the model has produced anything yet; see the "progress" event below.
+        var generating = false;
 
         _logger?.LogDebug(
             "{Tag}.stream.connected model={Model} messages={MessageCount} tools={ToolCount}",
@@ -168,6 +170,19 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
 
             if (delta is { } deltaVal)
             {
+                // One "progress" event, on the first chunk that carries something the
+                // model generated: answer text, reasoning text or a piece of a tool call.
+                // Tool calls are only handed over at [DONE] and reasoning is not handed
+                // over at all, so without it a round that thinks and then calls a tool
+                // shows no sign of life until it has finished. The opening chunk that
+                // only names the role does not count. Consumers that do not know the type
+                // ignore it.
+                if (!generating && HasGeneratedContent(deltaVal))
+                {
+                    generating = true;
+                    yield return new ChatStreamEvent { Type = "progress" };
+                }
+
                 if (deltaVal.TryGetProperty("content", out var contentEl)
                     && contentEl.ValueKind == JsonValueKind.String)
                 {
@@ -218,6 +233,19 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
                 };
             }
         }
+    }
+
+    // Whether a stream delta carries generated output: non-empty answer text,
+    // reasoning text (`reasoning_content`, or `reasoning` on some servers) or at least
+    // one tool-call fragment.
+    internal static bool HasGeneratedContent(JsonElement delta)
+    {
+        foreach (var key in new[] { "content", "reasoning_content", "reasoning" })
+            if (delta.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String
+                && !string.IsNullOrEmpty(el.GetString()))
+                return true;
+        return delta.TryGetProperty("tool_calls", out var tcs)
+            && tcs.ValueKind == JsonValueKind.Array && tcs.GetArrayLength() > 0;
     }
 
     // The part of prompt_tokens the server served from its prompt cache, or null

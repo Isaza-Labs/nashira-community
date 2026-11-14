@@ -155,6 +155,11 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
                         block.TryGetProperty("name", out var bn) && bn.ValueKind == JsonValueKind.String
                             ? bn.GetString()! : "",
                         new StringBuilder());
+                    // Tool calls are handed over only when the stream ends; this tells a
+                    // caller timing the call that the model has started on one (see
+                    // ChatStreamEvent's "progress"). Text needs none: it streams as it comes.
+                    if (toolBlocks.Count == 1)
+                        yield return new ChatStreamEvent { Type = "progress" };
                     break;
                 }
 

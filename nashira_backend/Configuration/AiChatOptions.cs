@@ -71,19 +71,37 @@ public class AiChatOptions
     // Where the guidance message goes in a request. It is the second system message:
     // the topic-guide index, the text of the guides in play and the guidance for the
     // integrations in play, so it differs from one conversation to the next. Sent
-    // second (the default), it comes ahead of the tool definitions in a prompt whose
-    // chat template renders the tools after the first system message, as DeepSeek's
-    // does, and a server that reuses a prompt it has already read can reuse nothing past
-    // the first difference: a question that brings a guide in makes a local model read
-    // all the tool definitions again. True sends the same message, unchanged, right
-    // behind the user's message instead, so the part every conversation shares (the base
-    // prompt and the tool definitions) stays identical. Nothing is added or removed, but
-    // the model sees the guidance after the question rather than before it, which is why
-    // this is a switch. It applies to OpenAI-compatible providers only: Anthropic would
-    // render a system message there as user text and Gemini lifts every system message
-    // into its leading instruction; Ollama keeps the position but is left out until it
-    // is measured with its own templates. Override with
-    // `AiChat__ScopedPromptAfterUserMessage`.
+    // second (the default), it sits between the base prompt and the user's persona
+    // and earlier turns. True sends the same message, unchanged, right behind the
+    // user's message instead. Nothing is added or removed, but the model reads the
+    // guidance after the question rather than before it, which is why this is a
+    // switch.
+    //
+    // Why it helps, as far as it was measured: on TensorFold serving DeepSeek-V4.1,
+    // whose template puts the tool definitions inside the first system message, a
+    // question that brings a guide in reused 32,768 of its 45,139 prompt tokens with
+    // the switch on and none with it off. It is not free: in that run a one-word chat
+    // sent right after it reused nothing and read all 35,332 tokens again. TensorFold's prompt cache keeps some entries
+    // at the cut of a shared system block for other conversations to resume; the
+    // likely reading is that the cut falls at the end of the opening run of system
+    // messages, which with the guidance in it differs for every conversation. That is
+    // an inference from the measurement and the cache's own description, not from the
+    // engine's source. A persona or a note about omitted history is also in that run,
+    // so with one of those the reuse is per user rather than across users.
+    //
+    // A template that merges every system message into one block at the top
+    // (DeepSeek-V3's does) keeps the guidance ahead of the conversation either way;
+    // with a persona it only changes the order, base-guidance-persona becoming
+    // base-persona-guidance.
+    //
+    // It applies to OpenAI-compatible providers only: Anthropic would render a system
+    // message there as user text and Gemini lifts every system message into its
+    // leading instruction; Ollama keeps the position but is left out until it is
+    // measured with its own templates. A provider row can decide for itself with
+    // Config.guidance_after_question (true or false), which wins over this setting;
+    // that matters for an OpenAI-compatible gateway in front of another vendor's
+    // model, which may translate the message the way Anthropic or Gemini would.
+    // Override with `AiChat__ScopedPromptAfterUserMessage`.
     public bool ScopedPromptAfterUserMessage { get; set; }
 
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the

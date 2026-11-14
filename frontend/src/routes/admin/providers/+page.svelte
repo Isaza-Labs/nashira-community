@@ -74,6 +74,18 @@
 
 	const baseUrlRequired = $derived(fType === 'custom');
 
+	// Where the chat puts its guidance message (the topic-guide index and the guides
+	// in play) for this provider. Stored in Config as guidance_after_question; absent
+	// means the server's AiChat setting decides. Only the OpenAI-compatible types use
+	// it: the backend ignores it for the others.
+	const GUIDANCE_KEY = 'guidance_after_question';
+	const OPENAI_COMPATIBLE = new Set(['openai', 'deepseek', 'kimi', 'custom']);
+	const guidanceOptions = [
+		{ value: 'default', label: 'Server default' },
+		{ value: 'after', label: 'After the question' },
+		{ value: 'before', label: 'Before the question' }
+	];
+
 	// Parsed on every change so the error shows while typing rather than on save.
 	const configError = $derived.by(() => {
 		const text = fConfig.trim();
@@ -112,12 +124,43 @@
 					: '"workspace_id" is the id, not the workspace name. Open the workspace in the Anthropic Console; the id is the wrkspc_… segment of the URL.';
 			}
 		}
+		const guidance = obj[GUIDANCE_KEY];
+		if (guidance !== undefined && typeof guidance !== 'boolean')
+			return `"${GUIDANCE_KEY}" must be true or false.`;
 		return '';
 	});
 
-	function parsedConfig(): Record<string, unknown> {
+	// The config text as an object, or null while it is not a JSON object.
+	function configObject(): Record<string, unknown> | null {
 		const text = fConfig.trim();
-		return text === '' ? {} : (JSON.parse(text) as Record<string, unknown>);
+		if (text === '') return {};
+		try {
+			const parsed: unknown = JSON.parse(text);
+			return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+				? (parsed as Record<string, unknown>)
+				: null;
+		} catch {
+			return null;
+		}
+	}
+
+	// Read from the config text, so the picker and the JSON never disagree, and read
+	// the way the backend reads it: only true or false counts, anything else is the
+	// server default. A mistake in another key does not change what the picker shows.
+	// It is disabled only while the text is not a JSON object.
+	const guidanceLocked = $derived(configObject() === null);
+	const guidanceValue = $derived.by(() => {
+		const v = configObject()?.[GUIDANCE_KEY];
+		return v === true ? 'after' : v === false ? 'before' : 'default';
+	});
+
+	function setGuidance(value: string) {
+		const obj = configObject();
+		if (obj === null) return;
+		if (value === 'after') obj[GUIDANCE_KEY] = true;
+		else if (value === 'before') obj[GUIDANCE_KEY] = false;
+		else delete obj[GUIDANCE_KEY];
+		fConfig = Object.keys(obj).length === 0 ? '{}' : JSON.stringify(obj, null, 2);
 	}
 
 	// Console workspace handles are `wrkspc_` followed by an opaque token.
@@ -219,7 +262,7 @@
 					apiKey: fApiKey,
 					defaultModel: fModel.trim(),
 					enabled: fEnabled,
-					config: parsedConfig()
+					config: configObject() ?? {}
 				});
 			} else {
 				await createProvider({
@@ -229,7 +272,7 @@
 					apiKey: fApiKey,
 					defaultModel: fModel.trim(),
 					enabled: fEnabled,
-					config: parsedConfig()
+					config: configObject() ?? {}
 				});
 			}
 			modalOpen = false;
@@ -323,6 +366,15 @@
 			error={configError}
 			hint={configHint}
 		/>
+		{#if OPENAI_COMPATIBLE.has(fType)}
+			<Select
+				label="Guidance placement"
+				bind:value={() => guidanceValue, setGuidance}
+				options={guidanceOptions}
+				disabled={guidanceLocked}
+				hint="Where the chat sends the guides it loads for a question. After the question can let a local server reuse the prompt it has already read, so replies start sooner (measured with DeepSeek-V4.1 on TensorFold); the model then reads the guides after the question instead of before it. Server default follows the AiChat setting."
+			/>
+		{/if}
 		<Checkbox bind:checked={fEnabled} label="Enabled" />
 	</div>
 	{#snippet footer()}

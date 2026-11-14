@@ -11,18 +11,28 @@ namespace nashira_backend.Services.Ai.Providers;
 // chat needs more than the client and the model name: it persists the choice on
 // the conversation and tells the browser which provider actually answered, and
 // neither is recoverable from IStreamingToolCallingLlmProvider.
+//
+// GuidanceAfterQuestion is the provider's own choice of where the guidance message
+// goes (Config.guidance_after_question), or null when the row leaves it to the
+// server-wide AiChat setting; see AiChatOptions.ScopedPromptAfterUserMessage.
 public sealed record ResolvedLlm(
     IStreamingToolCallingLlmProvider Provider,
     Guid ProviderId,
     string ProviderName,
     string ProviderType,
-    string Model);
+    string Model,
+    bool? GuidanceAfterQuestion = null);
 
 // Resolves a streaming provider from a tenant's AIProvider row: decrypts the API
 // key, picks the implementation by Type, injects the base URL. Scoped (uses the
 // current tenant + DbContext).
 public class LlmProviderFactory
 {
+    // Config key for a provider's own guidance placement: true sends the guidance
+    // message behind the user's message, false keeps it ahead, absent defers to the
+    // server-wide AiChat:ScopedPromptAfterUserMessage.
+    public const string GuidanceAfterQuestionConfigKey = "guidance_after_question";
+
     private readonly AppDbContext _db;
     private readonly ICurrentUser _user;
     private readonly IHttpClientFactory _httpFactory;
@@ -92,12 +102,28 @@ public class LlmProviderFactory
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 
+    // A true/false value from a provider's Config, or null when absent or not a
+    // boolean (the same typo rule as ConfigString).
+    internal static bool? ConfigBool(System.Text.Json.JsonElement config, string key)
+    {
+        if (config.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !config.TryGetProperty(key, out var node))
+            return null;
+        return node.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.True => true,
+            System.Text.Json.JsonValueKind.False => false,
+            _ => null,
+        };
+    }
+
     private ResolvedLlm Resolve(AIProvider row, string? modelOverride) => new(
         Build(row),
         row.AIProviderId,
         row.Name,
         row.Type,
-        string.IsNullOrWhiteSpace(modelOverride) ? row.DefaultModel : modelOverride.Trim());
+        string.IsNullOrWhiteSpace(modelOverride) ? row.DefaultModel : modelOverride.Trim(),
+        ConfigBool(row.Config, GuidanceAfterQuestionConfigKey));
 
     private IStreamingToolCallingLlmProvider Build(AIProvider provider)
     {

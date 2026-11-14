@@ -235,6 +235,12 @@ namespace nashira_backend.Data.Db.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<int?>("TokensCacheRead")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("TokensCacheWrite")
+                        .HasColumnType("integer");
+
                     b.Property<int>("TokensIn")
                         .HasColumnType("integer");
 
