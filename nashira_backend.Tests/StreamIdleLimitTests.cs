@@ -290,6 +290,49 @@ public class StreamIdleLimitTests
         Assert.Equal("hola", await reply.WaitAsync(Bound));
     }
 
+    private const string AnthropicEnd =
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+        + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
+        + "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+
+    [Theory]
+    // A text block that opens empty, followed by an empty delta.
+    [InlineData("{\"type\":\"text\",\"text\":\"\"}", "{\"type\":\"text_delta\",\"text\":\"\"}")]
+    // A thinking block that opens empty.
+    [InlineData("{\"type\":\"thinking\",\"thinking\":\"\"}", "{\"type\":\"thinking_delta\",\"thinking\":\"\"}")]
+    // A tool call whose input has not started to arrive: the API holds each
+    // parameter back until it is whole.
+    [InlineData("{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"lookup\",\"input\":{}}", "{\"type\":\"input_json_delta\",\"partial_json\":\"\"}")]
+    public async Task Anthropic_an_empty_block_opening_does_not_start_the_limit(string block, string emptyDelta)
+    {
+        var body = new OpenBody();
+        await body.WriteAsync(AnthropicStart
+            + "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":" + block + "}\n\n"
+            + "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":" + emptyDelta + "}\n\n");
+        var reply = Text(Anthropic(body));
+
+        await Task.Delay(Limit * 3);
+        Assert.False(reply.IsCompleted);
+        await body.WriteAsync(
+            "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
+            + AnthropicText.Replace("\"index\":0", "\"index\":1") + AnthropicEnd.Replace("\"index\":0", "\"index\":1"));
+        await body.CompleteAsync();
+
+        Assert.Equal("hola", await reply.WaitAsync(Bound));
+    }
+
+    [Theory]
+    [InlineData("{\"type\":\"thinking_delta\",\"thinking\":\"Let me see.\"}")]
+    [InlineData("{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}")]
+    public async Task Anthropic_thinking_or_a_piece_of_a_tool_call_starts_the_limit(string delta)
+    {
+        var body = new OpenBody();
+        await body.WriteAsync(AnthropicStart
+            + "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":" + delta + "}\n\n");
+
+        await Assert.ThrowsAsync<LlmStreamStalledException>(() => Text(Anthropic(body))).WaitAsync(Bound);
+    }
+
     // ── Gemini and Ollama ───────────────────────────────────────────────────
 
     [Fact]
@@ -297,6 +340,38 @@ public class StreamIdleLimitTests
     {
         var body = new OpenBody();
         await body.WriteAsync("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hola\"}]}}]}\n\n");
+        var provider = new GeminiProvider(new HttpClient(new BodyHandler(body)), "k", "https://gemini.example", streamIdle: Limit);
+
+        await Assert.ThrowsAsync<LlmStreamStalledException>(
+            () => Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None))).WaitAsync(Bound);
+    }
+
+    [Theory]
+    [InlineData("{\"text\":\"\"}")]
+    [InlineData("{}")]
+    [InlineData("{\"text\":\"\",\"thought\":true}")]
+    public async Task Gemini_an_empty_opening_part_does_not_start_the_limit(string part)
+    {
+        var body = new OpenBody();
+        await body.WriteAsync("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[" + part + "]}}]}\n\n");
+        var provider = new GeminiProvider(new HttpClient(new BodyHandler(body)), "k", "https://gemini.example", streamIdle: Limit);
+        var reply = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
+
+        await Task.Delay(Limit * 3);
+        Assert.False(reply.IsCompleted);
+        await body.WriteAsync("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hola\"}]},\"finishReason\":\"STOP\"}]}\n\n");
+        await body.CompleteAsync();
+
+        Assert.Equal("hola", await reply.WaitAsync(Bound));
+    }
+
+    [Theory]
+    [InlineData("{\"text\":\"Thinking it over.\",\"thought\":true}")]
+    [InlineData("{\"functionCall\":{\"name\":\"lookup\",\"args\":{}}}")]
+    public async Task Gemini_a_thought_or_a_function_call_starts_the_limit(string part)
+    {
+        var body = new OpenBody();
+        await body.WriteAsync("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[" + part + "]}}]}\n\n");
         var provider = new GeminiProvider(new HttpClient(new BodyHandler(body)), "k", "https://gemini.example", streamIdle: Limit);
 
         await Assert.ThrowsAsync<LlmStreamStalledException>(

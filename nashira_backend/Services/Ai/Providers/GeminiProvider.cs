@@ -116,8 +116,9 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
 
             foreach (var part in Parts(candidate))
             {
-                // Any part, a thought summary included: the model is answering.
-                lines.ReplyStarted();
+                // A part with something in it, a thought summary included: the model
+                // is answering. An empty part does not start the idle limit.
+                if (HasGeneratedContent(part)) lines.ReplyStarted();
 
                 // Thought summaries ride in the same parts array as the answer when a
                 // 2.5 model is asked for them; they are not reply text.
@@ -650,6 +651,16 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             && cs.GetArrayLength() > 0
                 ? cs[0]
                 : default;
+
+    // Whether a part carries generated output: non-empty text (answer or thought
+    // summary) or a function call.
+    internal static bool HasGeneratedContent(JsonElement part)
+    {
+        if (part.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String
+            && !string.IsNullOrEmpty(text.GetString()))
+            return true;
+        return part.TryGetProperty("functionCall", out var call) && call.ValueKind == JsonValueKind.Object;
+    }
 
     private static IEnumerable<JsonElement> Parts(JsonElement candidate)
     {

@@ -147,8 +147,10 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
                 case "content_block_start":
                 {
-                    // Any block: text, a tool call, thinking. The model is answering.
-                    lines.ReplyStarted();
+                    // A block opening is not output yet: a text or thinking block opens
+                    // empty, and a tool call's input is held back until a whole
+                    // parameter is ready. The idle limit starts at the first delta that
+                    // carries something (below).
                     if (!evt.TryGetProperty("content_block", out var block)
                         || block.ValueKind != JsonValueKind.Object) break;
                     if (!block.TryGetProperty("type", out var bt) || bt.GetString() != "tool_use") break;
@@ -170,9 +172,9 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
                 case "content_block_delta":
                 {
-                    lines.ReplyStarted();
                     if (!evt.TryGetProperty("delta", out var delta)
                         || delta.ValueKind != JsonValueKind.Object) break;
+                    if (HasGeneratedContent(delta)) lines.ReplyStarted();
                     var dt = delta.TryGetProperty("type", out var dte) && dte.ValueKind == JsonValueKind.String
                         ? dte.GetString() : null;
 
@@ -382,6 +384,17 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
     // reported as the input so the number keeps meaning "how big the prompt was", the
     // way it did before caching, and the split says how much of it was cheap.
     internal readonly record struct InputUsage(int Total, int CacheRead, int CacheWrite);
+
+    // Whether a content_block_delta carries generated output: non-empty answer text,
+    // thinking text or a piece of a tool call's input. An empty delta does not count.
+    internal static bool HasGeneratedContent(JsonElement delta)
+    {
+        foreach (var key in new[] { "text", "thinking", "partial_json" })
+            if (delta.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String
+                && !string.IsNullOrEmpty(el.GetString()))
+                return true;
+        return false;
+    }
 
     internal static InputUsage ReadInputUsage(JsonElement usage)
     {
