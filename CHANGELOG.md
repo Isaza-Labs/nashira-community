@@ -60,6 +60,16 @@ line, give the node a pattern that ends a command's output in any mode, for exam
 A node that sets none of them runs as before. A node that already set one of them now
 gets what it asked for, so check any workflow that carries these keys.
 
+## 2026-11-14 — A chat-channel reply that ended in an error says it may be incomplete
+
+A turn that fails after the model has started answering (the model goes silent, the
+connection breaks, or the turn deadline passes) leaves the start of an answer. The web
+chat shows the error beside that text. A Slack or Telegram thread got the text alone,
+which read as a finished answer. The channel reply now ends with a line saying that
+something went wrong and the reply may be incomplete. A reply that finished normally is
+unchanged, and so is the apology sent when the model had said nothing.
+
+
 ## 2026-11-13 — A limit for a reply that goes silent, per provider
 
 A model server that stops sending part-way through a reply, without closing the

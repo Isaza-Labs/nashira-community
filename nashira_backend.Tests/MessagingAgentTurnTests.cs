@@ -55,6 +55,92 @@ public class MessagingAgentTurnTests
         Assert.Contains(" outcome=failed", Assert.Single(kit.Log.Rounds));
     }
 
+    // A turn that fails after the model has started answering leaves part of an answer.
+    // The web chat shows the error beside it; a channel gets one message, so the part
+    // goes out with a line saying it may be incomplete, in each way a turn can fail.
+
+    [Fact]
+    public async Task A_reply_whose_connection_breaks_part_way_is_sent_with_a_note_that_it_may_be_incomplete()
+    {
+        var body = new ScriptedBody(
+            RunnerTestKit.Sse("{\"choices\":[{\"delta\":{\"content\":\"Two devices are\"}}]}"),
+            ScriptedBody.Ending.Break);
+        var caller = new MutableCurrentUser();
+        await using var kit = new RunnerTestKit(new ScriptedHttp(body), caller: caller);
+        var (job, _) = await InboundMessageAsync(kit, "which devices are down?");
+
+        await Processor(kit, caller).ProcessAsync(job, CancellationToken.None);
+
+        Assert.Equal("Two devices are\n\n" + CollectingAgentEventSink.IncompleteNote, (await QueuedReplyAsync(kit)).Text);
+        Assert.Equal(AgentTurn.StatusError, (await kit.StoredTurnAsync()).Status);
+    }
+
+    [Fact]
+    public async Task A_reply_that_goes_silent_part_way_is_sent_with_a_note_that_it_may_be_incomplete()
+    {
+        // The server stops sending with the connection open; the provider's limit is one second.
+        var body = new ScriptedBody(
+            RunnerTestKit.Sse("{\"choices\":[{\"delta\":{\"content\":\"Two devices are\"}}]}"),
+            ScriptedBody.Ending.Hang);
+        var caller = new MutableCurrentUser();
+        await using var kit = new RunnerTestKit(
+            new ScriptedHttp(body), caller: caller, providerConfig: """{"stream_idle_seconds":1}""");
+        var (job, _) = await InboundMessageAsync(kit, "which devices are down?");
+
+        await Processor(kit, caller).ProcessAsync(job, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal("Two devices are\n\n" + CollectingAgentEventSink.IncompleteNote, (await QueuedReplyAsync(kit)).Text);
+        var turn = await kit.StoredTurnAsync();
+        Assert.Equal(AgentTurn.StatusError, turn.Status);
+        Assert.Contains("stopped sending", turn.Error);
+    }
+
+    [Fact]
+    public async Task A_reply_cut_off_by_the_deadline_is_sent_with_a_note_that_it_may_be_incomplete()
+    {
+        // No idle limit: the silent server holds the turn until its deadline, two seconds here.
+        var body = new ScriptedBody(
+            RunnerTestKit.Sse("{\"choices\":[{\"delta\":{\"content\":\"Two devices are\"}}]}"),
+            ScriptedBody.Ending.Hang);
+        var caller = new MutableCurrentUser();
+        await using var kit = new RunnerTestKit(new ScriptedHttp(body), deadlineSeconds: 2, caller: caller);
+        var (job, _) = await InboundMessageAsync(kit, "which devices are down?");
+
+        await Processor(kit, caller).ProcessAsync(job, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(12));
+
+        Assert.Equal("Two devices are\n\n" + CollectingAgentEventSink.IncompleteNote, (await QueuedReplyAsync(kit)).Text);
+        Assert.Equal(AgentTurn.StatusTimeout, (await kit.StoredTurnAsync()).Status);
+    }
+
+    // The sink's own choice of what to send, without a turn around it.
+    [Fact]
+    public async Task The_reply_text_carries_the_note_only_when_text_and_an_error_are_both_present()
+    {
+        var none = CancellationToken.None;
+
+        var finished = new CollectingAgentEventSink();
+        await finished.TextAsync("All four are up.", none);
+        Assert.Equal("All four are up.", finished.ReplyText());
+
+        var partWay = new CollectingAgentEventSink();
+        await partWay.TextAsync("All four", none);
+        await partWay.ErrorAsync("the connection was reset", null, none);
+        Assert.Equal("All four\n\n" + CollectingAgentEventSink.IncompleteNote, partWay.ReplyText());
+
+        var nothingSaid = new CollectingAgentEventSink();
+        await nothingSaid.ErrorAsync("the connection was reset", null, none);
+        Assert.StartsWith("Sorry", nothingSaid.ReplyText());
+        Assert.DoesNotContain(CollectingAgentEventSink.IncompleteNote, nothingSaid.ReplyText());
+
+        // A confirmation request still wins over text and error alike.
+        var needsApproval = new CollectingAgentEventSink();
+        await needsApproval.TextAsync("I will restart it.", none);
+        await needsApproval.ConfirmationRequiredAsync("restart_device", default, "single_confirm", none);
+        await needsApproval.ErrorAsync("the connection was reset", null, none);
+        Assert.Contains("needs confirmation", needsApproval.ReplyText());
+        Assert.DoesNotContain(CollectingAgentEventSink.IncompleteNote, needsApproval.ReplyText());
+    }
+
     private static MessagingJobProcessor Processor(RunnerTestKit kit, MutableCurrentUser caller) =>
         // Only the agent_message path runs here; sending is the provider's and the
         // secret store's business, and neither is reached.
