@@ -215,6 +215,12 @@ try
     // ── AI (Phase 2) ──────────────────────────────────────────────
     builder.Services.Configure<AiChatOptions>(
         builder.Configuration.GetSection(AiChatOptions.SectionName));
+    // The providers are built per turn by LlmProviderFactory and read this default,
+    // so it is set once here rather than threaded through the factory.
+    var streamIdleSeconds = builder.Configuration.GetSection(AiChatOptions.SectionName)
+        .GetValue(nameof(AiChatOptions.StreamIdleSeconds), nashira_backend.Services.Ai.Providers.AiChatDefaults.StreamIdleSeconds);
+    nashira_backend.Services.Ai.Providers.StreamLineReader.DefaultLimit =
+        TimeSpan.FromSeconds(Math.Max(0, streamIdleSeconds));
     // A backstop, not the budget. The turn deadline in AiChatOptions is what should
     // end a long turn, and it can only do that if the transport outlives it: on the
     // default 100s this timeout fired first and every over-long turn surfaced as a

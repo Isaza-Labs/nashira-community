@@ -180,14 +180,15 @@ public class AIProviderController : ControllerBase
         UpdatedAt = p.UpdatedAt,
     };
 
-    // Validates the two keys anything reads and passes the rest through untouched.
+    // Validates the keys whose wrong shape would be ignored in silence and passes the
+    // rest through untouched.
     //
     // A wrong shape here is not a runtime error, it is silence: AiModelsController
     // ignores a `models` that is not an array of strings, and ModelLimits.FromConfig
     // returns null for a malformed `model_limits`. The admin then sees a saved
     // provider whose extra models never appear in the chat's picker and no
     // explanation anywhere. Rejecting the form is the only place that can say why.
-    private static JsonElement NormalizeConfig(JsonElement? config)
+    internal static JsonElement NormalizeConfig(JsonElement? config)
     {
         if (config is not { } value || value.ValueKind == JsonValueKind.Null
             || value.ValueKind == JsonValueKind.Undefined)
@@ -220,6 +221,14 @@ public class AIProviderController : ControllerBase
                     throw new ValidationException(
                         $"config.{ModelLimits.ConfigKey}.{field} must be a positive whole number");
         }
+
+        // A value LlmProviderFactory would not read leaves the limit off, or on the
+        // server-wide setting, with nothing to say so.
+        if (value.TryGetProperty(LlmProviderFactory.StreamIdleSecondsConfigKey, out _)
+            && LlmProviderFactory.ConfigStreamIdle(value) is null)
+            throw new ValidationException(
+                $"config.{LlmProviderFactory.StreamIdleSecondsConfigKey} must be a number of seconds, "
+                + $"from 0 (off) to {LlmProviderFactory.MaxStreamIdleSeconds:0}");
 
         // Cloned: the JsonElement handed in by the model binder is backed by the
         // request's buffer, which is recycled once the response is written.

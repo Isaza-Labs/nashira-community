@@ -37,16 +37,19 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
     private readonly string _baseUrl;
     private readonly ILogger<GeminiProvider>? _logger;
     private readonly ModelLimits? _limits;
+    // How long a reply that has started may stay silent; see StreamLineReader.
+    private readonly TimeSpan _streamIdle;
 
     public GeminiProvider(
         HttpClient http, string apiKey, string? baseUrl = null, ILogger<GeminiProvider>? logger = null,
-        ModelLimits? limits = null)
+        ModelLimits? limits = null, TimeSpan? streamIdle = null)
     {
         _http = http;
         _apiKey = apiKey;
         _baseUrl = (baseUrl ?? "https://generativelanguage.googleapis.com").TrimEnd('/');
         _logger = logger;
         _limits = limits;
+        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
     }
 
     public async Task<ChatResult> ChatAsync(
@@ -76,7 +79,7 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
         var body = BuildBody(messages, tools, temperature);
         using var response = await PostAsync(model, body, stream: true, ct);
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var reader = new StreamReader(stream);
+        using var lines = new StreamLineReader(stream, _streamIdle);
 
         var toolCallCount = 0;
         int inputTokens = 0, outputTokens = 0;
@@ -93,7 +96,7 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
 
         while (!ct.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(ct);
+            var line = await lines.ReadLineAsync(ct);
             if (line is null) break;
             if (string.IsNullOrEmpty(line) || !line.StartsWith("data: ")) continue;
             var data = line[6..];
@@ -113,6 +116,10 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
 
             foreach (var part in Parts(candidate))
             {
+                // A part with something in it, a thought summary included: the model
+                // is answering. An empty part does not start the idle limit.
+                if (HasGeneratedContent(part)) lines.ReplyStarted();
+
                 // Thought summaries ride in the same parts array as the answer when a
                 // 2.5 model is asked for them; they are not reply text.
                 if (part.TryGetProperty("thought", out var th)
@@ -644,6 +651,16 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             && cs.GetArrayLength() > 0
                 ? cs[0]
                 : default;
+
+    // Whether a part carries generated output: non-empty text (answer or thought
+    // summary) or a function call.
+    internal static bool HasGeneratedContent(JsonElement part)
+    {
+        if (part.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String
+            && !string.IsNullOrEmpty(text.GetString()))
+            return true;
+        return part.TryGetProperty("functionCall", out var call) && call.ValueKind == JsonValueKind.Object;
+    }
 
     private static IEnumerable<JsonElement> Parts(JsonElement candidate)
     {

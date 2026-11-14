@@ -33,6 +33,8 @@ public sealed class OllamaProvider : IStreamingToolCallingLlmProvider
     private readonly ILogger<OllamaProvider>? _logger;
     private readonly string _chatUrl;
     private readonly ModelLimits? _limits;
+    // How long a reply that has started may stay silent; see StreamLineReader.
+    private readonly TimeSpan _streamIdle;
 
     // Ollama does not reject a prompt that does not fit its context: it drops the
     // front of it, which is exactly where the system prompt is, and answers as if
@@ -51,13 +53,14 @@ public sealed class OllamaProvider : IStreamingToolCallingLlmProvider
 
     public OllamaProvider(
         HttpClient http, string apiKey, string? baseUrl = null, ILogger<OllamaProvider>? logger = null,
-        ModelLimits? limits = null)
+        ModelLimits? limits = null, TimeSpan? streamIdle = null)
     {
         _http = http;
         _apiKey = apiKey;
         _baseUrl = (baseUrl ?? "http://localhost:11434").TrimEnd('/');
         _logger = logger;
         _limits = limits;
+        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
         // A base URL pasted as "http://host/api" would otherwise become /api/api/chat.
         _chatUrl = LlmHttp.CombineUrl(_baseUrl, "/api/chat");
     }
@@ -85,7 +88,7 @@ public sealed class OllamaProvider : IStreamingToolCallingLlmProvider
         var body = BuildBody(messages, tools, model, temperature, stream: true);
         using var response = await PostAsync(body, ct);
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var reader = new StreamReader(stream);
+        using var lines = new StreamLineReader(stream, _streamIdle);
 
         var toolCallSeq = 0;
 
@@ -95,7 +98,7 @@ public sealed class OllamaProvider : IStreamingToolCallingLlmProvider
 
         while (!ct.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(ct);
+            var line = await lines.ReadLineAsync(ct);
             if (line is null) break; // end of stream
             if (line.Length == 0) continue;
 
@@ -114,6 +117,8 @@ public sealed class OllamaProvider : IStreamingToolCallingLlmProvider
 
             if (chunk.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.Object)
             {
+                if (HasGeneratedContent(msg)) lines.ReplyStarted();
+
                 if (msg.TryGetProperty("content", out var contentEl)
                     && contentEl.ValueKind == JsonValueKind.String)
                 {
@@ -299,5 +304,17 @@ public sealed class OllamaProvider : IStreamingToolCallingLlmProvider
             StopReason = root.TryGetProperty("done_reason", out var dr) && dr.ValueKind == JsonValueKind.String
                 ? dr.GetString() : null,
         };
+    }
+
+    // Whether a message chunk carries something the model generated: answer text,
+    // thinking text or a tool call. An empty opening chunk does not count.
+    internal static bool HasGeneratedContent(JsonElement message)
+    {
+        foreach (var key in new[] { "content", "thinking" })
+            if (message.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String
+                && !string.IsNullOrEmpty(el.GetString()))
+                return true;
+        return message.TryGetProperty("tool_calls", out var tcs)
+            && tcs.ValueKind == JsonValueKind.Array && tcs.GetArrayLength() > 0;
     }
 }

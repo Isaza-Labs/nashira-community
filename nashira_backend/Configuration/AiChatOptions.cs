@@ -104,11 +104,28 @@ public class AiChatOptions
     // Override with `AiChat__ScopedPromptAfterUserMessage`.
     public bool ScopedPromptAfterUserMessage { get; set; }
 
+    // How long a model's stream may send nothing once the model has started its
+    // reply, before the round ends as failed with a message saying the reply may be
+    // cut off. Any bytes reset it, keepalive comments included, and it does not start
+    // until the model has generated something, so a server still reading a long
+    // prompt is never cut off by it, whatever it sends first.
+    // 0, the default, is off: a server that stops sending part-way through without
+    // closing the connection then holds the turn until StreamDeadlineSeconds, as it
+    // always did. It is off by default because some providers are silent while the
+    // model builds a large tool call (Anthropic and Gemini are), and a limit would end
+    // those replies. Turn it on for a provider whose server keeps the connection busy
+    // with Config.stream_idle_seconds on that provider, which wins over this setting;
+    // this one, `AiChat__StreamIdleSeconds`, applies to every provider that has none.
+    // See StreamLineReader.
+    public int StreamIdleSeconds { get; set; } = Services.Ai.Providers.AiChatDefaults.StreamIdleSeconds;
+
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the
-    // budget and deliberately not configurable: it exists only so a wedged socket
-    // cannot hold a turn open forever, and its one requirement is that it stay well
-    // clear of StreamDeadlineSeconds. Underneath it, the transport wins every race
-    // and the deadline above becomes decoration — which is precisely the bug that
-    // .NET's default 100s produced here.
+    // budget and deliberately not configurable; its one requirement is that it stay
+    // well clear of StreamDeadlineSeconds. Underneath it, the transport wins every
+    // race and the deadline above becomes decoration — which is precisely the bug
+    // that .NET's default 100s produced here. It bounds sending the request and
+    // receiving the response headers only: the providers read with
+    // ResponseHeadersRead, after which HttpClient.Timeout no longer applies, so a
+    // stream that goes silent is ended by StreamIdleSeconds, not by this.
     public static readonly TimeSpan TransportTimeout = TimeSpan.FromMinutes(5);
 }

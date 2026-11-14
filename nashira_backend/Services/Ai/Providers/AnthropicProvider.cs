@@ -35,6 +35,8 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
     private readonly ILogger<AnthropicProvider>? _logger;
     private readonly string _messagesUrl;
     private readonly ModelLimits? _limits;
+    // How long a reply that has started may stay silent; see StreamLineReader.
+    private readonly TimeSpan _streamIdle;
     private readonly string? _workspaceId;
 
     // Provider Config key holding the workspace this deployment acts in. An
@@ -48,13 +50,14 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
     public AnthropicProvider(
         HttpClient http, string apiKey, string? baseUrl = null, ILogger<AnthropicProvider>? logger = null,
-        ModelLimits? limits = null, string? workspaceId = null)
+        ModelLimits? limits = null, string? workspaceId = null, TimeSpan? streamIdle = null)
     {
         _http = http;
         _apiKey = apiKey;
         _baseUrl = (baseUrl ?? "https://api.anthropic.com").TrimEnd('/');
         _logger = logger;
         _limits = limits;
+        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
         _workspaceId = string.IsNullOrWhiteSpace(workspaceId) ? null : workspaceId.Trim();
         // A base URL pasted with the version on it ("…/v1") would otherwise become
         // /v1/v1/messages. See LlmHttp.CombineUrl.
@@ -84,7 +87,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
         var body = BuildBody(messages, tools, model, temperature, stream: true);
         using var response = await PostAsync(body, ct);
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var reader = new StreamReader(stream);
+        using var lines = new StreamLineReader(stream, _streamIdle);
 
         // A tool call arrives as a content block that opens with its id and name and
         // is then filled by input_json_delta fragments. Keyed by block index, held
@@ -101,7 +104,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
         while (!ct.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(ct);
+            var line = await lines.ReadLineAsync(ct);
             if (line is null) break; // end of stream
             // The `event:` line repeats the payload's own "type" field, so only the
             // data is read; blank lines separate events.
@@ -144,6 +147,10 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
 
                 case "content_block_start":
                 {
+                    // A block opening is not output yet: a text or thinking block opens
+                    // empty, and a tool call's input is held back until a whole
+                    // parameter is ready. The idle limit starts at the first delta that
+                    // carries something (below).
                     if (!evt.TryGetProperty("content_block", out var block)
                         || block.ValueKind != JsonValueKind.Object) break;
                     if (!block.TryGetProperty("type", out var bt) || bt.GetString() != "tool_use") break;
@@ -167,6 +174,7 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
                 {
                     if (!evt.TryGetProperty("delta", out var delta)
                         || delta.ValueKind != JsonValueKind.Object) break;
+                    if (HasGeneratedContent(delta)) lines.ReplyStarted();
                     var dt = delta.TryGetProperty("type", out var dte) && dte.ValueKind == JsonValueKind.String
                         ? dte.GetString() : null;
 
@@ -376,6 +384,17 @@ public sealed class AnthropicProvider : IStreamingToolCallingLlmProvider
     // reported as the input so the number keeps meaning "how big the prompt was", the
     // way it did before caching, and the split says how much of it was cheap.
     internal readonly record struct InputUsage(int Total, int CacheRead, int CacheWrite);
+
+    // Whether a content_block_delta carries generated output: non-empty answer text,
+    // thinking text or a piece of a tool call's input. An empty delta does not count.
+    internal static bool HasGeneratedContent(JsonElement delta)
+    {
+        foreach (var key in new[] { "text", "thinking", "partial_json" })
+            if (delta.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String
+                && !string.IsNullOrEmpty(el.GetString()))
+                return true;
+        return false;
+    }
 
     internal static InputUsage ReadInputUsage(JsonElement usage)
     {

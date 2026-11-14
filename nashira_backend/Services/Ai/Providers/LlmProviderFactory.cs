@@ -33,6 +33,12 @@ public class LlmProviderFactory
     // server-wide AiChat:ScopedPromptAfterUserMessage.
     public const string GuidanceAfterQuestionConfigKey = "guidance_after_question";
 
+    // Config key for a provider's own quiet-stream limit, in seconds: how long its
+    // stream may send nothing once the model has started its reply. 0 turns it off
+    // for this provider; absent defers to the server-wide AiChat:StreamIdleSeconds,
+    // which is off unless set. See StreamLineReader for when it is safe to set.
+    public const string StreamIdleSecondsConfigKey = "stream_idle_seconds";
+
     private readonly AppDbContext _db;
     private readonly ICurrentUser _user;
     private readonly IHttpClientFactory _httpFactory;
@@ -117,6 +123,24 @@ public class LlmProviderFactory
         };
     }
 
+    // A provider's own quiet-stream limit from its Config, or null when absent or not
+    // a number of seconds from 0 up (the same typo rule as ConfigString), which
+    // leaves the server-wide setting in charge.
+    internal static TimeSpan? ConfigStreamIdle(System.Text.Json.JsonElement config)
+    {
+        if (config.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !config.TryGetProperty(StreamIdleSecondsConfigKey, out var node)
+            || node.ValueKind != System.Text.Json.JsonValueKind.Number
+            || !node.TryGetDouble(out var seconds)
+            || !(seconds >= 0) || seconds > MaxStreamIdleSeconds)
+            return null;
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    // A day. Nothing longer is a limit on a chat turn, and it keeps the value inside
+    // what a timer accepts.
+    internal const double MaxStreamIdleSeconds = 86_400;
+
     private ResolvedLlm Resolve(AIProvider row, string? modelOverride) => new(
         Build(row),
         row.AIProviderId,
@@ -136,6 +160,8 @@ public class LlmProviderFactory
         // Config.model_limits, when the row has one; null keeps each provider's own
         // default. Read here, once per resolve, so the providers stay config-free.
         var limits = ModelLimits.FromConfig(provider.Config);
+        // Null leaves each provider on the server-wide default.
+        var streamIdle = ConfigStreamIdle(provider.Config);
 
         // A blank base URL means "the vendor's own endpoint"; a filled one is a
         // proxy, a self-hosted deployment, or — for `custom` — the only address
@@ -152,15 +178,16 @@ public class LlmProviderFactory
         {
             LlmProviderCatalog.Anthropic => new AnthropicProvider(
                 http, apiKey, baseUrl, _loggerFactory.CreateLogger<AnthropicProvider>(), limits,
-                workspaceId: ConfigString(provider.Config, AnthropicProvider.WorkspaceIdConfigKey)),
+                workspaceId: ConfigString(provider.Config, AnthropicProvider.WorkspaceIdConfigKey),
+                streamIdle: streamIdle),
             LlmProviderCatalog.Ollama => new OllamaProvider(
-                http, apiKey, baseUrl, _loggerFactory.CreateLogger<OllamaProvider>(), limits),
+                http, apiKey, baseUrl, _loggerFactory.CreateLogger<OllamaProvider>(), limits, streamIdle),
 
             // Gemini has its own wire format (`contents`, `systemInstruction`, a
             // narrower schema dialect), and its own provider rather than the
             // OpenAI-compatibility endpoint — see GeminiProvider.
             LlmProviderCatalog.Gemini => new GeminiProvider(
-                http, apiKey, baseUrl, _loggerFactory.CreateLogger<GeminiProvider>(), limits),
+                http, apiKey, baseUrl, _loggerFactory.CreateLogger<GeminiProvider>(), limits, streamIdle),
 
             // DeepSeek, Kimi and whatever a tenant runs behind `custom` are
             // OpenAI-compatible: same body, same SSE, different host. The type is
@@ -168,7 +195,7 @@ public class LlmProviderFactory
             LlmProviderCatalog.OpenAi or LlmProviderCatalog.DeepSeek
                 or LlmProviderCatalog.Kimi or LlmProviderCatalog.Custom => new OpenAiProvider(
                     http, apiKey, baseUrl, _loggerFactory.CreateLogger<OpenAiProvider>(),
-                    providerType: type, limits: limits),
+                    providerType: type, limits: limits, streamIdle: streamIdle),
 
             _ => throw new InvalidOperationException($"unsupported provider type: {provider.Type}"),
         };

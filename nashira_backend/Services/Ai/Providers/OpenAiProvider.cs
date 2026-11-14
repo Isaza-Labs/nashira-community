@@ -38,6 +38,8 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
     // Null means "do not send an output cap": OpenAI then allows up to the model's
     // own maximum, which is the right default for it. From Config.model_limits.
     private readonly ModelLimits? _limits;
+    // How long a reply that has started may stay silent; see StreamLineReader.
+    private readonly TimeSpan _streamIdle;
 
     // Set once an endpoint has rejected `stream_options`. Provider instances are
     // per-turn, so this only has to survive the tool-calling rounds of one turn —
@@ -46,7 +48,8 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
 
     public OpenAiProvider(
         HttpClient http, string apiKey, string? baseUrl = null, ILogger<OpenAiProvider>? logger = null,
-        string providerType = "openai", string chatPath = DefaultChatPath, ModelLimits? limits = null)
+        string providerType = "openai", string chatPath = DefaultChatPath, ModelLimits? limits = null,
+        TimeSpan? streamIdle = null)
     {
         _http = http;
         _apiKey = apiKey;
@@ -54,6 +57,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
         _logger = logger;
         _providerType = providerType;
         _limits = limits;
+        _streamIdle = streamIdle ?? StreamLineReader.DefaultLimit;
         // A base URL pasted with the version on it ("https://api.deepseek.com/v1",
         // which is what DeepSeek's own docs publish) would otherwise become
         // /v1/v1/chat/completions. See LlmHttp.CombineUrl.
@@ -81,7 +85,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
     {
         using var response = await PostChatAsync(messages, tools, model, temperature, stream: true, ct);
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var reader = new StreamReader(stream);
+        using var lines = new StreamLineReader(stream, _streamIdle);
 
         var toolCallsInProgress = new Dictionary<int, (string id, string name, StringBuilder args)>();
         // Last non-null finish_reason seen on a choice. OpenAI sends it once, on the
@@ -96,7 +100,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
 
         while (!ct.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(ct);
+            var line = await lines.ReadLineAsync(ct);
             if (line is null) break; // end of stream
             if (line.Length == 0 || !line.StartsWith("data: ")) continue;
             var data = line[6..];
@@ -180,6 +184,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
                 if (!generating && HasGeneratedContent(deltaVal))
                 {
                     generating = true;
+                    lines.ReplyStarted();
                     yield return new ChatStreamEvent { Type = "progress" };
                 }
 
