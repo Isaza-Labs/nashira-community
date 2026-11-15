@@ -29,8 +29,17 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # netmiko/paramiko back the SSH runner. Pinned to netmiko 4.x.
+#
+# paramiko stays below 5 on purpose. paramiko 5 removed SHA-1 key exchange
+# (diffie-hellman-group14-sha1, group-exchange-sha1) and the ssh-rsa host key, and a
+# lot of network equipment still in service offers nothing else: IOS-XE before 17.x,
+# HP ProCurve / ArubaOS-Switch 15.x. With ">=3" the image picked up paramiko 5 and
+# could not log in to those devices at all ("no acceptable kex algorithm").
+# paramiko 4 still prefers the modern
+# algorithms and falls back to the old ones only when a device offers nothing better.
+# netmiko ships the same choice as its "par4" extra. deploy/python/tests guards it.
 RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed \
-      "netmiko>=4,<5" "paramiko>=3" "textfsm>=1.1" "ntc-templates>=4"
+      "netmiko>=4,<5" "paramiko>=4,<5" "textfsm>=1.1" "ntc-templates>=4"
 
 # SSH runner + helpers (nashira_ssh_runner.py + parsers/clean + ntc_templates_extra),
 # lifted from flow-weaver. Imported as sibling modules via PYTHONPATH.

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-14 — Old network devices can be reached over SSH again
+
+**An image built recently could not log in to older equipment at all.** The image
+installed the newest SSH library available at build time, and its version 5 removed
+SHA-1 key exchange and `ssh-rsa` host keys. Devices that offer nothing else (IOS-XE
+before 17.x, HP ProCurve / ArubaOS-Switch 15.x) then failed at connect with "no
+acceptable kex algorithm". The limit came from the library version the image happened to
+be built with, not from a change in Nashira.
+
+The image now pins the library to version 4, which prefers the modern algorithms and
+uses the old ones only when a device offers nothing better. Rebuild the backend image to
+get it. A test fails if a later dependency change removes that support again.
+
 ## 2026-11-14 — SSH sessions are prepared the way the device type expects
 
 Commands sent over SSH (from chat and from a workflow `ssh` step) ran on a session that

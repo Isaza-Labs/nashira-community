@@ -104,3 +104,19 @@ def test_a_failed_session_preparation_is_recorded_and_the_commands_still_run(mon
     assert "send:show version" in calls                      # the run was not abandoned
     assert result["session_preparation_error"] == "RuntimeError: no prompt"
     assert result["results"][0]["ok"] is True
+
+
+# --- old devices ------------------------------------------------------------------
+#
+# The image pins paramiko below 5 so the runner can still log in to equipment whose
+# SSH server offers only SHA-1 key exchange and an ssh-rsa host key. This fails the
+# day a dependency bump takes that away, instead of the day a customer's switch
+# stops answering.
+
+def test_ssh_library_can_still_negotiate_with_old_network_devices():
+    paramiko = pytest.importorskip("paramiko")
+    kex = paramiko.Transport._preferred_kex
+    assert "diffie-hellman-group14-sha1" in kex, "SHA-1 key exchange is gone: IOS-XE 16.x and HP ProCurve become unreachable"
+    assert "ssh-rsa" in paramiko.Transport._preferred_keys, "ssh-rsa host keys are gone: old devices become unreachable"
+    # ...and it must still be the last resort, not the first choice.
+    assert kex.index("diffie-hellman-group14-sha1") > kex.index("diffie-hellman-group14-sha256")
