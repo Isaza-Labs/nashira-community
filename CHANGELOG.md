@@ -13,7 +13,9 @@ example `{"stream_idle_seconds": 60}`) and a reply that sends nothing for that l
 after the model has started it, ends with the text that had arrived and a message that
 it may be cut off. `AiChat__StreamIdleSeconds` sets the same limit for every provider
 that has none of its own. A provider's value is 0 (off for that provider) or between one
-second and a day.
+second and a day. The server-wide setting is a whole number of seconds: a negative value
+counts as 0 and one above a day as a day, and a value that is not a whole number stops
+the server at startup with the setting named.
 
 **It is off unless you set it, and it is not safe for every provider.** Some send
 nothing while the model builds a tool call: Anthropic holds each tool parameter back

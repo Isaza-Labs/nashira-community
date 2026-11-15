@@ -133,17 +133,28 @@ public class LlmProviderFactory
     }
 
     // A provider's own quiet-stream limit from its Config, or null when absent or not
-    // a number of seconds from 0 up (the same typo rule as ConfigString), which
-    // leaves the server-wide setting in charge.
+    // a number that is 0 or within the range above (the same typo rule as
+    // ConfigString), which leaves the server-wide setting in charge.
     internal static TimeSpan? ConfigStreamIdle(System.Text.Json.JsonElement config)
     {
         if (config.ValueKind != System.Text.Json.JsonValueKind.Object
             || !config.TryGetProperty(StreamIdleSecondsConfigKey, out var node)
             || node.ValueKind != System.Text.Json.JsonValueKind.Number
             || !node.TryGetDouble(out var seconds)
-            || !(seconds == 0 || (seconds >= MinStreamIdleSeconds && seconds <= MaxStreamIdleSeconds)))
+            || !((seconds == 0 && WrittenAsZero(node))
+                 || (seconds >= MinStreamIdleSeconds && seconds <= MaxStreamIdleSeconds)))
             return null;
         return TimeSpan.FromSeconds(seconds);
+    }
+
+    // Whether a JSON number is zero as written. A number too small for a double, such
+    // as 1e-400, reads as 0, and would otherwise switch the limit off without saying
+    // so: only a number with no digit other than 0 before its exponent is "off".
+    private static bool WrittenAsZero(System.Text.Json.JsonElement number)
+    {
+        var raw = number.GetRawText().AsSpan();
+        var exponent = raw.IndexOfAny('e', 'E');
+        return (exponent < 0 ? raw : raw[..exponent]).IndexOfAnyInRange('1', '9') < 0;
     }
 
     // The server-wide limit from AiChat:StreamIdleSeconds, for a provider with none of
@@ -151,6 +162,20 @@ public class LlmProviderFactory
     // value is off, and one above the maximum is the maximum.
     internal static TimeSpan ServerStreamIdle(int seconds) =>
         TimeSpan.FromSeconds(Math.Clamp(seconds, 0, MaxStreamIdleSeconds));
+
+    // Reads AiChat:StreamIdleSeconds once, at startup, so that a value that is not a
+    // whole number (2.5, a word, or one too large for an int) stops the server there
+    // with the setting named. Without this the server starts and every chat request
+    // fails instead, when the options are first bound. It binds the one setting the
+    // way AiChatOptions is bound, so it stops on exactly what would fail there and on
+    // nothing else in the section.
+    public static void CheckServerStreamIdle(Microsoft.Extensions.Configuration.IConfiguration configuration) =>
+        configuration.GetSection(nashira_backend.Configuration.AiChatOptions.SectionName).Get<ServerStreamIdleSetting>();
+
+    private sealed class ServerStreamIdleSetting
+    {
+        public int StreamIdleSeconds { get; set; }
+    }
 
     private ResolvedLlm Resolve(AIProvider row, string? modelOverride) => new(
         Build(row),

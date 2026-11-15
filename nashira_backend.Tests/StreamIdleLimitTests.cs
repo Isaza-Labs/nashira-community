@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using nashira_backend.Configuration;
@@ -468,6 +469,7 @@ public class StreamIdleLimitTests
     [Theory]
     [InlineData(60, "60 s")]
     [InlineData(2.5, "2.5 s")]
+    [InlineData(1.25, "1.25 s")]
     [InlineData(1, "1 s")]
     public void The_message_names_the_limit_as_it_was_set(double seconds, string shown)
     {
@@ -505,6 +507,11 @@ public class StreamIdleLimitTests
     [InlineData("""{"stream_idle_seconds":-1}""", null)]
     [InlineData("""{"stream_idle_seconds":0.3}""", null)]
     [InlineData("""{"stream_idle_seconds":1e-100}""", null)]
+    [InlineData("""{"stream_idle_seconds":1e-400}""", null)]
+    [InlineData("""{"stream_idle_seconds":-1e-400}""", null)]
+    [InlineData("""{"stream_idle_seconds":0.0}""", 0.0)]
+    [InlineData("""{"stream_idle_seconds":0e5}""", 0.0)]
+    [InlineData("""{"stream_idle_seconds":-0}""", 0.0)]
     [InlineData("""{"stream_idle_seconds":86401}""", null)]
     [InlineData("""{"stream_idle_seconds":1e12}""", null)]
     public void A_providers_own_limit_is_read_from_its_config(string config, double? seconds)
@@ -523,6 +530,74 @@ public class StreamIdleLimitTests
     public void The_server_wide_limit_is_brought_into_range(int setting, double seconds)
     {
         Assert.Equal(seconds, LlmProviderFactory.ServerStreamIdle(setting).TotalSeconds);
+    }
+
+    // The setting as an environment variable or appsettings would supply it: text.
+    [Theory]
+    [InlineData("2147483648")]
+    [InlineData("2.5")]
+    [InlineData("NaN")]
+    [InlineData("sixty")]
+    public void A_server_wide_limit_that_is_not_a_whole_number_stops_startup_and_names_the_setting(string value)
+    {
+        var error = Assert.Throws<InvalidOperationException>(() => LlmProviderFactory.CheckServerStreamIdle(ServerSetting(value)));
+
+        Assert.Contains("AiChat:StreamIdleSeconds", error.Message);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("0")]
+    [InlineData("60")]
+    [InlineData("-5")]
+    [InlineData("5000000")]
+    public void A_server_wide_limit_that_is_a_whole_number_or_absent_starts(string? value)
+    {
+        LlmProviderFactory.CheckServerStreamIdle(ServerSetting(value));
+    }
+
+    // The check must stop the server on what would break chat and on nothing else:
+    // for any value, it fails exactly when binding the real options fails.
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("0")]
+    [InlineData("60")]
+    [InlineData(" 60 ")]
+    [InlineData("-5")]
+    [InlineData("+7")]
+    [InlineData("5000000")]
+    [InlineData("2147483647")]
+    [InlineData("2147483648")]
+    [InlineData("2.5")]
+    [InlineData("60.0")]
+    [InlineData("1e3")]
+    [InlineData("0x10")]
+    [InlineData("NaN")]
+    [InlineData("sixty")]
+    [InlineData("true")]
+    public void The_startup_check_fails_exactly_when_binding_the_chat_options_would(string? value)
+    {
+        var configuration = ServerSetting(value);
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        Microsoft.Extensions.DependencyInjection.OptionsConfigurationServiceCollectionExtensions.Configure<AiChatOptions>(
+            services, configuration.GetSection(AiChatOptions.SectionName));
+        using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+
+        var bindingFails = Record.Exception(
+            () => Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+                .GetRequiredService<IOptions<AiChatOptions>>(provider).Value) is not null;
+        var checkFails = Record.Exception(() => LlmProviderFactory.CheckServerStreamIdle(configuration)) is not null;
+
+        Assert.Equal(bindingFails, checkFails);
+    }
+
+    private static IConfiguration ServerSetting(string? value)
+    {
+        var settings = new Dictionary<string, string?>();
+        if (value is not null) settings["AiChat:StreamIdleSeconds"] = value;
+        return new ConfigurationBuilder().AddInMemoryCollection(settings).Build();
     }
 
     [Theory]
@@ -545,6 +620,8 @@ public class StreamIdleLimitTests
     [InlineData("""{"stream_idle_seconds":null}""")]
     [InlineData("""{"stream_idle_seconds":0.3}""")]
     [InlineData("""{"stream_idle_seconds":1e-100}""")]
+    [InlineData("""{"stream_idle_seconds":1e-400}""")]
+    [InlineData("""{"stream_idle_seconds":-1e-400}""")]
     [InlineData("""{"stream_idle_seconds":86401}""")]
     [InlineData("""{"stream_idle_seconds":1e12}""")]
     public void Saving_a_provider_refuses_a_limit_that_would_be_ignored(string config)

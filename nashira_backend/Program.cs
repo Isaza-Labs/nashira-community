@@ -215,6 +215,7 @@ try
     // ── AI (Phase 2) ──────────────────────────────────────────────
     builder.Services.Configure<AiChatOptions>(
         builder.Configuration.GetSection(AiChatOptions.SectionName));
+    nashira_backend.Services.Ai.Providers.LlmProviderFactory.CheckServerStreamIdle(builder.Configuration);
     // A backstop, not the budget. The turn deadline in AiChatOptions is what should
     // end a long turn, and it can only do that if the transport outlives it: on the
     // default 100s this timeout fired first and every over-long turn surfaced as a

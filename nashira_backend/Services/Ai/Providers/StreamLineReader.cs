@@ -5,7 +5,7 @@ namespace nashira_backend.Services.Ai.Providers;
 // The message reaches the person in the chat, after whatever text had already
 // streamed, so it says what happened in their terms rather than the socket's.
 public sealed class LlmStreamStalledException(TimeSpan limit)
-    : Exception($"The model stopped sending for {limit.TotalSeconds:0.#} s before finishing its reply, so the reply may be cut off. Try again.")
+    : Exception($"The model stopped sending for {limit.TotalSeconds:0.###} s before finishing its reply, so the reply may be cut off. Try again.")
 {
     public TimeSpan Limit { get; } = limit;
 }
