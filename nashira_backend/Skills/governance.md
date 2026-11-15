@@ -40,6 +40,11 @@ people who confirm constantly stop reading what they confirm. So:
   admin has set `trust_tool_hints` on that server. Untrusted, a server describing itself
   as harmless proves nothing.
 
+- `device_connect` runs autonomously only when an admin has turned on
+  `Ssh:AutoRunReadCommands` **and** every command in the call is a plain `show` /
+  `display` (optionally piped into an output filter). One configuration command in the
+  list and the whole call is confirmed as before.
+
 The confirmation is only meaningful if the user knows what they are agreeing to. State
 what will change, where, and what the effect is **before** asking — not after.
 

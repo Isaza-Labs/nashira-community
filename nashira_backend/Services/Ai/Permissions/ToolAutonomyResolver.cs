@@ -34,15 +34,34 @@ public sealed class ToolAutonomyResolver : IToolAutonomyResolver
     private static readonly HashSet<string> ReadMethods =
         new(StringComparer.OrdinalIgnoreCase) { "GET", "HEAD" };
 
+    // The admin setting that lets plain `show` commands over SSH run without a
+    // confirmation. Off by default: logging in to a device was confirmed for what it
+    // is, and an installation has to decide that reading from one is routine.
+    public const string AutoRunSshReadsKey = "Ssh:AutoRunReadCommands";
+
+    // What counts as a plain read over SSH, and it is deliberately much narrower than
+    // SshCommandPolicy's "read". That classifier only looks at how a command starts,
+    // which is right for refusing destructive commands and wrong for waiving a
+    // confirmation: `cat notes; rm -rf /` starts with a read verb. So here the whole
+    // command has to be a `show` / `display` with ordinary arguments, optionally
+    // piped into one of the CLI's own output filters. No `;`, `&`, backticks, `$`,
+    // redirection or line breaks anywhere, and nothing but a filter after a pipe.
+    private static readonly System.Text.RegularExpressions.Regex PlainShowCommand = new(
+        @"^[ \t]*(show|display)\b[\w \t\-./:,]*(\|[ \t]*(include|exclude|begin|section|count|match|no-more)\b[\w \t\-./:,""]*)?$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     private readonly AppDbContext _db;
     private readonly IApiSpecIndex _specs;
     private readonly ILogger<ToolAutonomyResolver> _logger;
+    private readonly Services.Settings.AppSettingsProvider? _settings;
 
-    public ToolAutonomyResolver(AppDbContext db, IApiSpecIndex specs, ILogger<ToolAutonomyResolver> logger)
+    public ToolAutonomyResolver(AppDbContext db, IApiSpecIndex specs, ILogger<ToolAutonomyResolver> logger,
+        Services.Settings.AppSettingsProvider? settings = null)
     {
         _db = db;
         _specs = specs;
         _logger = logger;
+        _settings = settings;
     }
 
     public async Task<bool> IsReadOnlyCallAsync(string toolName, JsonElement args, CancellationToken ct)
@@ -83,11 +102,45 @@ public sealed class ToolAutonomyResolver : IToolAutonomyResolver
                 return readOnly;
             }
 
+            case "device_connect":
+            {
+                // Only where an admin has opted in, and only when every command in the
+                // call is a plain `show`. One command that is anything else puts the
+                // whole call back behind the confirmation.
+                if (_settings is null || !_settings.GetBool(AutoRunSshReadsKey, false)) return false;
+                var commands = Commands(args);
+                if (commands is null || commands.Count == 0) return false;
+
+                var readOnly = commands.All(IsPlainShowCommand);
+                if (readOnly)
+                    _logger.LogDebug(
+                        "ai.autonomy.read_only tool=device_connect commands={Count}", commands.Count);
+                return readOnly;
+            }
+
             default:
                 // Every other confirmed tool is confirmed because of what it is, not
                 // because of what it was called with.
                 return false;
         }
+    }
+
+    internal static bool IsPlainShowCommand(string command) =>
+        command.Length is > 0 and <= 300 && PlainShowCommand.IsMatch(command);
+
+    // The `commands` array as strings, or null when it is missing or holds anything
+    // that is not a string — a call this cannot read is not one it can wave through.
+    private static List<string>? Commands(JsonElement args)
+    {
+        if (args.ValueKind != JsonValueKind.Object || !args.TryGetProperty("commands", out var c)
+            || c.ValueKind != JsonValueKind.Array) return null;
+        var list = new List<string>();
+        foreach (var el in c.EnumerateArray())
+        {
+            if (el.ValueKind != JsonValueKind.String) return null;
+            list.Add(el.GetString() ?? string.Empty);
+        }
+        return list;
     }
 
     private static string? Str(JsonElement args, string key) =>

@@ -43,6 +43,16 @@ public sealed record AppSettingDefinition(
             + "the per-device environment flags, not a replacement for them.",
             TypeBool, "false", 10, ModuleId.Fleet),
 
+        new("Ssh:AutoRunReadCommands", "Safety",
+            "Run plain show commands over SSH without asking",
+            "Off by default. When on, an SSH call from chat whose commands are all plain "
+            + "`show` / `display` commands (optionally piped into include, exclude, begin, "
+            + "section, count, match or no-more) runs without a confirmation. Anything "
+            + "else in the call, a configuration command included, still asks. A show "
+            + "command can print a device's configuration, so turn this on only where "
+            + "that is acceptable to read without a prompt.",
+            TypeBool, "false", 11, ModuleId.Fleet),
+
         new("Python:PackageProvisioningEnabled", "Python",
             "Install approved pip packages",
             "Whether the provisioner installs packages an admin has allowed. Turning it "

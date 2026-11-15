@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-14 — Optional: plain show commands over SSH without a confirmation
+
+Chat asks for a confirmation before every SSH call, whatever the commands are. An
+admin can now turn on **Run plain show commands over SSH without asking**
+(`Ssh:AutoRunReadCommands`, Settings, Safety). With it on, an SSH call whose commands
+are all plain `show` / `display` commands runs without a confirmation, the way a REST
+`GET` already does. A pipe is accepted only into an output filter (`include`,
+`exclude`, `begin`, `section`, `count`, `match`, `no-more`).
+
+**It is off unless you turn it on.** Anything else in the call still asks: a
+configuration command, a chained command (`;`, `&&`), redirection, or a second line.
+A show command can print a device's configuration, so enable it only where reading
+that without a prompt is acceptable.
+
 ## 2026-11-14 — Old network devices can be reached over SSH again
 
 **An image built recently could not log in to older equipment at all.** The image

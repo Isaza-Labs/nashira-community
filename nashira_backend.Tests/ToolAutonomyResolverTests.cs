@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
@@ -53,6 +55,75 @@ public class ToolAutonomyResolverTests
         new(db, new StubSpecIndex(ops), NullLogger<ToolAutonomyResolver>.Instance);
 
     private static JsonElement Args(string raw) => JsonDocument.Parse(raw).RootElement.Clone();
+
+    // A resolver whose settings provider answers from configuration, the way the
+    // SSH command policy tests build theirs.
+    private static ToolAutonomyResolver ResolverWithSshReads(AppDbContext db, bool? autoRun)
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<AppDbContext>(o => o.UseInMemoryDatabase($"autonomy-settings-{Guid.NewGuid()}"));
+        var sp = services.BuildServiceProvider();
+        var values = new Dictionary<string, string?>();
+        if (autoRun is { } v) values[ToolAutonomyResolver.AutoRunSshReadsKey] = v.ToString();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+        var settings = new nashira_backend.Services.Settings.AppSettingsProvider(
+            sp.GetRequiredService<IServiceScopeFactory>(), config,
+            NullLogger<nashira_backend.Services.Settings.AppSettingsProvider>.Instance);
+        return new ToolAutonomyResolver(db, new StubSpecIndex(), NullLogger<ToolAutonomyResolver>.Instance, settings);
+    }
+
+    // Logging in to a device is confirmed for what it is. The setting is the
+    // installation saying that reading from one is routine, and without it nothing
+    // about the commands makes the call a read.
+    [Fact]
+    public async Task Ssh_show_commands_are_still_confirmed_unless_the_setting_is_on()
+    {
+        using var db = NewDb();
+        var args = Args("""{"device":"core-sw","commands":["show version","show interfaces brief 3"]}""");
+
+        Assert.False(await Resolver(db).IsReadOnlyCallAsync("device_connect", args, default));               // no settings at all
+        Assert.False(await ResolverWithSshReads(db, null).IsReadOnlyCallAsync("device_connect", args, default));  // setting absent
+        Assert.False(await ResolverWithSshReads(db, false).IsReadOnlyCallAsync("device_connect", args, default));
+        Assert.True(await ResolverWithSshReads(db, true).IsReadOnlyCallAsync("device_connect", args, default));
+    }
+
+    // With the setting on, the call is a read only if EVERY command is a plain show.
+    // The existing SSH classifier looks at how a command starts; that is not enough
+    // to waive a confirmation, so each of these has to stay confirmed.
+    [Theory]
+    [InlineData("""["show port-security 3","show interfaces brief 3","show port-security intrusion-log"]""", true)]
+    [InlineData("""["show running-config | include hostname","display version"]""", true)]
+    [InlineData("""["show version","configure terminal"]""", false)]                 // one write in the list
+    [InlineData("""["interface 3 enable"]""", false)]
+    [InlineData("""["show version ; reload"]""", false)]                              // chained
+    [InlineData("""["show version && write memory"]""", false)]
+    [InlineData("""["show log | sh -c reboot"]""", false)]                            // pipe into something that is not a filter
+    [InlineData("""["show version\nconfigure terminal"]""", false)]                  // a second line hidden in one string
+    [InlineData("""["show `reload`"]""", false)]
+    [InlineData("""["show $(reload)"]""", false)]
+    [InlineData("""["show tech > flash:x"]""", false)]
+    [InlineData("""["cat /etc/passwd"]""", false)]                                    // a read verb for the SSH policy, not a show
+    [InlineData("""["ping 10.0.0.1"]""", false)]
+    [InlineData("""["shutdown"]""", false)]                                           // starts with "sh"
+    [InlineData("""[]""", false)]
+    [InlineData("""["show version", 7]""", false)]                                    // not all strings
+    public async Task Ssh_call_is_a_read_only_when_every_command_is_a_plain_show(string commands, bool expected)
+    {
+        using var db = NewDb();
+        var args = Args($$"""{"device":"core-sw","commands":{{commands}}}""");
+
+        Assert.Equal(expected, await ResolverWithSshReads(db, true).IsReadOnlyCallAsync("device_connect", args, default));
+    }
+
+    [Fact]
+    public async Task Ssh_call_without_a_commands_array_is_not_a_read()
+    {
+        using var db = NewDb();
+        var resolver = ResolverWithSshReads(db, true);
+
+        Assert.False(await resolver.IsReadOnlyCallAsync("device_connect", Args("""{"device":"core-sw"}"""), default));
+        Assert.False(await resolver.IsReadOnlyCallAsync("device_connect", Args("""{"device":"core-sw","commands":"show version"}"""), default));
+    }
 
     private static Guid AddServer(AppDbContext db, string name, bool trustHints)
     {
