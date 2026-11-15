@@ -335,11 +335,13 @@ def _run_netmiko(cfg: dict) -> dict:
         c = ConnectHandler(**device, auto_connect=False)
         _patch_hostkey_policy(c, pin_policy)
         c.establish_connection()
+        _prepare_session(c, prep_error)
         if cfg.get("enable_secret"):
             c.enable()
         return c
 
     device_type_fallback: str | None = None
+    prep_error: dict[str, str] = {}
     try:
         conn = _try_connect(device_type)
     except ValueError as exc:
@@ -453,6 +455,7 @@ def _run_netmiko(cfg: dict) -> dict:
         "vendor": vendor_for(device_type),
         "host_key_fingerprint": observed_fp.get("value"),
         "device_type_fallback": device_type_fallback,
+        "session_preparation_error": prep_error.get("value"),
     }
 
 
@@ -638,6 +641,27 @@ def _patch_hostkey_policy(conn, policy) -> None:
         client = paramiko.SSHClient()
         conn.remote_conn_pre = client  # type: ignore[attr-defined]
     client.set_missing_host_key_policy(policy)
+
+
+def _prepare_session(conn, error: dict) -> None:
+    """Run Netmiko's per-vendor session preparation on a freshly opened session.
+
+    `ConnectHandler(...)` normally does this itself. We open the connection by
+    hand (`auto_connect=False`, so the host-key policy can be installed first),
+    and that path skips it — which left every Netmiko device unprepared: paging
+    still on, so a long `show` stops at `--More--` and times out, and a switch
+    that greets with "Press any key to continue" (HP ProCurve) never reaches a
+    prompt at all.
+
+    Best effort on purpose. A session that could be used before this ran must
+    still be usable if preparation fails on some device, so the error is
+    recorded (`session_preparation_error` in the result) and the run goes on.
+    """
+    try:
+        conn.session_preparation()
+    except Exception as exc:  # noqa: BLE001
+        error["value"] = f"{type(exc).__name__}: {exc}"[:500]
+        print(f"session preparation failed: {error['value']}", file=sys.stderr)
 
 
 class _Fatal(Exception):

@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-14 — SSH sessions are prepared the way the device type expects
+
+Commands sent over SSH (from chat and from a workflow `ssh` step) ran on a session that
+had only been logged in. The per-vendor preparation that follows a login was skipped:
+turning paging off, setting the terminal width, and getting past a login screen.
+
+- A long `show` on a device with paging on stopped at `--More--` and timed out.
+- A switch that greets with "Press any key to continue" (HP ProCurve / ArubaOS-Switch)
+  never reached a prompt, so every command failed.
+
+The session is now prepared before the first command. If preparation fails on a device,
+the commands still run as they did before and the result carries the reason in
+`session_preparation_error`. Nokia SR Linux is not affected; it does not use this path.
+
 ## 2026-11-14 — The `ssh` step uses the prompt options a node sets
 
 A workflow `ssh` node could not push configuration to a device whose prompt changes in
