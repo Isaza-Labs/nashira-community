@@ -43,6 +43,35 @@ public class SshContractTests
         Assert.StartsWith("-----BEGIN", root.GetProperty("private_key").GetString());
     }
 
+    // The runner reads these three by name from the request JSON. Unset, the pattern
+    // and the setup list are omitted and `use_timing` is false, which is what the
+    // runner already assumed when the keys were never sent.
+    [Fact]
+    public void SerializeRequest_carries_the_prompt_options_and_omits_them_when_unset()
+    {
+        var set = new SshRunRequest
+        {
+            Host = "10.0.0.1", Username = "netops", Commands = ["configure terminal", "end"],
+            ReadUntilPattern = @"[>#]\s*$", UseTiming = true, SetupCommands = ["terminal length 0"],
+        };
+        using (var doc = JsonDocument.Parse(SshCommandRunner.SerializeRequest(set)))
+        {
+            var root = doc.RootElement;
+            Assert.Equal(@"[>#]\s*$", root.GetProperty("read_until_pattern").GetString());
+            Assert.True(root.GetProperty("use_timing").GetBoolean());
+            Assert.Equal("terminal length 0", root.GetProperty("setup_commands")[0].GetString());
+        }
+
+        var unset = new SshRunRequest { Host = "10.0.0.1", Username = "netops", Commands = ["show version"] };
+        using (var doc = JsonDocument.Parse(SshCommandRunner.SerializeRequest(unset)))
+        {
+            var root = doc.RootElement;
+            Assert.False(root.TryGetProperty("read_until_pattern", out _));
+            Assert.False(root.TryGetProperty("setup_commands", out _));
+            Assert.False(root.GetProperty("use_timing").GetBoolean());
+        }
+    }
+
     [Fact]
     public void ParseResult_maps_runner_success_output()
     {

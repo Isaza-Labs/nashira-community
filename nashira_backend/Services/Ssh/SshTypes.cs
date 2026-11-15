@@ -20,6 +20,16 @@ public sealed class SshRunRequest
     public bool UseStructured { get; init; }
     public bool PreserveAnsi { get; init; }
     public bool? DirectExec { get; init; }
+    // Prompt handling, for sessions where "wait for the exec prompt to come back" is the
+    // wrong rule. The commonest case is configuration mode: after `configure terminal`
+    // the prompt is `host(config)#`, the runner is still waiting for `host#`, and the
+    // command times out although the device accepted it.
+    //   SetupCommands    — run first, output discarded (paging off, CLI mode).
+    //   UseTiming        — read by delay instead of by prompt match.
+    //   ReadUntilPattern — the regex that ends a command's output, e.g. `[>#]\s*$`.
+    public IReadOnlyList<string>? SetupCommands { get; init; }
+    public bool UseTiming { get; init; }
+    public string? ReadUntilPattern { get; init; }
     public string? ExpectedFingerprint { get; init; }
 }
 

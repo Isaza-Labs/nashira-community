@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-14 — The `ssh` step uses the prompt options a node sets
+
+A workflow `ssh` node could not push configuration to a device whose prompt changes in
+configuration mode. After `configure terminal` the prompt is `host(config)#`, the step
+kept waiting for `host#`, and the command timed out although the device had accepted it.
+
+The options that deal with this were already accepted on a node and then dropped before
+the step ran: `read_until_pattern`, `use_timing`, `setup_commands`, `preserve_ansi` and
+`direct_exec`. They now reach the SSH runner. To send configuration commands one per
+line, give the node a pattern that ends a command's output in any mode, for example
+`"read_until_pattern": "[>#]\\s*$"`.
+
+A node that sets none of them runs as before. A node that already set one of them now
+gets what it asked for, so check any workflow that carries these keys.
+
 ## 2026-11-13 — A limit for a reply that goes silent, per provider
 
 A model server that stops sending part-way through a reply, without closing the

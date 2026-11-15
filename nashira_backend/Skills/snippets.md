@@ -315,6 +315,13 @@ Destructive commands are blocked unless an admin has set `Ssh:AllowDestructiveCo
 When one is blocked, say which command and that it needs a platform setting change — do
 not look for a phrasing that slips past the classifier.
 
+**Configuration mode needs a prompt pattern.** The step sends one command at a time and
+waits for the exec prompt to return. After `configure terminal` the prompt is
+`host(config)#`, so that command times out unless the node says what ends a command's
+output: `"read_until_pattern": "[>#]\\s*$"` in `config_overrides` (or `"use_timing":
+true` for a device whose prompt cannot be matched). `setup_commands` run first with
+their output discarded.
+
 The step also enforces the run's environment against the device's `allow_draft` /
 `allow_qa` / `allow_production` trio, and host-key pinning applies (see the inventory
 skill).

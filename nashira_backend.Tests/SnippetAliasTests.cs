@@ -625,6 +625,53 @@ public class SnippetAliasTests
         db.Dispose();
     }
 
+    // The prompt options are in the step's key catalogue, so a node may set them — and
+    // until this test existed the handler read none of them, so the runner never saw
+    // them. `configure terminal` is the case that shows it: the prompt becomes
+    // `host(config)#`, the runner waits for `host#`, and the step times out on a
+    // command the device accepted.
+    [Fact]
+    public async Task Ssh_passes_the_prompt_options_a_node_sets_through_to_the_runner()
+    {
+        var (handler, runner, _, db) = await NewSsh();
+
+        await handler.ExecuteAsync(Request("""
+            {"device":"core-sw",
+             "commands":["configure terminal","interface GigabitEthernet1/0/12","shutdown","no shutdown","end"],
+             "read_until_pattern":"[>#]\\s*$","use_timing":true,
+             "setup_commands":["terminal length 0"," "],
+             "preserve_ansi":true,"direct_exec":false,"changes":true}
+            """), default);
+
+        var sent = runner.Last!;
+        Assert.Equal(@"[>#]\s*$", sent.ReadUntilPattern);
+        Assert.True(sent.UseTiming);
+        Assert.Equal(["terminal length 0"], sent.SetupCommands);   // the blank entry is dropped
+        Assert.True(sent.PreserveAnsi);
+        Assert.False(sent.DirectExec);
+        Assert.Equal(5, sent.Commands.Count);
+        db.Dispose();
+    }
+
+    // A node that sets none of them must reach the runner exactly as it did before:
+    // no pattern, prompt-matched reads, no setup, and `direct_exec` left for the runner
+    // to decide from the device type (null, not false).
+    [Fact]
+    public async Task Ssh_leaves_the_prompt_options_unset_when_the_node_does_not_name_them()
+    {
+        var (handler, runner, _, db) = await NewSsh();
+
+        await handler.ExecuteAsync(Request("""{"device":"core-sw","command":"show version"}"""), default);
+
+        var sent = runner.Last!;
+        Assert.Null(sent.ReadUntilPattern);
+        Assert.False(sent.UseTiming);
+        Assert.Null(sent.SetupCommands);
+        Assert.False(sent.PreserveAnsi);
+        Assert.Null(sent.DirectExec);
+        db.Dispose();
+    }
+
     // §ssh: `host` is an IP and the handler resolves it to an inventory device.
     // "No match → `not_found`, never an ad-hoc connection" — the environment gate and
     // the host-key pin live on the device row, and a machine with neither must stay

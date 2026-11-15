@@ -211,6 +211,15 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
             StopOnError = Bool(input, "stop_on_error", true),
             UseStructured = Bool(input, "use_structured", Bool(input, "structured", true)),
             TimeoutSeconds = Int(input, "timeout_seconds", 30),
+            // These five were accepted as known keys and then dropped here, so a node
+            // that set them ran as if it had not. The one that hurts is the prompt
+            // pair: without `read_until_pattern` (or `use_timing`) a step cannot get
+            // past `configure terminal` on a device whose prompt changes in config mode.
+            SetupCommands = StringList(input, "setup_commands"),
+            UseTiming = Bool(input, "use_timing", false),
+            ReadUntilPattern = Str(input, "read_until_pattern"),
+            PreserveAnsi = Bool(input, "preserve_ansi", false),
+            DirectExec = NullableBool(input, "direct_exec"),
             ExpectedFingerprint = device.ExpectedSshHostKeyFingerprint,
         }, ct);
 
@@ -380,6 +389,24 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
         }
         return list;
     }
+
+    // A list of non-blank strings, or null when the key is absent or holds none — null
+    // keeps the key out of the runner request instead of sending an empty array.
+    private static List<string>? StringList(JsonElement e, string k)
+    {
+        if (e.ValueKind != JsonValueKind.Object || !e.TryGetProperty(k, out var v) || v.ValueKind != JsonValueKind.Array)
+            return null;
+        var list = new List<string>();
+        foreach (var el in v.EnumerateArray())
+            if (el.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(el.GetString()))
+                list.Add(el.GetString()!);
+        return list.Count == 0 ? null : list;
+    }
+
+    // Unset means "let the runner decide", which is different from false.
+    private static bool? NullableBool(JsonElement e, string k) =>
+        e.ValueKind == JsonValueKind.Object && e.TryGetProperty(k, out var v)
+        && v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null;
 
     private static string? Str(JsonElement e, string k) =>
         e.ValueKind == JsonValueKind.Object && e.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String
