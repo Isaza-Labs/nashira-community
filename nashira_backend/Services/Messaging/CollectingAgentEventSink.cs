@@ -78,6 +78,14 @@ public sealed class CollectingAgentEventSink : IAgentEventSink
         return Task.CompletedTask;
     }
 
+    // Put above the text of a turn that ended in an error after it had started
+    // answering. The web chat shows the error beside the text; here the text is all
+    // the user gets. Above, not below: the providers keep only the start of a long
+    // message (4,096 characters on Telegram and WhatsApp), and a note at the end of
+    // one would be the part that is dropped.
+    public const string IncompleteNote =
+        "(Something went wrong before this reply was finished, so what follows may be incomplete. Please ask again.)";
+
     // What the external user should actually see. Order matters: a confirmation
     // request is not an error, but it does mean the turn produced no answer, and
     // saying so beats returning whatever partial text preceded it.
@@ -87,7 +95,11 @@ public sealed class CollectingAgentEventSink : IAgentEventSink
             return $"That action ({ConfirmationRequiredTool}) needs confirmation, which cannot be given from "
                  + "this chat. Please run it from the Nashira web app.";
 
-        if (!string.IsNullOrWhiteSpace(FinalText)) return FinalText;
+        // A turn that fails part-way (the model goes silent, the connection breaks,
+        // the deadline passes) leaves the start of an answer. Sent alone it reads as
+        // the whole answer, so it goes out under a line saying it may not be.
+        if (!string.IsNullOrWhiteSpace(FinalText))
+            return Error is null ? FinalText : IncompleteNote + "\n\n" + FinalText;
 
         return Error is not null
             ? "Sorry — something went wrong handling your request. Please try again."
