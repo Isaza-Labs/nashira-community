@@ -13,6 +13,111 @@ using nashira_backend.Services.Security;
 
 namespace nashira_backend.Tests;
 
+// A clock that moves only when the test moves it. A timer made on it fires inside
+// Advance, on the test's own thread, when the clock reaches the time it was set for:
+// a test can stop one millisecond short of a limit and then step over it.
+internal sealed class ManualTime : TimeProvider
+{
+    private readonly object _gate = new();
+    private readonly List<ManualTimer> _timers = [];
+    private TimeSpan _now;
+
+    // How many timers were ever made on this clock.
+    public int Created { get; private set; }
+
+    // How many of them have not been disposed.
+    public int Live
+    {
+        get { lock (_gate) return _timers.Count; }
+    }
+
+    // How far from now each timer that is set will fire, soonest first.
+    public IReadOnlyList<TimeSpan> Due
+    {
+        get { lock (_gate) return _timers.Where(t => t.At is not null).Select(t => t.At!.Value - _now).Order().ToList(); }
+    }
+
+    public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+
+    public override long GetTimestamp()
+    {
+        lock (_gate) return _now.Ticks;
+    }
+
+    public override DateTimeOffset GetUtcNow()
+    {
+        lock (_gate) return DateTimeOffset.UnixEpoch + _now;
+    }
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        if (period != Timeout.InfiniteTimeSpan) throw new NotSupportedException("one-shot timers only");
+        lock (_gate)
+        {
+            Created++;
+            var timer = new ManualTimer(this, callback, state);
+            timer.Set(dueTime);
+            _timers.Add(timer);
+            return timer;
+        }
+    }
+
+    public void Advance(TimeSpan by)
+    {
+        TimeSpan until;
+        lock (_gate) until = _now + by;
+        while (true)
+        {
+            ManualTimer? next;
+            lock (_gate)
+            {
+                next = _timers.Where(t => t.At <= until).MinBy(t => t.At);
+                if (next is null)
+                {
+                    _now = until;
+                    return;
+                }
+                _now = next.At!.Value;
+                next.At = null;
+            }
+            next.Fire();
+        }
+    }
+
+    private sealed class ManualTimer(ManualTime clock, TimerCallback callback, object? state) : ITimer
+    {
+        // When it fires, on the clock; null while it is not set.
+        public TimeSpan? At;
+
+        public void Set(TimeSpan dueTime) =>
+            At = dueTime == Timeout.InfiniteTimeSpan ? null : clock._now + dueTime;
+
+        public bool Change(TimeSpan dueTime, TimeSpan period)
+        {
+            if (period != Timeout.InfiniteTimeSpan) throw new NotSupportedException("one-shot timers only");
+            lock (clock._gate)
+            {
+                if (!clock._timers.Contains(this)) return false;
+                Set(dueTime);
+                return true;
+            }
+        }
+
+        public void Fire() => callback(state);
+
+        public void Dispose()
+        {
+            lock (clock._gate) clock._timers.Remove(this);
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+}
+
 // A response body the test holds: the reader gets exactly the bytes the test feeds it,
 // the test can wait until the reader has taken them all and is waiting for more, and it
 // can see which cancellation token that waiting read is under. Nothing here depends on

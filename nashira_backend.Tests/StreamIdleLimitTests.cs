@@ -28,12 +28,20 @@ namespace nashira_backend.Tests;
 // A test that says the limit does NOT apply somewhere does not wait and see: it looks
 // at the token the waiting read was given (GatedBody.ReadToken). The caller's own token
 // means the read is under no limit and no timer exists; that holds however slowly the
-// test machine runs. StreamIdleEnabledPathTests has the limit switched on against
-// cancellation, the turn deadline, retries and the setting's sources.
+// test machine runs. A test about WHEN the limit runs out gives the reader a clock it
+// moves by hand (ManualTime) and a body it feeds byte by byte, so it can stop a
+// millisecond short of the limit and step over it. StreamIdleEnabledPathTests has the
+// limit switched on against cancellation, the turn deadline, retries and the
+// setting's sources.
 public class StreamIdleLimitTests
 {
     private static readonly TimeSpan Limit = TimeSpan.FromMilliseconds(300);
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
+
+    // The limit in the tests that move the clock by hand, and a step short of it.
+    private static readonly TimeSpan Wait = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan AlmostWait = TimeSpan.FromSeconds(27);
+    private static readonly TimeSpan Tick = TimeSpan.FromMilliseconds(1);
 
     // A response body the test writes into and never finishes unless told to.
     private sealed class OpenBody
@@ -159,67 +167,197 @@ public class StreamIdleLimitTests
         Assert.Equal("data: x", await read.WaitAsync(Bound));
     }
 
-    // A line that takes longer than the limit to complete, but never goes quiet
-    // for that long, is a stream that is alive.
+    // ── the reader, on a clock moved by hand ────────────────────────────────
+
+    [Fact]
+    public async Task A_silent_reply_ends_at_the_limit_and_not_a_moment_before()
+    {
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, Wait, time);
+        lines.ReplyStarted();
+
+        var read = lines.ReadLineAsync(CancellationToken.None);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal([Wait], time.Due);
+
+        time.Advance(Wait - Tick);
+        Assert.Equal(0, body.ReadsCancelled);
+        time.Advance(Tick);
+        Assert.Equal(1, body.ReadsCancelled);
+
+        var e = await Assert.ThrowsAsync<LlmStreamStalledException>(() => read.WaitAsync(Bound));
+        Assert.Equal(Wait, e.Limit);
+        Assert.Equal(0, time.Live);
+    }
+
+    // Until the reply has started, and with the limit at zero after it has, there is
+    // no timer at all: any amount of silence passes.
+    [Theory]
+    [InlineData(30, false)]
+    [InlineData(0, true)]
+    public async Task With_no_reply_started_or_no_limit_there_is_no_timer(int limitSeconds, bool replyStarted)
+    {
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, TimeSpan.FromSeconds(limitSeconds), time);
+        if (replyStarted) lines.ReplyStarted();
+        body.Feed(": connected\n");
+        Assert.Equal(": connected", await lines.ReadLineAsync(CancellationToken.None));
+
+        var read = lines.ReadLineAsync(CancellationToken.None);
+        await body.Waiting().WaitAsync(Bound);
+        time.Advance(TimeSpan.FromDays(2));
+        body.Feed("data: x\n");
+
+        Assert.Equal("data: x", await read.WaitAsync(Bound));
+        Assert.Equal(0, time.Created);
+        Assert.Equal(0, body.ReadsCancelled);
+    }
+
+    // A line that takes far longer than the limit to complete, but never goes quiet
+    // for that long, is a stream that is alive: every piece puts the whole limit back.
     [Fact]
     public async Task Bytes_of_an_unfinished_line_keep_the_stream_alive()
     {
-        var body = new OpenBody();
-        using var lines = new StreamLineReader(body.Stream, Limit);
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, Wait, time);
         lines.ReplyStarted();
 
-        var writer = Task.Run(async () =>
+        var read = lines.ReadLineAsync(CancellationToken.None);
+        await body.Waiting().WaitAsync(Bound);
+        for (var i = 0; i < 18; i++)
         {
-            for (var i = 0; i < 18; i++)
-            {
-                await body.WriteAsync("ab");
-                await Task.Delay(Limit / 6);
-            }
-            await body.WriteAsync("\n");
-        });
+            time.Advance(AlmostWait);
+            Assert.Equal([Wait - AlmostWait], time.Due);
+            body.Feed("ab");
+            await body.Waiting().WaitAsync(Bound);
+            Assert.Equal([Wait], time.Due);
+        }
+        time.Advance(AlmostWait);
+        body.Feed("\n");
 
-        Assert.Equal(string.Concat(Enumerable.Repeat("ab", 18)), await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
-        await writer;
+        Assert.Equal(string.Concat(Enumerable.Repeat("ab", 18)), await read.WaitAsync(Bound));
+        Assert.Equal(0, body.ReadsCancelled);
     }
 
+    // The limit counts from the last bytes, not from when the line began.
     [Fact]
-    public async Task A_line_that_stops_arriving_part_way_ends_after_the_limit()
+    public async Task A_line_that_stops_arriving_part_way_ends_one_limit_after_its_last_bytes()
     {
-        var body = new OpenBody();
-        using var lines = new StreamLineReader(body.Stream, Limit);
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, Wait, time);
         lines.ReplyStarted();
-        await body.WriteAsync("data: {\"cho");
 
-        await Assert.ThrowsAsync<LlmStreamStalledException>(
-            () => lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
+        var read = lines.ReadLineAsync(CancellationToken.None);
+        await body.Waiting().WaitAsync(Bound);
+        time.Advance(AlmostWait);
+        body.Feed("data: {\"cho");
+        await body.Waiting().WaitAsync(Bound);
+
+        time.Advance(Wait - Tick);
+        Assert.Equal(0, body.ReadsCancelled);
+        time.Advance(Tick);
+        Assert.Equal(1, body.ReadsCancelled);
+
+        await Assert.ThrowsAsync<LlmStreamStalledException>(() => read.WaitAsync(Bound));
     }
 
+    // Every read after the reply started gets the whole limit, whatever the line turns
+    // out to be: a keepalive comment is not generated output, and it still shows the
+    // stream is alive. No timer is left running between one read and the next.
     [Fact]
     public async Task Keepalives_inside_the_limit_keep_a_long_stream_alive()
     {
-        var body = new OpenBody();
-        using var lines = new StreamLineReader(body.Stream, Limit);
-        await body.WriteAsync("data: {}\n");
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, Wait, time);
+        body.Feed("data: {}\n");
         Assert.Equal("data: {}", await lines.ReadLineAsync(CancellationToken.None));
         lines.ReplyStarted();
 
-        var writer = Task.Run(async () =>
+        for (var i = 0; i < 12; i++)
         {
-            for (var i = 0; i < 12; i++)
-            {
-                await Task.Delay(Limit / 6);
-                await body.WriteAsync(": keepalive\n");
-            }
-            await body.WriteAsync("data: [DONE]\n");
-            await body.CompleteAsync();
-        });
+            var read = lines.ReadLineAsync(CancellationToken.None);
+            await body.Waiting().WaitAsync(Bound);
+            Assert.Equal([Wait], time.Due);
+            time.Advance(AlmostWait);
+            body.Feed(": keepalive\n");
+            Assert.Equal(": keepalive", await read.WaitAsync(Bound));
+            Assert.Equal(0, time.Live);
+        }
+        body.Feed("data: [DONE]\n");
+        body.End();
 
-        var seen = new List<string>();
-        while (await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound) is { } line) seen.Add(line);
-        await writer;
+        Assert.Equal("data: [DONE]", await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
+        Assert.Null(await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
+        Assert.Equal(0, body.ReadsCancelled);
+        Assert.Equal(0, time.Live);
+    }
 
-        Assert.Equal(12, seen.Count(l => l == ": keepalive"));
-        Assert.Equal("data: [DONE]", seen[^1]);
+    // The limit is on waiting for the server. Time the caller spends on a line it was
+    // given is not counted: the next read starts with the whole limit.
+    [Fact]
+    public async Task Time_between_two_reads_does_not_count_against_the_limit()
+    {
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, Wait, time);
+        lines.ReplyStarted();
+        body.Feed("data: one\n");
+        Assert.Equal("data: one", await lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
+        Assert.Equal(0, time.Live);
+
+        time.Advance(Wait * 5);
+        var read = lines.ReadLineAsync(CancellationToken.None);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal([Wait], time.Due);
+        Assert.Equal(0, body.ReadsCancelled);
+        body.Feed("data: two\n");
+
+        Assert.Equal("data: two", await read.WaitAsync(Bound));
+    }
+
+    // The caller cancels while the limit is running, and the limit's time then passes
+    // anyway: a cancellation, and the timer went with the read.
+    [Fact]
+    public async Task A_cancelled_read_leaves_no_timer_to_run_out_later()
+    {
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var caller = new CancellationTokenSource();
+        using var lines = new StreamLineReader(body, Wait, time);
+        lines.ReplyStarted();
+
+        var read = lines.ReadLineAsync(caller.Token);
+        await body.Waiting().WaitAsync(Bound);
+        time.Advance(AlmostWait);
+        caller.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read.WaitAsync(Bound));
+        Assert.Equal(0, time.Live);
+        time.Advance(Wait * 2);
+        Assert.Equal(1, body.ReadsCancelled);
+    }
+
+    // A limit longer than a day is a day, not no limit.
+    [Fact]
+    public async Task A_limit_longer_than_a_day_runs_as_a_day()
+    {
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, TimeSpan.FromSeconds(5_000_000), time);
+        lines.ReplyStarted();
+
+        var read = lines.ReadLineAsync(CancellationToken.None);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal([TimeSpan.FromDays(1)], time.Due);
+
+        time.Advance(TimeSpan.FromDays(1));
+        var e = await Assert.ThrowsAsync<LlmStreamStalledException>(() => read.WaitAsync(Bound));
+        Assert.Equal(TimeSpan.FromDays(1), e.Limit);
     }
 
     [Fact]
@@ -471,18 +609,21 @@ public class StreamIdleLimitTests
     [Fact]
     public async Task A_character_split_across_two_reads_is_decoded_whole()
     {
-        var body = new OpenBody();
-        using var lines = new StreamLineReader(body.Stream, Limit);
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, Wait, time);
         lines.ReplyStarted();
         var bytes = Encoding.UTF8.GetBytes("señal ✓\n");
         var cut = Array.IndexOf(bytes, (byte)0xC3) + 1; // between the two bytes of "ñ"
 
-        await body.WriteAsync(bytes[..cut]);
+        body.Feed(bytes[..cut]);
         var line = lines.ReadLineAsync(CancellationToken.None);
-        await Task.Delay(Limit / 6);
-        await body.WriteAsync(bytes[cut..]);
+        await body.Waiting().WaitAsync(Bound);
+        time.Advance(AlmostWait);
+        body.Feed(bytes[cut..]);
 
         Assert.Equal("señal ✓", await line.WaitAsync(Bound));
+        Assert.Equal(0, body.ReadsCancelled);
     }
 
     [Fact]
