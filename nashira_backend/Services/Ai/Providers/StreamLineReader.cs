@@ -48,14 +48,18 @@ internal sealed class StreamLineReader : IDisposable
 
     private readonly StreamReader _reader;
     private readonly TimeSpan _limit;
+    private readonly TimeProvider _time;
     private bool _replyStarted;
 
     // The timer of the read in flight, while the limit applies; bytes push it back.
     private CancellationTokenSource? _idle;
 
-    public StreamLineReader(Stream stream, TimeSpan limit)
+    // `time` is the clock the limit runs on. The providers leave it out and get the
+    // system's; a test passes one it moves by hand.
+    public StreamLineReader(Stream stream, TimeSpan limit, TimeProvider? time = null)
     {
         _limit = limit > MaxLimit ? MaxLimit : limit;
+        _time = time ?? TimeProvider.System;
         _reader = new StreamReader(new ReadNotifyingStream(stream, BytesArrived));
     }
 
@@ -70,9 +74,11 @@ internal sealed class StreamLineReader : IDisposable
         if (!_replyStarted || _limit <= TimeSpan.Zero)
             return await _reader.ReadLineAsync(ct);
 
-        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        idle.CancelAfter(_limit);
-        _idle = idle;
+        // The timer is a source of its own, because only a source created with a
+        // clock runs on that clock; the read ends on it or on the caller's token.
+        using var timer = new CancellationTokenSource(_limit, _time);
+        using var idle = CancellationTokenSource.CreateLinkedTokenSource(ct, timer.Token);
+        _idle = timer;
         try
         {
             return await _reader.ReadLineAsync(idle.Token);
