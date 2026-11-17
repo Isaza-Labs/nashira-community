@@ -201,6 +201,31 @@ public class StreamIdleEnabledPathTests
         Assert.True(body.Disposed);
     }
 
+    // ── what is sent ────────────────────────────────────────────────────────
+
+    // The limit is about reading the reply. What goes to the model server is the same
+    // with it on or off: method, address, headers and body.
+    [Theory]
+    [MemberData(nameof(EveryType))]
+    public async Task The_request_is_the_same_with_the_limit_on_or_off(string type)
+    {
+        async Task<string> Sent(TimeSpan limit)
+        {
+            var wire = IdleWire.For(type);
+            var body = new GatedBody();
+            var server = new GatedServer().Then(body);
+            body.Feed(wire.Opening + wire.Said + wire.Rest);
+            body.End();
+            var provider = IdleWire.Provider(type, server.CreateClient(), limit);
+            Assert.Equal("hola", await Text(Ask(provider, CancellationToken.None)).WaitAsync(Bound));
+            return Assert.Single(server.Requests);
+        }
+
+        var off = await Sent(TimeSpan.Zero);
+        Assert.StartsWith("POST https://", off.Replace("http://", "https://"));
+        Assert.Equal(off, await Sent(LongLimit));
+    }
+
     // ── the retries a request already had ───────────────────────────────────
 
     // An endpoint that refuses stream_options is asked once more without it. The limit

@@ -280,8 +280,8 @@ internal sealed class GatedBody : Stream
 }
 
 // A model server that answers each request with the next scripted response and keeps
-// the request bodies it was sent. A request beyond the script fails, so a test that
-// expects no further request sees one.
+// what it was sent: each request written out whole (method, address, headers, body).
+// A request beyond the script fails, so a test that expects no further request sees one.
 internal sealed class GatedServer : IHttpClientFactory
 {
     private readonly object _gate = new();
@@ -311,7 +311,11 @@ internal sealed class GatedServer : IHttpClientFactory
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
-            var sent = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
+            var headers = request.Headers.Concat(request.Content?.Headers ?? Enumerable.Empty<KeyValuePair<string, IEnumerable<string>>>())
+                .Select(h => $"{h.Key}: {string.Join(", ", h.Value)}")
+                .Order(StringComparer.Ordinal);
+            var sent = $"{request.Method} {request.RequestUri}\n{string.Join("\n", headers)}\n\n"
+                + (request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct));
             lock (owner._gate)
             {
                 owner._requests.Add(sent);
