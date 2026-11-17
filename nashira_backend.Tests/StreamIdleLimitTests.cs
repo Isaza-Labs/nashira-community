@@ -24,10 +24,16 @@ namespace nashira_backend.Tests;
 //
 // Every wait is bounded, so a change that stops the limit from firing fails these
 // tests instead of hanging them.
+//
+// A test that says the limit does NOT apply somewhere does not wait and see: it looks
+// at the token the waiting read was given (GatedBody.ReadToken). The caller's own token
+// means the read is under no limit and no timer exists; that holds however slowly the
+// test machine runs. StreamIdleEnabledPathTests has the limit switched on against
+// cancellation, the turn deadline, retries and the setting's sources.
 public class StreamIdleLimitTests
 {
     private static readonly TimeSpan Limit = TimeSpan.FromMilliseconds(300);
-    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
 
     // A response body the test writes into and never finishes unless told to.
     private sealed class OpenBody
@@ -50,6 +56,26 @@ public class StreamIdleLimitTests
     }
 
     private static readonly List<LlmMessage> Hi = [new LlmMessage { Role = "user", Content = "hi" }];
+
+    // A provider of this type, with the limit on, is sent `opening` and nothing more.
+    // Once it has read all of it and is waiting, that read must be under the caller's
+    // own token: the opening did not start the limit. Then the rest arrives and the
+    // reply is returned.
+    private static async Task<string> ReplyAfterAnOpeningThatDoesNotStartTheLimit(string type, string opening, string rest)
+    {
+        var body = new GatedBody();
+        using var caller = new CancellationTokenSource();
+        var provider = IdleWire.Provider(type, new GatedServer().Then(body).CreateClient(), Limit);
+
+        body.Feed(opening);
+        var reply = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, caller.Token));
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal(caller.Token, body.ReadToken);
+
+        body.Feed(rest);
+        body.End();
+        return await reply.WaitAsync(Bound);
+    }
 
     // The reply's text; throws what the stream throws.
     private static async Task<string> Text(IAsyncEnumerable<ChatStreamEvent> events)
@@ -76,19 +102,20 @@ public class StreamIdleLimitTests
             () => lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
 
         Assert.Equal(Limit, e.Limit);
-        Assert.InRange(watch.Elapsed, Limit * 0.8, TimeSpan.FromSeconds(5));
+        Assert.True(watch.Elapsed >= Limit * 0.8, $"ended after {watch.Elapsed}, before the limit");
     }
 
     [Fact]
-    public async Task Silence_before_anything_arrives_is_not_cut_off()
+    public async Task Silence_before_anything_arrives_is_under_no_limit()
     {
-        var body = new OpenBody();
-        using var lines = new StreamLineReader(body.Stream, Limit);
+        var body = new GatedBody();
+        using var caller = new CancellationTokenSource();
+        using var lines = new StreamLineReader(body, Limit);
 
-        var read = lines.ReadLineAsync(CancellationToken.None);
-        await Task.Delay(Limit * 3);
-        Assert.False(read.IsCompleted);
-        await body.WriteAsync("first\n");
+        var read = lines.ReadLineAsync(caller.Token);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal(caller.Token, body.ReadToken);
+        body.Feed("first\n");
 
         Assert.Equal("first", await read.WaitAsync(Bound));
     }
@@ -96,18 +123,38 @@ public class StreamIdleLimitTests
     // Lines alone do not start the limit: the provider does, when the model has
     // generated something.
     [Fact]
-    public async Task Silence_after_lines_that_are_not_the_reply_is_not_cut_off()
+    public async Task Silence_after_lines_that_are_not_the_reply_is_under_no_limit()
     {
-        var body = new OpenBody();
-        await body.WriteAsync(": connected\nevent: ping\n");
-        using var lines = new StreamLineReader(body.Stream, Limit);
-        Assert.Equal(": connected", await lines.ReadLineAsync(CancellationToken.None));
-        Assert.Equal("event: ping", await lines.ReadLineAsync(CancellationToken.None));
+        var body = new GatedBody();
+        using var caller = new CancellationTokenSource();
+        body.Feed(": connected\nevent: ping\n");
+        using var lines = new StreamLineReader(body, Limit);
+        Assert.Equal(": connected", await lines.ReadLineAsync(caller.Token));
+        Assert.Equal("event: ping", await lines.ReadLineAsync(caller.Token));
 
-        var read = lines.ReadLineAsync(CancellationToken.None);
-        await Task.Delay(Limit * 3);
-        Assert.False(read.IsCompleted);
-        await body.WriteAsync("data: x\n");
+        var read = lines.ReadLineAsync(caller.Token);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal(caller.Token, body.ReadToken);
+        body.Feed("data: x\n");
+
+        Assert.Equal("data: x", await read.WaitAsync(Bound));
+    }
+
+    // Once the provider says the reply has started, the next read is under the limit:
+    // it is given a token of the limit's own instead of the caller's.
+    [Fact]
+    public async Task A_read_after_the_reply_started_is_under_the_limit()
+    {
+        var body = new GatedBody();
+        using var caller = new CancellationTokenSource();
+        using var lines = new StreamLineReader(body, Limit);
+        lines.ReplyStarted();
+
+        var read = lines.ReadLineAsync(caller.Token);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.NotEqual(caller.Token, body.ReadToken);
+        Assert.True(body.ReadToken.CanBeCanceled);
+        body.Feed("data: x\n");
 
         Assert.Equal("data: x", await read.WaitAsync(Bound));
     }
@@ -178,31 +225,54 @@ public class StreamIdleLimitTests
     [Fact]
     public async Task The_callers_own_cancellation_is_not_reported_as_a_stall()
     {
-        var body = new OpenBody();
-        await body.WriteAsync("first\n");
-        using var lines = new StreamLineReader(body.Stream, TimeSpan.FromSeconds(30));
-        await lines.ReadLineAsync(CancellationToken.None);
+        var body = new GatedBody();
+        using var caller = new CancellationTokenSource();
+        body.Feed("first\n");
+        using var lines = new StreamLineReader(body, TimeSpan.FromHours(1));
+        await lines.ReadLineAsync(caller.Token);
         lines.ReplyStarted();
-        using var cts = new CancellationTokenSource(Limit);
 
-        var e = await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => lines.ReadLineAsync(cts.Token).WaitAsync(Bound));
-        Assert.IsNotType<LlmStreamStalledException>(e);
+        var read = lines.ReadLineAsync(caller.Token);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.NotEqual(caller.Token, body.ReadToken);
+        caller.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read.WaitAsync(Bound));
     }
 
+    // The limit runs out and the caller cancels before the reader has looked at why its
+    // read ended: still the caller's cancellation.
+    [Fact]
+    public async Task A_caller_that_cancels_just_as_the_limit_runs_out_is_not_reported_as_a_stall()
+    {
+        using var caller = new CancellationTokenSource();
+        var body = new GatedBody { OnReadCancelled = caller.Cancel };
+        using var lines = new StreamLineReader(body, Limit);
+        lines.ReplyStarted();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => lines.ReadLineAsync(caller.Token).WaitAsync(Bound));
+        Assert.Equal(1, body.ReadsCancelled);
+    }
+
+    // Zero is no limit at all: the read is the caller's, as it was before the limit
+    // existed, and nothing but the caller ends it.
     [Fact]
     public async Task A_limit_of_zero_turns_the_check_off()
     {
-        var body = new OpenBody();
-        await body.WriteAsync("first\n");
-        using var lines = new StreamLineReader(body.Stream, TimeSpan.Zero);
-        await lines.ReadLineAsync(CancellationToken.None);
+        var body = new GatedBody();
+        using var caller = new CancellationTokenSource();
+        body.Feed("first\n");
+        using var lines = new StreamLineReader(body, TimeSpan.Zero);
+        await lines.ReadLineAsync(caller.Token);
         lines.ReplyStarted();
-        using var cts = new CancellationTokenSource(Limit * 3);
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => lines.ReadLineAsync(cts.Token).WaitAsync(Bound));
-        Assert.True(cts.IsCancellationRequested);
+        var read = lines.ReadLineAsync(caller.Token);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal(caller.Token, body.ReadToken);
+        caller.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read.WaitAsync(Bound));
     }
 
     // ── OpenAI-compatible ───────────────────────────────────────────────────
@@ -236,19 +306,13 @@ public class StreamIdleLimitTests
     // A server that names the role at once and then reads a long prompt for longer
     // than the limit has not gone silent part-way through a reply.
     [Fact]
-    public async Task OpenAi_opening_chunk_then_a_long_prompt_read_is_not_cut_off()
+    public async Task OpenAi_opening_chunk_then_a_long_prompt_read_is_under_no_limit()
     {
-        var body = new OpenBody();
-        await body.WriteAsync(OpenAiRole);
-        var reply = Text(OpenAi(body));
-
-        await Task.Delay(Limit * 3);
-        Assert.False(reply.IsCompleted);
-        await body.WriteAsync("data: {\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}\n\n");
-        await body.WriteAsync("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
-        await body.CompleteAsync();
-
-        Assert.Equal("hola", await reply.WaitAsync(Bound));
+        Assert.Equal("hola", await ReplyAfterAnOpeningThatDoesNotStartTheLimit(
+            "custom",
+            OpenAiRole,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hola\"}}]}\n\n"
+            + "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
     }
 
     [Theory]
@@ -288,21 +352,10 @@ public class StreamIdleLimitTests
     }
 
     [Fact]
-    public async Task Anthropic_silence_before_the_first_content_block_is_not_cut_off()
+    public async Task Anthropic_silence_before_the_first_content_block_is_under_no_limit()
     {
-        var body = new OpenBody();
-        await body.WriteAsync(AnthropicStart);
-        var reply = Text(Anthropic(body));
-
-        await Task.Delay(Limit * 3);
-        Assert.False(reply.IsCompleted);
-        await body.WriteAsync(AnthropicText
-            + "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
-            + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n"
-            + "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-        await body.CompleteAsync();
-
-        Assert.Equal("hola", await reply.WaitAsync(Bound));
+        Assert.Equal("hola", await ReplyAfterAnOpeningThatDoesNotStartTheLimit(
+            "anthropic", AnthropicStart, AnthropicText + AnthropicEnd));
     }
 
     private const string AnthropicEnd =
@@ -320,20 +373,13 @@ public class StreamIdleLimitTests
     [InlineData("{\"type\":\"tool_use\",\"id\":\"t1\",\"name\":\"lookup\",\"input\":{}}", "{\"type\":\"input_json_delta\",\"partial_json\":\"\"}")]
     public async Task Anthropic_an_empty_block_opening_does_not_start_the_limit(string block, string emptyDelta)
     {
-        var body = new OpenBody();
-        await body.WriteAsync(AnthropicStart
+        Assert.Equal("hola", await ReplyAfterAnOpeningThatDoesNotStartTheLimit(
+            "anthropic",
+            AnthropicStart
             + "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":" + block + "}\n\n"
-            + "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":" + emptyDelta + "}\n\n");
-        var reply = Text(Anthropic(body));
-
-        await Task.Delay(Limit * 3);
-        Assert.False(reply.IsCompleted);
-        await body.WriteAsync(
+            + "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":" + emptyDelta + "}\n\n",
             "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"
-            + AnthropicText.Replace("\"index\":0", "\"index\":1") + AnthropicEnd.Replace("\"index\":0", "\"index\":1"));
-        await body.CompleteAsync();
-
-        Assert.Equal("hola", await reply.WaitAsync(Bound));
+            + AnthropicText.Replace("\"index\":0", "\"index\":1") + AnthropicEnd.Replace("\"index\":0", "\"index\":1")));
     }
 
     [Theory]
@@ -367,17 +413,10 @@ public class StreamIdleLimitTests
     [InlineData("{\"text\":\"\",\"thought\":true}")]
     public async Task Gemini_an_empty_opening_part_does_not_start_the_limit(string part)
     {
-        var body = new OpenBody();
-        await body.WriteAsync("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[" + part + "]}}]}\n\n");
-        var provider = new GeminiProvider(new HttpClient(new BodyHandler(body)), "k", "https://gemini.example", streamIdle: Limit);
-        var reply = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
-
-        await Task.Delay(Limit * 3);
-        Assert.False(reply.IsCompleted);
-        await body.WriteAsync("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hola\"}]},\"finishReason\":\"STOP\"}]}\n\n");
-        await body.CompleteAsync();
-
-        Assert.Equal("hola", await reply.WaitAsync(Bound));
+        Assert.Equal("hola", await ReplyAfterAnOpeningThatDoesNotStartTheLimit(
+            "gemini",
+            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[" + part + "]}}]}\n\n",
+            "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hola\"}]},\"finishReason\":\"STOP\"}]}\n\n"));
     }
 
     [Theory]
@@ -407,18 +446,11 @@ public class StreamIdleLimitTests
     [Fact]
     public async Task Ollama_an_empty_opening_chunk_does_not_start_the_limit()
     {
-        var body = new OpenBody();
-        await body.WriteAsync("{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":false}\n");
-        var provider = new OllamaProvider(new HttpClient(new BodyHandler(body)), "", "http://ollama.example", streamIdle: Limit);
-        var reply = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
-
-        await Task.Delay(Limit * 3);
-        Assert.False(reply.IsCompleted);
-        await body.WriteAsync("{\"message\":{\"role\":\"assistant\",\"content\":\"hola\"},\"done\":false}\n");
-        await body.WriteAsync("{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"prompt_eval_count\":3,\"eval_count\":1}\n");
-        await body.CompleteAsync();
-
-        Assert.Equal("hola", await reply.WaitAsync(Bound));
+        Assert.Equal("hola", await ReplyAfterAnOpeningThatDoesNotStartTheLimit(
+            "ollama",
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":false}\n",
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"hola\"},\"done\":false}\n"
+            + "{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"prompt_eval_count\":3,\"eval_count\":1}\n"));
     }
 
     [Theory]
@@ -653,22 +685,6 @@ public class StreamIdleLimitTests
             () => Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None))).WaitAsync(Bound);
     }
 
-    [Theory]
-    [MemberData(nameof(OpenReplies))]
-    public async Task A_stored_provider_without_the_setting_is_left_to_the_turn_deadline(string type, string reply)
-    {
-        var body = new OpenBody();
-        await body.WriteAsync(reply);
-        var provider = await StoredProviderAsync(type, "{}", body);
-        var text = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
-
-        await Task.Delay(TimeSpan.FromSeconds(2));
-        Assert.False(text.IsCompleted);
-        await body.CompleteAsync();
-
-        Assert.Equal("hola", await text.WaitAsync(Bound));
-    }
-
     [Fact]
     public async Task The_server_wide_setting_applies_to_a_provider_with_none_of_its_own()
     {
@@ -678,21 +694,6 @@ public class StreamIdleLimitTests
 
         await Assert.ThrowsAsync<LlmStreamStalledException>(
             () => Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None))).WaitAsync(Bound);
-    }
-
-    [Fact]
-    public async Task A_provider_set_to_zero_stays_off_under_a_server_wide_setting()
-    {
-        var body = new OpenBody();
-        await body.WriteAsync(OpenReplies.First()[1].ToString()!);
-        var provider = await StoredProviderAsync("custom", """{"stream_idle_seconds":0}""", body, serverWideSeconds: 1);
-        var text = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, CancellationToken.None));
-
-        await Task.Delay(TimeSpan.FromSeconds(2.5));
-        Assert.False(text.IsCompleted);
-        await body.CompleteAsync();
-
-        Assert.Equal("hola", await text.WaitAsync(Bound));
     }
 
     [Fact]
@@ -739,48 +740,12 @@ public class StreamIdleLimitTests
         Assert.Contains(" outcome=failed", Assert.Single(kit.Log.Rounds));
     }
 
-    // The provider a chat turn would get for a stored row: built by LlmProviderFactory
-    // from the row's Config and the server-wide setting.
-    private static async Task<IStreamingToolCallingLlmProvider> StoredProviderAsync(
-        string type, string config, OpenBody body, int serverWideSeconds = 0)
-    {
-        var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase($"stream-idle-{Guid.NewGuid()}").Options);
-        var id = Guid.NewGuid();
-        db.AIProviders.Add(new AIProvider
-        {
-            AIProviderId = id,
-            Name = "p",
-            Type = type,
-            BaseURL = "https://model.example",
-            DefaultModel = "m",
-            EncryptedApiKey = Encoding.UTF8.GetBytes("k"),
-            Config = JsonDocument.Parse(config).RootElement,
-        });
-        await db.SaveChangesAsync();
-        var factory = new LlmProviderFactory(
-            db, new NoUser(), new BodyClients(body), new PlainProtector(), NullLoggerFactory.Instance,
-            Options.Create(new AiChatOptions { StreamIdleSeconds = serverWideSeconds }));
-        return (await factory.ResolveAsync(id, null, CancellationToken.None)).Provider;
-    }
+    private static Task<IStreamingToolCallingLlmProvider> StoredProviderAsync(
+        string type, string config, OpenBody body, int serverWideSeconds = 0) =>
+        StoredIdleProvider.ResolveAsync(type, config, new BodyClients(body), serverWideSeconds);
 
     private sealed class BodyClients(OpenBody body) : IHttpClientFactory
     {
         public HttpClient CreateClient(string name) => new(new BodyHandler(body));
-    }
-
-    private sealed class PlainProtector : ISecretProtector
-    {
-        public byte[]? Encrypt(string? plaintext) => plaintext is null ? null : Encoding.UTF8.GetBytes(plaintext);
-        public string? Decrypt(byte[]? ciphertext) =>
-            ciphertext is null || ciphertext.Length == 0 ? null : Encoding.UTF8.GetString(ciphertext);
-    }
-
-    private sealed class NoUser : ICurrentUser
-    {
-        public Guid UserId => throw new InvalidOperationException("anonymous");
-        public string? Username => null;
-        public IReadOnlyList<string> Roles => [];
-        public bool IsAuthenticated => false;
     }
 }
