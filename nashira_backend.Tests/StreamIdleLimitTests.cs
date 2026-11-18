@@ -875,21 +875,177 @@ public class StreamIdleLimitTests
         Assert.Equal(90, options.StreamDeadlineSeconds);
     }
 
-    // A list or an object where the number belongs binds as 0 without a word, which
-    // would switch off a limit someone asked for. The check stops the server on it.
+    // A list or an object where the number belongs is not read by the binding, so the
+    // limit is off. It does not stop the server: a server that started with such a
+    // value before this setting existed still starts.
     [Theory]
     [InlineData("[60]")]
     [InlineData("[60, 120]")]
     [InlineData("{\"seconds\":60}")]
-    public void A_server_wide_limit_written_as_a_list_or_an_object_stops_startup_and_names_the_setting(string json)
+    [InlineData("{\"Comment\":\"optional\"}")]
+    public void A_server_wide_limit_written_as_a_list_or_an_object_is_not_read_and_does_not_stop_startup(string json)
     {
-        var configuration = AppSettings("{\"AiChat\":{\"StreamIdleSeconds\":" + json + "}}");
+        var configuration = AppSettings("{\"AiChat\":{\"StreamIdleSeconds\":" + json + ",\"StreamDeadlineSeconds\":90}}");
         using var services = ChatOptionsRegisteredOn(configuration);
+
+        LlmProviderFactory.CheckServerStreamIdle(configuration);
+
+        var options = ChatOptions(services);
+        Assert.Equal(0, options.StreamIdleSeconds);
+        Assert.Equal(90, options.StreamDeadlineSeconds);
+    }
+
+    // A key under the setting's name (AiChat__StreamIdleSeconds__Comment in the
+    // environment) beside a plain value in another source: the plain value is the
+    // setting, whatever it is, and the key under it changes nothing.
+    [Theory]
+    [InlineData(null, 0)]
+    [InlineData("60", 60)]
+    [InlineData("", 0)]
+    [InlineData("  ", 0)]
+    public void A_key_under_the_settings_name_does_not_stop_startup_or_change_the_value(string? value, int seconds)
+    {
+        var plain = new Dictionary<string, string?>();
+        if (value is not null) plain["AiChat:StreamIdleSeconds"] = value;
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["AiChat:StreamIdleSeconds:Comment"] = "optional" })
+            .AddInMemoryCollection(plain)
+            .Build();
+        using var services = ChatOptionsRegisteredOn(configuration);
+
+        LlmProviderFactory.CheckServerStreamIdle(configuration);
+
+        Assert.Equal(seconds, ChatOptions(services).StreamIdleSeconds);
+    }
+
+    // A value that is not a whole number still stops startup with a key under it.
+    [Fact]
+    public void A_key_under_the_settings_name_does_not_hide_a_value_that_is_not_a_whole_number()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["AiChat:StreamIdleSeconds:Comment"] = "optional",
+                ["AiChat:StreamIdleSeconds"] = "2.5",
+            })
+            .Build();
 
         var error = Assert.Throws<InvalidOperationException>(() => LlmProviderFactory.CheckServerStreamIdle(configuration));
 
         Assert.Contains("AiChat:StreamIdleSeconds", error.Message);
+    }
+
+    // The check only reads. A blank stays blank in the configuration, in the source
+    // that holds it and in every other, so nothing it leaves behind can stand in the
+    // way of a value set afterwards.
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void The_check_leaves_the_configuration_as_it_was(string blank)
+    {
+        var (configuration, file, environment) = TwoSources(inFile: blank);
+
+        LlmProviderFactory.CheckServerStreamIdle(configuration);
+
+        Assert.Equal(blank, configuration["AiChat:StreamIdleSeconds"]);
+        Assert.True(file.TryGet("AiChat:StreamIdleSeconds", out var inFile));
+        Assert.Equal(blank, inFile);
+        Assert.False(environment.TryGet("AiChat:StreamIdleSeconds", out _));
+    }
+
+    // A settings file is read again when it changes. A blank at startup and a number
+    // in the file by the time chat first reads the options: the number is the limit.
+    [Fact]
+    public void A_limit_set_in_the_file_after_a_blank_at_startup_is_the_one_chat_reads()
+    {
+        var (configuration, file, _) = TwoSources(inFile: "");
+        using var services = ChatOptionsRegisteredOn(configuration);
+        LlmProviderFactory.CheckServerStreamIdle(configuration);
+
+        file.Set("AiChat:StreamIdleSeconds", "60");
+
+        Assert.Equal(60, ChatOptions(services).StreamIdleSeconds);
+    }
+
+    // The same file read again and still blank: chat reads off, it does not fail.
+    [Fact]
+    public void A_blank_read_again_after_startup_is_still_off()
+    {
+        var (configuration, file, _) = TwoSources(inFile: "");
+        using var services = ChatOptionsRegisteredOn(configuration);
+        LlmProviderFactory.CheckServerStreamIdle(configuration);
+
+        file.Set("AiChat:StreamIdleSeconds", "  ");
+
         Assert.Equal(0, ChatOptions(services).StreamIdleSeconds);
+    }
+
+    // The blank is handled where the options are read, so it does not depend on the
+    // check having run first.
+    [Theory]
+    [InlineData("")]
+    [InlineData(" \t ")]
+    public void A_blank_is_off_where_the_options_are_read_with_or_without_the_check(string blank)
+    {
+        using var services = ChatOptionsRegisteredOn(ServerSetting(blank));
+
+        Assert.Equal(0, ChatOptions(services).StreamIdleSeconds);
+    }
+
+    // Every setting in the section is read as the registration this replaced read it
+    // (services.Configure<AiChatOptions>(section)), with the limit absent or a number;
+    // with the limit blank, every other setting is read as it is with the limit absent.
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("60", "60")]
+    [InlineData("-5", "-5")]
+    [InlineData("", null)]
+    [InlineData("   ", null)]
+    public void The_other_chat_settings_are_read_as_they_were(string? idle, string? idleForThePlainBinding)
+    {
+        Dictionary<string, string?> Settings(string? value)
+        {
+            var settings = new Dictionary<string, string?>
+            {
+                ["AiChat:StreamDeadlineSeconds"] = "90",
+                ["AiChat:ScopedPromptAfterUserMessage"] = "true",
+                ["AiChat:NotAnOption"] = "ignored",
+                ["Other:StreamIdleSeconds"] = "7",
+            };
+            if (value is not null) settings["AiChat:StreamIdleSeconds"] = value;
+            return settings;
+        }
+        using var services = ChatOptionsRegisteredOn(new ConfigurationBuilder().AddInMemoryCollection(Settings(idle)).Build());
+        var plain = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        Microsoft.Extensions.DependencyInjection.OptionsConfigurationServiceCollectionExtensions.Configure<AiChatOptions>(
+            plain, new ConfigurationBuilder().AddInMemoryCollection(Settings(idleForThePlainBinding)).Build().GetSection(AiChatOptions.SectionName));
+        using var plainServices = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(plain);
+
+        var read = ChatOptions(services);
+        Assert.Equal(JsonSerializer.Serialize(ChatOptions(plainServices)), JsonSerializer.Serialize(read));
+        Assert.Equal(90, read.StreamDeadlineSeconds);
+        Assert.True(read.ScopedPromptAfterUserMessage);
+    }
+
+    // The registration this replaced also told the options when the configuration
+    // changed. That is kept: a monitor reads the new value after a reload.
+    [Fact]
+    public void The_chat_options_still_follow_a_reload_of_the_configuration()
+    {
+        var (configuration, file, _) = TwoSources(inFile: "");
+        file.Set("AiChat:StreamDeadlineSeconds", "90");
+        using var services = ChatOptionsRegisteredOn(configuration);
+        var monitor = Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+            .GetRequiredService<IOptionsMonitor<AiChatOptions>>(services);
+        Assert.Equal(90, monitor.CurrentValue.StreamDeadlineSeconds);
+        Assert.Equal(0, monitor.CurrentValue.StreamIdleSeconds);
+
+        file.Set("AiChat:StreamDeadlineSeconds", "120");
+        file.Set("AiChat:StreamIdleSeconds", "60");
+        ((IConfigurationRoot)configuration).Reload();
+
+        Assert.Equal(120, monitor.CurrentValue.StreamDeadlineSeconds);
+        Assert.Equal(60, monitor.CurrentValue.StreamIdleSeconds);
     }
 
     // Configuration is layered, and the value that counts is the one that wins. A blank
@@ -913,14 +1069,26 @@ public class StreamIdleLimitTests
         Assert.Equal(seconds, ChatOptions(services).StreamIdleSeconds);
     }
 
-    // The chat options registered the way Program.cs registers them. Nothing is bound
+    // The chat options registered the way Program.cs registers them. Nothing is read
     // until ChatOptions asks, as nothing is in the server until the first chat request.
     private static Microsoft.Extensions.DependencyInjection.ServiceProvider ChatOptionsRegisteredOn(IConfiguration configuration)
     {
         var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
-        Microsoft.Extensions.DependencyInjection.OptionsConfigurationServiceCollectionExtensions.Configure<AiChatOptions>(
-            services, configuration.GetSection(AiChatOptions.SectionName));
+        services.AddAiChatOptions(configuration);
         return Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
+    }
+
+    // Two sources as a server has them: a settings file, and the environment over it.
+    private static (IConfiguration Configuration, IConfigurationProvider File, IConfigurationProvider Environment) TwoSources(string? inFile)
+    {
+        var file = new Dictionary<string, string?>();
+        if (inFile is not null) file["AiChat:StreamIdleSeconds"] = inFile;
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(file)
+            .AddInMemoryCollection(new Dictionary<string, string?>())
+            .Build();
+        var sources = configuration.Providers.ToList();
+        return (configuration, sources[0], sources[1]);
     }
 
     private static AiChatOptions ChatOptions(IServiceProvider services) =>

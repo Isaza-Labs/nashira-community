@@ -166,27 +166,21 @@ public class LlmProviderFactory
     // Reads AiChat:StreamIdleSeconds once, at startup, so that a value that is not a
     // whole number (2.5, a word, or one too large for an int) stops the server there
     // with the setting named. Without this the server starts and every chat request
-    // fails instead, when the options are first bound. It binds the one setting the
+    // fails instead, when the options are first read. It binds the one setting the
     // way AiChatOptions is bound, so it stops on what would fail there and on nothing
-    // else in the section, with two exceptions that binding alone gets wrong:
+    // else in the section. It only reads: the configuration is left as it was.
     //
-    //  - A blank value (empty, or only spaces: an environment placeholder left empty,
-    //    `"StreamIdleSeconds": ""` in appsettings) is the setting left out, so it is
-    //    off. Binding refuses a blank where a number belongs, which would stop a server
-    //    that ran before this setting existed. The blank is replaced by 0 in the
-    //    configuration itself, so the options the chat binds later read 0 as well.
-    //  - A list or an object (`"StreamIdleSeconds": [60]`) binds as 0 without a word:
-    //    a limit someone asked for would be off. That stops the server instead.
+    // A blank value is not a failure: AiChatOptionsBinding reads it as the setting
+    // left out. A list or an object in the number's place, or a key under the
+    // setting's name, is not read by the binding at all, so the limit is off, or is
+    // the plain value when there is one beside it. Neither stops the server, as
+    // neither did before this setting existed.
     public static void CheckServerStreamIdle(Microsoft.Extensions.Configuration.IConfiguration configuration)
     {
-        var key = $"{nashira_backend.Configuration.AiChatOptions.SectionName}:{nameof(nashira_backend.Configuration.AiChatOptions.StreamIdleSeconds)}";
-        var setting = configuration.GetSection(key);
-        if (setting.GetChildren().Any())
-            throw new InvalidOperationException(
-                $"The configuration value at '{key}' is a list or an object. It must be a whole number of seconds.");
-        if (setting.Value is { } value && string.IsNullOrWhiteSpace(value))
-            configuration[key] = "0";
-        configuration.GetSection(nashira_backend.Configuration.AiChatOptions.SectionName).Get<ServerStreamIdleSetting>();
+        var section = configuration.GetSection(nashira_backend.Configuration.AiChatOptions.SectionName);
+        if (nashira_backend.Configuration.AiChatOptionsBinding.IsBlank(section[nameof(nashira_backend.Configuration.AiChatOptions.StreamIdleSeconds)]))
+            return;
+        section.Get<ServerStreamIdleSetting>();
     }
 
     private sealed class ServerStreamIdleSetting

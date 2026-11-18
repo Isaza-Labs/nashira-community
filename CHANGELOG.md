@@ -28,9 +28,9 @@ that has none of its own. A provider's value is 0 (off for that provider) or bet
 second and a day. The server-wide setting is a whole number of seconds that fits a signed
 32-bit integer (at most 2147483647). Within that, a negative value counts as 0 and one
 above a day as a day. A blank value (an environment placeholder left empty,
-`"StreamIdleSeconds": ""`) is the setting left out, so the limit is off. Anything else
-(2.5, a word, 2147483648, a list or an object in the number's place) stops the server at
-startup with the setting named.
+`"StreamIdleSeconds": ""`) is the setting left out, so the limit is off. A value that is
+not a whole number (2.5, a word, 2147483648) stops the server at startup with the setting
+named. A list or an object in the number's place is not read, so the limit is off.
 
 **It is off unless you set it, and it is not safe for every provider.** Some send
 nothing while the model builds a tool call: Anthropic holds each tool parameter back

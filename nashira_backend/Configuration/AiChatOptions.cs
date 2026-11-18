@@ -119,9 +119,10 @@ public class AiChatOptions
     // A whole number of seconds that fits this int (at most 2147483647). Within that,
     // a negative value counts as 0 and one above a day as a day; the value has to fit
     // first, so 2147483648 is refused, not brought down to a day. A blank value is off,
-    // the same as leaving the setting out. Anything else (2.5, a word, a number too
-    // large for an int, a list or an object) stops the server at startup (see
-    // LlmProviderFactory.CheckServerStreamIdle). See StreamLineReader.
+    // the same as leaving the setting out (see AiChatOptionsBinding). A value that is
+    // not a whole number (2.5, a word, a number too large for an int) stops the server
+    // at startup (see LlmProviderFactory.CheckServerStreamIdle). A list or an object in
+    // the number's place is not read, so the limit is off. See StreamLineReader.
     public int StreamIdleSeconds { get; set; }
 
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the
@@ -134,4 +135,47 @@ public class AiChatOptions
     // stream that goes silent is ended by StreamIdleSeconds when that is set, and by
     // StreamDeadlineSeconds otherwise, not by this.
     public static readonly TimeSpan TransportTimeout = TimeSpan.FromMinutes(5);
+}
+
+// How the chat options are read from configuration. Program.cs registers them with
+// AddAiChatOptions, and nothing is read until something first asks for them.
+public static class AiChatOptionsBinding
+{
+    // The same registration as services.Configure<AiChatOptions>(section), which this
+    // replaces, except that a blank StreamIdleSeconds is read as the setting left out.
+    public static IServiceCollection AddAiChatOptions(this IServiceCollection services, IConfiguration configuration)
+    {
+        var section = configuration.GetSection(AiChatOptions.SectionName);
+        services.AddOptions();
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsChangeTokenSource<AiChatOptions>>(
+            new Microsoft.Extensions.Options.ConfigurationChangeTokenSource<AiChatOptions>(
+                Microsoft.Extensions.Options.Options.DefaultName, section));
+        services.Configure<AiChatOptions>(options => Bind(section, options));
+        return services;
+    }
+
+    // Binding refuses a blank where a number belongs (an environment placeholder left
+    // empty, `"StreamIdleSeconds": ""` in appsettings), and a server that ran before
+    // that setting existed would fail on it. So a blank there is read as 0, which is
+    // off. It is decided here, each time the options are read and from the value that
+    // wins at that moment: nothing is written back into the configuration, so a value
+    // set later in any source is read as it is. Every other setting, and this one when
+    // it is not blank, is bound exactly as before.
+    internal static void Bind(IConfiguration section, AiChatOptions options)
+    {
+        if (!IsBlank(section[nameof(AiChatOptions.StreamIdleSeconds)]))
+        {
+            section.Bind(options);
+            return;
+        }
+        var view = new ConfigurationBuilder()
+            .AddConfiguration(section)
+            .AddInMemoryCollection(new Dictionary<string, string?> { [nameof(AiChatOptions.StreamIdleSeconds)] = "0" })
+            .Build();
+        try { view.Bind(options); }
+        finally { (view as IDisposable)?.Dispose(); }
+    }
+
+    // Present, and empty or only whitespace. A setting that is absent is not blank.
+    internal static bool IsBlank(string? value) => value is not null && string.IsNullOrWhiteSpace(value);
 }
