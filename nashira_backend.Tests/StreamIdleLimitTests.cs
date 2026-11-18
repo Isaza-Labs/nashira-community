@@ -50,8 +50,6 @@ public class StreamIdleLimitTests
         public Stream Stream => _pipe.Reader.AsStream();
         public async Task WriteAsync(string text) => await _pipe.Writer.WriteAsync(Encoding.UTF8.GetBytes(text));
         public Task CompleteAsync() => _pipe.Writer.CompleteAsync().AsTask();
-        public Task BreakAsync(Exception error) => _pipe.Writer.CompleteAsync(error).AsTask();
-        public async Task WriteAsync(byte[] bytes) => await _pipe.Writer.WriteAsync(bytes);
     }
 
     private sealed class BodyHandler(OpenBody body) : HttpMessageHandler
@@ -73,7 +71,8 @@ public class StreamIdleLimitTests
     {
         var body = new GatedBody();
         using var caller = new CancellationTokenSource();
-        var provider = IdleWire.Provider(type, new GatedServer().Then(body).CreateClient(), Limit);
+        // An hour: the rest of the reply is read under it, and must not be able to stall.
+        var provider = IdleWire.Provider(type, new GatedServer().Then(body).CreateClient(), TimeSpan.FromHours(1));
 
         body.Feed(opening);
         var reply = Text(provider.ChatWithToolsStreamAsync(Hi, [], "m", 0.0, caller.Token));
@@ -149,19 +148,22 @@ public class StreamIdleLimitTests
     }
 
     // Once the provider says the reply has started, the next read is under the limit:
-    // it is given a token of the limit's own instead of the caller's.
+    // it is given a token of the limit's own instead of the caller's, and the limit's
+    // timer is set.
     [Fact]
     public async Task A_read_after_the_reply_started_is_under_the_limit()
     {
+        var time = new ManualTime();
         var body = new GatedBody();
         using var caller = new CancellationTokenSource();
-        using var lines = new StreamLineReader(body, Limit);
+        using var lines = new StreamLineReader(body, Wait, time);
         lines.ReplyStarted();
 
         var read = lines.ReadLineAsync(caller.Token);
         await body.Waiting().WaitAsync(Bound);
         Assert.NotEqual(caller.Token, body.ReadToken);
         Assert.True(body.ReadToken.CanBeCanceled);
+        Assert.Equal([Wait], time.Due);
         body.Feed("data: x\n");
 
         Assert.Equal("data: x", await read.WaitAsync(Bound));
@@ -340,6 +342,73 @@ public class StreamIdleLimitTests
         Assert.Equal(0, time.Live);
         time.Advance(Wait * 2);
         Assert.Equal(1, body.ReadsCancelled);
+    }
+
+    // A caller that has already cancelled when the read begins gets its cancellation,
+    // and no timer is left behind.
+    [Fact]
+    public async Task A_caller_already_cancelled_when_the_read_begins_is_a_cancellation()
+    {
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var caller = new CancellationTokenSource();
+        using var lines = new StreamLineReader(body, Wait, time);
+        lines.ReplyStarted();
+        caller.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => lines.ReadLineAsync(caller.Token).WaitAsync(Bound));
+        Assert.Equal(0, time.Live);
+        time.Advance(Wait * 2);
+    }
+
+    // The caller cancels, and before the cancelled read has ended the limit's time
+    // passes too. The timer is a source of its own and fires; the caller cancelled
+    // first, and it is still the caller's cancellation.
+    [Fact]
+    public async Task A_limit_that_runs_out_just_after_the_caller_cancelled_is_not_reported_as_a_stall()
+    {
+        var time = new ManualTime();
+        using var caller = new CancellationTokenSource();
+        var body = new GatedBody { OnReadCancelled = () => time.Advance(Wait * 2) };
+        using var lines = new StreamLineReader(body, Wait, time);
+        lines.ReplyStarted();
+
+        var read = lines.ReadLineAsync(caller.Token);
+        await body.Waiting().WaitAsync(Bound);
+        caller.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read.WaitAsync(Bound));
+        Assert.Equal(1, body.ReadsCancelled);
+        Assert.Equal(0, time.Live);
+    }
+
+    // A limit with a fraction of a second runs for that long, to the millisecond, and
+    // bytes put the same amount back.
+    [Fact]
+    public async Task A_limit_with_a_fraction_of_a_second_runs_for_exactly_that_long()
+    {
+        var limit = TimeSpan.FromSeconds(2.5);
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, limit, time);
+        lines.ReplyStarted();
+
+        var read = lines.ReadLineAsync(CancellationToken.None);
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal([limit], time.Due);
+        time.Advance(TimeSpan.FromSeconds(2));
+        body.Feed("da");
+        await body.Waiting().WaitAsync(Bound);
+        Assert.Equal([limit], time.Due);
+
+        time.Advance(limit - Tick);
+        Assert.Equal(0, body.ReadsCancelled);
+        time.Advance(Tick);
+        Assert.Equal(1, body.ReadsCancelled);
+
+        var e = await Assert.ThrowsAsync<LlmStreamStalledException>(() => read.WaitAsync(Bound));
+        Assert.Equal(limit, e.Limit);
     }
 
     // A limit longer than a day is a day, not no limit.
@@ -629,14 +698,18 @@ public class StreamIdleLimitTests
     [Fact]
     public async Task A_broken_connection_is_reported_as_what_it_was_not_as_a_stall()
     {
-        var body = new OpenBody();
-        using var lines = new StreamLineReader(body.Stream, Limit);
+        var time = new ManualTime();
+        var body = new GatedBody();
+        using var lines = new StreamLineReader(body, Wait, time);
         lines.ReplyStarted();
-        await body.BreakAsync(new IOException("the connection was reset"));
 
-        var error = await Assert.ThrowsAsync<IOException>(
-            () => lines.ReadLineAsync(CancellationToken.None).WaitAsync(Bound));
+        var read = lines.ReadLineAsync(CancellationToken.None);
+        await body.Waiting().WaitAsync(Bound);
+        body.Break(new IOException("the connection was reset"));
+
+        var error = await Assert.ThrowsAsync<IOException>(() => read.WaitAsync(Bound));
         Assert.Equal("the connection was reset", error.Message);
+        Assert.Equal(0, time.Live);
     }
 
     [Theory]

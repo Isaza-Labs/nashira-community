@@ -126,6 +126,61 @@ public class StreamIdleEnabledPathTests
         Assert.Equal(1, body.ReadsCancelled);
     }
 
+    // A cancellation ends that request and nothing more: the next request to the same
+    // provider is sent and answered.
+    [Theory]
+    [MemberData(nameof(EveryType))]
+    public async Task A_request_after_a_cancelled_one_is_answered(string type)
+    {
+        var wire = IdleWire.For(type);
+        var first = new GatedBody();
+        var second = new GatedBody();
+        var server = new GatedServer().Then(first).Then(second);
+        var provider = IdleWire.Provider(type, server.CreateClient(), LongLimit);
+
+        using var gone = new CancellationTokenSource();
+        first.Feed(wire.Opening + wire.Said);
+        var cancelled = Text(Ask(provider, gone.Token));
+        await first.Waiting().WaitAsync(Bound);
+        gone.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled.WaitAsync(Bound));
+
+        second.Feed(wire.Opening + wire.Said + wire.Rest);
+        second.End();
+        Assert.Equal("hola", await Text(Ask(provider, CancellationToken.None)).WaitAsync(Bound));
+        Assert.Equal(2, server.Requests.Count);
+    }
+
+    // The same after a stall: the next request is sent, and it starts as any request
+    // does, with no limit running until the model has generated something. (The limit
+    // here is a real, short one so that the first request can stall; the second is
+    // looked at where no read is under it, and then let go.)
+    [Theory]
+    [MemberData(nameof(EveryType))]
+    public async Task A_request_after_a_stalled_one_starts_afresh(string type)
+    {
+        var wire = IdleWire.For(type);
+        var first = new GatedBody();
+        var second = new GatedBody();
+        var server = new GatedServer().Then(first).Then(second);
+        var provider = IdleWire.Provider(type, server.CreateClient(), Limit);
+
+        first.Feed(wire.Opening + wire.Said);
+        await Assert.ThrowsAsync<LlmStreamStalledException>(
+            () => Text(Ask(provider, CancellationToken.None)).WaitAsync(Bound));
+
+        using var caller = new CancellationTokenSource();
+        second.Feed(wire.Opening);
+        var reply = Text(Ask(provider, caller.Token));
+        await second.Waiting().WaitAsync(Bound);
+        Assert.Equal(caller.Token, second.ReadToken);
+        Assert.Equal(2, server.Requests.Count);
+
+        caller.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reply.WaitAsync(Bound));
+        Assert.True(second.Disposed);
+    }
+
     // ── letting go of the response ──────────────────────────────────────────
 
     [Theory]
@@ -348,14 +403,14 @@ public class StreamIdleEnabledPathTests
     // The same rows with the limit on, so that the test above cannot pass for a reason
     // of its own: here the read is under a different token.
     [Theory]
-    [InlineData("custom", """{"stream_idle_seconds":60}""", 0)]
-    [InlineData("anthropic", """{"stream_idle_seconds":60}""", 0)]
-    [InlineData("gemini", """{"stream_idle_seconds":60}""", 0)]
-    [InlineData("ollama", """{"stream_idle_seconds":60}""", 0)]
-    [InlineData("custom", "{}", 60)]
-    [InlineData("anthropic", "{}", 60)]
-    [InlineData("gemini", "{}", 60)]
-    [InlineData("ollama", "{}", 60)]
+    [InlineData("custom", """{"stream_idle_seconds":3600}""", 0)]
+    [InlineData("anthropic", """{"stream_idle_seconds":3600}""", 0)]
+    [InlineData("gemini", """{"stream_idle_seconds":3600}""", 0)]
+    [InlineData("ollama", """{"stream_idle_seconds":3600}""", 0)]
+    [InlineData("custom", "{}", 3600)]
+    [InlineData("anthropic", "{}", 3600)]
+    [InlineData("gemini", "{}", 3600)]
+    [InlineData("ollama", "{}", 3600)]
     public async Task With_the_limit_on_a_read_is_under_a_token_of_the_limits_own(string type, string config, int serverWideSeconds)
     {
         var wire = IdleWire.For(type);
@@ -377,15 +432,16 @@ public class StreamIdleEnabledPathTests
 
     private const string Par = "{\"choices\":[{\"delta\":{\"content\":\"Par\"}}]}";
 
-    // The turn's deadline passes while a limit that is far from running out is on: the
-    // turn ends as a timeout, as it does with the limit off, and not as a model that
-    // stopped sending.
+    // The turn's deadline passes while the turn is waiting on a silent server, in a read
+    // that is under a limit far from running out: the turn ends as a timeout, as it
+    // does with the limit off, and not as a model that stopped sending.
     //
-    // The deadline is real time, and the runner offers no way to move it by hand. So
-    // the test asserts only what is true wherever in the reply the deadline lands, and
-    // when the machine is so slow that the deadline passes before the model was even
-    // asked (the runner then stops with a cancellation and reports nothing), that run
-    // says nothing about the limit and the test tries again with a longer deadline.
+    // The deadline is real time, and the runner offers no way to move it by hand. On a
+    // machine slow enough it passes before the turn is waiting on the server at all
+    // (the runner may then stop with a cancellation and report nothing). That run says
+    // nothing about the limit, and the test tries again with a longer deadline. Once
+    // the silent read has begun (HangToken), it is under the limit (its token is not
+    // the provider's own), the text has been handed on, and only the deadline ends it.
     [Fact]
     public async Task A_turn_whose_deadline_passes_first_is_a_timeout_with_the_limit_on()
     {
@@ -399,19 +455,25 @@ public class StreamIdleEnabledPathTests
             {
                 await kit.RunAsync().WaitAsync(TurnBound);
             }
-            catch (OperationCanceledException) when (kit.Http.Calls == 0)
+            catch (OperationCanceledException) when (reply.HangToken is null)
             {
                 continue;
             }
+            if (reply.HangToken is null) continue;
 
+            Assert.NotEqual(reply.FirstReadToken, reply.HangToken);
+            Assert.Equal(["Par"], kit.Sink.Text);
             Assert.Equal("timeout", kit.Sink.ErrorCode);
             Assert.DoesNotContain("stopped sending", kit.Sink.ErrorMessage);
             Assert.False(kit.Sink.Done);
-            Assert.Equal(AgentTurn.StatusTimeout, (await kit.StoredTurnAsync()).Status);
+            var turn = await kit.StoredTurnAsync();
+            Assert.Equal(AgentTurn.StatusTimeout, turn.Status);
+            Assert.Equal("Par", turn.AssistantText);
+            Assert.Contains(" outcome=cancelled", Assert.Single(kit.Log.Rounds));
             return;
         }
 
-        Assert.Fail("the turn never got as far as asking the model, even with a 60 s deadline");
+        Assert.Fail("the turn never got as far as waiting on the silent server, even with a 60 s deadline");
     }
 
     // The limit is on every round of a turn, not only its first: round one calls a tool

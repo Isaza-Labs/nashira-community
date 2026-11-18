@@ -95,21 +95,41 @@ public class MessagingAgentTurnTests
         Assert.Contains("stopped sending", turn.Error);
     }
 
+    // No idle limit: the silent server holds the turn until its deadline.
+    //
+    // The deadline is real time. On a machine slow enough it passes before the model's
+    // text has been read, and then there is no part of an answer for a note to go with:
+    // that run says nothing about the note, and the test tries again with a longer
+    // deadline. Once the turn is waiting on the silent server (HangToken), the text has
+    // been handed on and only the deadline can end the turn.
     [Fact]
     public async Task A_reply_cut_off_by_the_deadline_is_sent_with_a_note_that_it_may_be_incomplete()
     {
-        // No idle limit: the silent server holds the turn until its deadline, two seconds here.
-        var body = new ScriptedBody(
-            RunnerTestKit.Sse("{\"choices\":[{\"delta\":{\"content\":\"Two devices are\"}}]}"),
-            ScriptedBody.Ending.Hang);
-        var caller = new MutableCurrentUser();
-        await using var kit = new RunnerTestKit(new ScriptedHttp(body), deadlineSeconds: 2, caller: caller);
-        var (job, _) = await InboundMessageAsync(kit, "which devices are down?");
+        foreach (var deadlineSeconds in new[] { 2, 10, 60 })
+        {
+            var body = new ScriptedBody(
+                RunnerTestKit.Sse("{\"choices\":[{\"delta\":{\"content\":\"Two devices are\"}}]}"),
+                ScriptedBody.Ending.Hang);
+            var caller = new MutableCurrentUser();
+            await using var kit = new RunnerTestKit(new ScriptedHttp(body), deadlineSeconds: deadlineSeconds, caller: caller);
+            var (job, _) = await InboundMessageAsync(kit, "which devices are down?");
 
-        await Processor(kit, caller).ProcessAsync(job, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(12));
+            try
+            {
+                await Processor(kit, caller).ProcessAsync(job, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes(2));
+            }
+            catch (OperationCanceledException) when (body.HangToken is null)
+            {
+                continue;
+            }
+            if (body.HangToken is null) continue;
 
-        Assert.Equal(CollectingAgentEventSink.IncompleteNote + "\n\nTwo devices are", (await QueuedReplyAsync(kit)).Text);
-        Assert.Equal(AgentTurn.StatusTimeout, (await kit.StoredTurnAsync()).Status);
+            Assert.Equal(CollectingAgentEventSink.IncompleteNote + "\n\nTwo devices are", (await QueuedReplyAsync(kit)).Text);
+            Assert.Equal(AgentTurn.StatusTimeout, (await kit.StoredTurnAsync()).Status);
+            return;
+        }
+
+        Assert.Fail("the turn never got as far as waiting on the silent server, even with a 60 s deadline");
     }
 
     // The sink's own choice of what to send, without a turn around it.
