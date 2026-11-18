@@ -167,10 +167,27 @@ public class LlmProviderFactory
     // whole number (2.5, a word, or one too large for an int) stops the server there
     // with the setting named. Without this the server starts and every chat request
     // fails instead, when the options are first bound. It binds the one setting the
-    // way AiChatOptions is bound, so it stops on exactly what would fail there and on
-    // nothing else in the section.
-    public static void CheckServerStreamIdle(Microsoft.Extensions.Configuration.IConfiguration configuration) =>
+    // way AiChatOptions is bound, so it stops on what would fail there and on nothing
+    // else in the section, with two exceptions that binding alone gets wrong:
+    //
+    //  - A blank value (empty, or only spaces: an environment placeholder left empty,
+    //    `"StreamIdleSeconds": ""` in appsettings) is the setting left out, so it is
+    //    off. Binding refuses a blank where a number belongs, which would stop a server
+    //    that ran before this setting existed. The blank is replaced by 0 in the
+    //    configuration itself, so the options the chat binds later read 0 as well.
+    //  - A list or an object (`"StreamIdleSeconds": [60]`) binds as 0 without a word:
+    //    a limit someone asked for would be off. That stops the server instead.
+    public static void CheckServerStreamIdle(Microsoft.Extensions.Configuration.IConfiguration configuration)
+    {
+        var key = $"{nashira_backend.Configuration.AiChatOptions.SectionName}:{nameof(nashira_backend.Configuration.AiChatOptions.StreamIdleSeconds)}";
+        var setting = configuration.GetSection(key);
+        if (setting.GetChildren().Any())
+            throw new InvalidOperationException(
+                $"The configuration value at '{key}' is a list or an object. It must be a whole number of seconds.");
+        if (setting.Value is { } value && string.IsNullOrWhiteSpace(value))
+            configuration[key] = "0";
         configuration.GetSection(nashira_backend.Configuration.AiChatOptions.SectionName).Get<ServerStreamIdleSetting>();
+    }
 
     private sealed class ServerStreamIdleSetting
     {

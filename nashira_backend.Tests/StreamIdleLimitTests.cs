@@ -729,42 +729,130 @@ public class StreamIdleLimitTests
         LlmProviderFactory.CheckServerStreamIdle(ServerSetting(value));
     }
 
-    // The check must stop the server on what would break chat and on nothing else:
-    // for any value, it fails exactly when binding the real options fails.
+    // What happens to the setting in a running server: Program.cs registers the chat
+    // options on the configuration, runs the check, and the first chat request binds
+    // the options. For every value the check lets through, that binding must work and
+    // give this number of seconds. A blank is the setting left out.
     [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData(" ")]
-    [InlineData("0")]
-    [InlineData("60")]
-    [InlineData(" 60 ")]
-    [InlineData("-5")]
-    [InlineData("+7")]
-    [InlineData("5000000")]
-    [InlineData("2147483647")]
+    [InlineData(null, 0)]
+    [InlineData("", 0)]
+    [InlineData(" ", 0)]
+    [InlineData("\t", 0)]
+    [InlineData(" \r\n ", 0)]
+    [InlineData("0", 0)]
+    [InlineData("60", 60)]
+    [InlineData(" 60 ", 60)]
+    [InlineData("-5", -5)]
+    [InlineData("+7", 7)]
+    [InlineData("0x10", 16)]
+    [InlineData("5000000", 5_000_000)]
+    [InlineData("2147483647", int.MaxValue)]
+    public void A_server_wide_limit_the_check_lets_through_is_what_chat_then_reads(string? value, int seconds)
+    {
+        var configuration = ServerSetting(value);
+        using var services = ChatOptionsRegisteredOn(configuration);
+
+        LlmProviderFactory.CheckServerStreamIdle(configuration);
+
+        Assert.Equal(seconds, ChatOptions(services).StreamIdleSeconds);
+    }
+
+    // The check stops the server only on what would have failed every chat request:
+    // each of these also fails when the chat options are bound without the check.
+    [Theory]
     [InlineData("2147483648")]
+    [InlineData("-2147483649")]
     [InlineData("2.5")]
     [InlineData("60.0")]
     [InlineData("1e3")]
-    [InlineData("0x10")]
     [InlineData("NaN")]
     [InlineData("sixty")]
     [InlineData("true")]
-    public void The_startup_check_fails_exactly_when_binding_the_chat_options_would(string? value)
+    public void A_server_wide_limit_the_check_refuses_would_have_failed_chat(string value)
     {
         var configuration = ServerSetting(value);
+        using var services = ChatOptionsRegisteredOn(configuration);
+
+        var error = Assert.Throws<InvalidOperationException>(() => LlmProviderFactory.CheckServerStreamIdle(configuration));
+
+        Assert.Contains("AiChat:StreamIdleSeconds", error.Message);
+        Assert.Throws<InvalidOperationException>(() => ChatOptions(services));
+    }
+
+    // The same from appsettings, where a value has a shape. Blank and null are the
+    // setting left out; a number written as a number or as text is that number.
+    [Theory]
+    [InlineData("\"\"", 0)]
+    [InlineData("\"   \"", 0)]
+    [InlineData("null", 0)]
+    [InlineData("60", 60)]
+    [InlineData("\"60\"", 60)]
+    public void A_server_wide_limit_in_appsettings_is_read_the_same_way(string json, int seconds)
+    {
+        var configuration = AppSettings("{\"AiChat\":{\"StreamIdleSeconds\":" + json + ",\"StreamDeadlineSeconds\":90}}");
+        using var services = ChatOptionsRegisteredOn(configuration);
+
+        LlmProviderFactory.CheckServerStreamIdle(configuration);
+
+        var options = ChatOptions(services);
+        Assert.Equal(seconds, options.StreamIdleSeconds);
+        Assert.Equal(90, options.StreamDeadlineSeconds);
+    }
+
+    // A list or an object where the number belongs binds as 0 without a word, which
+    // would switch off a limit someone asked for. The check stops the server on it.
+    [Theory]
+    [InlineData("[60]")]
+    [InlineData("[60, 120]")]
+    [InlineData("{\"seconds\":60}")]
+    public void A_server_wide_limit_written_as_a_list_or_an_object_stops_startup_and_names_the_setting(string json)
+    {
+        var configuration = AppSettings("{\"AiChat\":{\"StreamIdleSeconds\":" + json + "}}");
+        using var services = ChatOptionsRegisteredOn(configuration);
+
+        var error = Assert.Throws<InvalidOperationException>(() => LlmProviderFactory.CheckServerStreamIdle(configuration));
+
+        Assert.Contains("AiChat:StreamIdleSeconds", error.Message);
+        Assert.Equal(0, ChatOptions(services).StreamIdleSeconds);
+    }
+
+    // Configuration is layered, and the value that counts is the one that wins. A blank
+    // environment variable over a number in appsettings is blank, so the limit is off;
+    // a number over a blank is that number.
+    [Theory]
+    [InlineData("60", "", 0)]
+    [InlineData("", "60", 60)]
+    [InlineData("", " ", 0)]
+    public void A_blank_value_counts_where_it_is_the_value_that_wins(string inAppSettings, string inEnvironment, int seconds)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(
+                "{\"AiChat\":{\"StreamIdleSeconds\":" + JsonSerializer.Serialize(inAppSettings) + "}}")))
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["AiChat:StreamIdleSeconds"] = inEnvironment })
+            .Build();
+        using var services = ChatOptionsRegisteredOn(configuration);
+
+        LlmProviderFactory.CheckServerStreamIdle(configuration);
+
+        Assert.Equal(seconds, ChatOptions(services).StreamIdleSeconds);
+    }
+
+    // The chat options registered the way Program.cs registers them. Nothing is bound
+    // until ChatOptions asks, as nothing is in the server until the first chat request.
+    private static Microsoft.Extensions.DependencyInjection.ServiceProvider ChatOptionsRegisteredOn(IConfiguration configuration)
+    {
         var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
         Microsoft.Extensions.DependencyInjection.OptionsConfigurationServiceCollectionExtensions.Configure<AiChatOptions>(
             services, configuration.GetSection(AiChatOptions.SectionName));
-        using var provider = Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
-
-        var bindingFails = Record.Exception(
-            () => Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
-                .GetRequiredService<IOptions<AiChatOptions>>(provider).Value) is not null;
-        var checkFails = Record.Exception(() => LlmProviderFactory.CheckServerStreamIdle(configuration)) is not null;
-
-        Assert.Equal(bindingFails, checkFails);
+        return Microsoft.Extensions.DependencyInjection.ServiceCollectionContainerBuilderExtensions.BuildServiceProvider(services);
     }
+
+    private static AiChatOptions ChatOptions(IServiceProvider services) =>
+        Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
+            .GetRequiredService<IOptions<AiChatOptions>>(services).Value;
+
+    private static IConfiguration AppSettings(string json) =>
+        new ConfigurationBuilder().AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json))).Build();
 
     private static IConfiguration ServerSetting(string? value)
     {

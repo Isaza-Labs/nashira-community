@@ -117,8 +117,9 @@ public class AiChatOptions
     // with Config.stream_idle_seconds on that provider, which wins over this setting;
     // this one, `AiChat__StreamIdleSeconds`, applies to every provider that has none.
     // A whole number of seconds: a negative value counts as 0 and one above a day as a
-    // day. Anything that is not a whole number stops the server at startup (see
-    // LlmProviderFactory.CheckServerStreamIdle). See StreamLineReader.
+    // day. A blank value is off, the same as leaving the setting out. Anything else
+    // that is not a whole number, a list or an object included, stops the server at
+    // startup (see LlmProviderFactory.CheckServerStreamIdle). See StreamLineReader.
     public int StreamIdleSeconds { get; set; }
 
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the
