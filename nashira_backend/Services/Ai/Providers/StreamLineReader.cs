@@ -3,9 +3,10 @@ namespace nashira_backend.Services.Ai.Providers;
 // A model's stream that went silent part-way through, before it said it was done.
 //
 // The message reaches the person in the chat, after whatever text had already
-// streamed, so it says what happened in their terms rather than the socket's.
+// streamed, so it says what happened in their terms rather than the socket's. It
+// shows the limit as it was set: seven decimals is all a TimeSpan holds.
 public sealed class LlmStreamStalledException(TimeSpan limit)
-    : Exception($"The model stopped sending for {limit.TotalSeconds:0.###} s before finishing its reply, so the reply may be cut off. Try again.")
+    : Exception($"The model stopped sending for {limit.TotalSeconds:0.#######} s before finishing its reply, so the reply may be cut off. Try again.")
 {
     public TimeSpan Limit { get; } = limit;
 }

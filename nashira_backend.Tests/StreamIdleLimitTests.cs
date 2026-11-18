@@ -716,6 +716,9 @@ public class StreamIdleLimitTests
     [InlineData(60, "60 s")]
     [InlineData(2.5, "2.5 s")]
     [InlineData(1.25, "1.25 s")]
+    [InlineData(1.2345, "1.2345 s")]
+    [InlineData(1.2345678, "1.2345678 s")]
+    [InlineData(86400, "86400 s")]
     [InlineData(1, "1 s")]
     public void The_message_names_the_limit_as_it_was_set(double seconds, string shown)
     {
