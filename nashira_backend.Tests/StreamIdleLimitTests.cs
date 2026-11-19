@@ -1042,7 +1042,7 @@ public class StreamIdleLimitTests
 
         file.Set("AiChat:StreamDeadlineSeconds", "120");
         file.Set("AiChat:StreamIdleSeconds", "60");
-        ((IConfigurationRoot)configuration).Reload();
+        configuration.Reload();
 
         Assert.Equal(120, monitor.CurrentValue.StreamDeadlineSeconds);
         Assert.Equal(60, monitor.CurrentValue.StreamIdleSeconds);
@@ -1071,7 +1071,7 @@ public class StreamIdleLimitTests
 
     // The chat options registered the way Program.cs registers them. Nothing is read
     // until ChatOptions asks, as nothing is in the server until the first chat request.
-    private static Microsoft.Extensions.DependencyInjection.ServiceProvider ChatOptionsRegisteredOn(IConfiguration configuration)
+    private static Microsoft.Extensions.DependencyInjection.ServiceProvider ChatOptionsRegisteredOn(IConfigurationRoot configuration)
     {
         var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
         services.AddAiChatOptions(configuration);
@@ -1079,7 +1079,7 @@ public class StreamIdleLimitTests
     }
 
     // Two sources as a server has them: a settings file, and the environment over it.
-    private static (IConfiguration Configuration, IConfigurationProvider File, IConfigurationProvider Environment) TwoSources(string? inFile)
+    private static (IConfigurationRoot Configuration, IConfigurationProvider File, IConfigurationProvider Environment) TwoSources(string? inFile)
     {
         var file = new Dictionary<string, string?>();
         if (inFile is not null) file["AiChat:StreamIdleSeconds"] = inFile;
@@ -1095,10 +1095,10 @@ public class StreamIdleLimitTests
         Microsoft.Extensions.DependencyInjection.ServiceProviderServiceExtensions
             .GetRequiredService<IOptions<AiChatOptions>>(services).Value;
 
-    private static IConfiguration AppSettings(string json) =>
+    private static IConfigurationRoot AppSettings(string json) =>
         new ConfigurationBuilder().AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(json))).Build();
 
-    private static IConfiguration ServerSetting(string? value)
+    private static IConfigurationRoot ServerSetting(string? value)
     {
         var settings = new Dictionary<string, string?>();
         if (value is not null) settings["AiChat:StreamIdleSeconds"] = value;

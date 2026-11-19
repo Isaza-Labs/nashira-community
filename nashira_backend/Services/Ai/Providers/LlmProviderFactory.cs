@@ -164,11 +164,12 @@ public class LlmProviderFactory
         TimeSpan.FromSeconds(Math.Clamp(seconds, 0, MaxStreamIdleSeconds));
 
     // Reads AiChat:StreamIdleSeconds once, at startup, so that a value that is not a
-    // whole number (2.5, a word, or one too large for an int) stops the server there
-    // with the setting named. Without this the server starts and every chat request
-    // fails instead, when the options are first read. It binds the one setting the
-    // way AiChatOptions is bound, so it stops on what would fail there and on nothing
-    // else in the section. It only reads: the configuration is left as it was.
+    // whole number (2.5, a word), or a whole number that does not fit an int
+    // (2147483648), stops the server there with the setting named. Without this the
+    // server starts and every chat request fails instead, when the options are first
+    // read. It binds the one setting the way AiChatOptions is bound, so it stops on
+    // what would fail there and on nothing else in the section. It only reads: the
+    // configuration is left as it was.
     //
     // A blank value is not a failure: AiChatOptionsBinding reads it as the setting
     // left out. A list or an object in the number's place, or a key under the
