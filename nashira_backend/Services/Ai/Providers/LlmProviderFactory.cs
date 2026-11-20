@@ -33,16 +33,31 @@ public class LlmProviderFactory
     // server-wide AiChat:ScopedPromptAfterUserMessage.
     public const string GuidanceAfterQuestionConfigKey = "guidance_after_question";
 
+    // Config key for a provider's own quiet-stream limit, in seconds: how long its
+    // stream may send nothing once the model has started its reply. 0 turns it off
+    // for this provider; absent defers to the server-wide AiChat:StreamIdleSeconds,
+    // which is off unless set. See StreamLineReader for when it is safe to set.
+    public const string StreamIdleSecondsConfigKey = "stream_idle_seconds";
+
+    // A provider's limit is 0 or between these. Under a second is not a limit a
+    // working stream survives, and a value that small would otherwise round to 0
+    // and switch the limit off without saying so.
+    internal const double MinStreamIdleSeconds = 1;
+    internal static readonly double MaxStreamIdleSeconds = StreamLineReader.MaxLimit.TotalSeconds;
+
     private readonly AppDbContext _db;
     private readonly ICurrentUser _user;
     private readonly IHttpClientFactory _httpFactory;
     private readonly ISecretProtector _crypto;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly TimeSpan _serverStreamIdle;
 
     public LlmProviderFactory(
         AppDbContext db, ICurrentUser user, IHttpClientFactory httpFactory,
-        ISecretProtector crypto, ILoggerFactory loggerFactory)
+        ISecretProtector crypto, ILoggerFactory loggerFactory,
+        Microsoft.Extensions.Options.IOptions<nashira_backend.Configuration.AiChatOptions>? chat = null)
     {
+        _serverStreamIdle = ServerStreamIdle(chat?.Value.StreamIdleSeconds ?? 0);
         _db = db;
         _user = user;
         _httpFactory = httpFactory;
@@ -117,6 +132,63 @@ public class LlmProviderFactory
         };
     }
 
+    // A provider's own quiet-stream limit from its Config, or null when absent or not
+    // a number that is 0 or within the range above (the same typo rule as
+    // ConfigString), which leaves the server-wide setting in charge.
+    internal static TimeSpan? ConfigStreamIdle(System.Text.Json.JsonElement config)
+    {
+        if (config.ValueKind != System.Text.Json.JsonValueKind.Object
+            || !config.TryGetProperty(StreamIdleSecondsConfigKey, out var node)
+            || node.ValueKind != System.Text.Json.JsonValueKind.Number
+            || !node.TryGetDouble(out var seconds)
+            || !((seconds == 0 && WrittenAsZero(node))
+                 || (seconds >= MinStreamIdleSeconds && seconds <= MaxStreamIdleSeconds)))
+            return null;
+        return TimeSpan.FromSeconds(seconds);
+    }
+
+    // Whether a JSON number is zero as written. A number too small for a double, such
+    // as 1e-400, reads as 0, and would otherwise switch the limit off without saying
+    // so: only a number with no digit other than 0 before its exponent is "off".
+    private static bool WrittenAsZero(System.Text.Json.JsonElement number)
+    {
+        var raw = number.GetRawText().AsSpan();
+        var exponent = raw.IndexOfAny('e', 'E');
+        return (exponent < 0 ? raw : raw[..exponent]).IndexOfAnyInRange('1', '9') < 0;
+    }
+
+    // The server-wide limit from AiChat:StreamIdleSeconds, for a provider with none of
+    // its own. Out of range is brought into range rather than refused: a negative
+    // value is off, and one above the maximum is the maximum.
+    internal static TimeSpan ServerStreamIdle(int seconds) =>
+        TimeSpan.FromSeconds(Math.Clamp(seconds, 0, MaxStreamIdleSeconds));
+
+    // Reads AiChat:StreamIdleSeconds once, at startup, so that a value that is not a
+    // whole number (2.5, a word), or a whole number that does not fit an int
+    // (2147483648), stops the server there with the setting named. Without this the
+    // server starts and every chat request fails instead, when the options are first
+    // read. It binds the one setting the way AiChatOptions is bound, so it stops on
+    // what would fail there and on nothing else in the section. It only reads: the
+    // configuration is left as it was.
+    //
+    // A blank value is not a failure: AiChatOptionsBinding reads it as the setting
+    // left out. A list or an object in the number's place, or a key under the
+    // setting's name, is not read by the binding at all, so the limit is off, or is
+    // the plain value when there is one beside it. Neither stops the server, as
+    // neither did before this setting existed.
+    public static void CheckServerStreamIdle(Microsoft.Extensions.Configuration.IConfiguration configuration)
+    {
+        var section = configuration.GetSection(nashira_backend.Configuration.AiChatOptions.SectionName);
+        if (nashira_backend.Configuration.AiChatOptionsBinding.IsBlank(section[nameof(nashira_backend.Configuration.AiChatOptions.StreamIdleSeconds)]))
+            return;
+        section.Get<ServerStreamIdleSetting>();
+    }
+
+    private sealed class ServerStreamIdleSetting
+    {
+        public int StreamIdleSeconds { get; set; }
+    }
+
     private ResolvedLlm Resolve(AIProvider row, string? modelOverride) => new(
         Build(row),
         row.AIProviderId,
@@ -136,6 +208,8 @@ public class LlmProviderFactory
         // Config.model_limits, when the row has one; null keeps each provider's own
         // default. Read here, once per resolve, so the providers stay config-free.
         var limits = ModelLimits.FromConfig(provider.Config);
+        // The provider's own limit, or the server-wide one when it has none.
+        var streamIdle = ConfigStreamIdle(provider.Config) ?? _serverStreamIdle;
 
         // A blank base URL means "the vendor's own endpoint"; a filled one is a
         // proxy, a self-hosted deployment, or — for `custom` — the only address
@@ -152,15 +226,16 @@ public class LlmProviderFactory
         {
             LlmProviderCatalog.Anthropic => new AnthropicProvider(
                 http, apiKey, baseUrl, _loggerFactory.CreateLogger<AnthropicProvider>(), limits,
-                workspaceId: ConfigString(provider.Config, AnthropicProvider.WorkspaceIdConfigKey)),
+                workspaceId: ConfigString(provider.Config, AnthropicProvider.WorkspaceIdConfigKey),
+                streamIdle: streamIdle),
             LlmProviderCatalog.Ollama => new OllamaProvider(
-                http, apiKey, baseUrl, _loggerFactory.CreateLogger<OllamaProvider>(), limits),
+                http, apiKey, baseUrl, _loggerFactory.CreateLogger<OllamaProvider>(), limits, streamIdle),
 
             // Gemini has its own wire format (`contents`, `systemInstruction`, a
             // narrower schema dialect), and its own provider rather than the
             // OpenAI-compatibility endpoint — see GeminiProvider.
             LlmProviderCatalog.Gemini => new GeminiProvider(
-                http, apiKey, baseUrl, _loggerFactory.CreateLogger<GeminiProvider>(), limits),
+                http, apiKey, baseUrl, _loggerFactory.CreateLogger<GeminiProvider>(), limits, streamIdle),
 
             // DeepSeek, Kimi and whatever a tenant runs behind `custom` are
             // OpenAI-compatible: same body, same SSE, different host. The type is
@@ -168,7 +243,7 @@ public class LlmProviderFactory
             LlmProviderCatalog.OpenAi or LlmProviderCatalog.DeepSeek
                 or LlmProviderCatalog.Kimi or LlmProviderCatalog.Custom => new OpenAiProvider(
                     http, apiKey, baseUrl, _loggerFactory.CreateLogger<OpenAiProvider>(),
-                    providerType: type, limits: limits),
+                    providerType: type, limits: limits, streamIdle: streamIdle),
 
             _ => throw new InvalidOperationException($"unsupported provider type: {provider.Type}"),
         };

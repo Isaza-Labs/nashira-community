@@ -104,11 +104,135 @@ public class AiChatOptions
     // Override with `AiChat__ScopedPromptAfterUserMessage`.
     public bool ScopedPromptAfterUserMessage { get; set; }
 
+    // How long a model's stream may send nothing once the model has started its
+    // reply, before the round ends as failed with a message saying the reply may be
+    // cut off. Any bytes reset it, keepalive comments included, and it does not start
+    // until the model has generated something, so a server still reading a long
+    // prompt is never cut off by it, whatever it sends first.
+    // 0, the default, is off: a server that stops sending part-way through without
+    // closing the connection then holds the turn until StreamDeadlineSeconds, as it
+    // always did. It is off by default because some providers are silent while the
+    // model builds a large tool call (Anthropic and Gemini are), and a limit would end
+    // those replies. Turn it on for a provider whose server keeps the connection busy
+    // with Config.stream_idle_seconds on that provider, which wins over this setting;
+    // this one, `AiChat__StreamIdleSeconds`, applies to every provider that has none.
+    // A whole number of seconds that fits this int (at most 2147483647). Within that,
+    // a negative value counts as 0 and one above a day as a day; the value has to fit
+    // first, so 2147483648 is refused, not brought down to a day. A blank value is off,
+    // the same as leaving the setting out (see AiChatOptionsBinding). A value that is
+    // not a whole number (2.5, a word), or a whole number too large or too small for an
+    // int (2147483648), stops the server at startup (see
+    // LlmProviderFactory.CheckServerStreamIdle). A list or an object in the number's
+    // place is not read, so the limit is off. See StreamLineReader.
+    public int StreamIdleSeconds { get; set; }
+
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the
-    // budget and deliberately not configurable: it exists only so a wedged socket
-    // cannot hold a turn open forever, and its one requirement is that it stay well
-    // clear of StreamDeadlineSeconds. Underneath it, the transport wins every race
-    // and the deadline above becomes decoration — which is precisely the bug that
-    // .NET's default 100s produced here.
+    // budget and deliberately not configurable; its one requirement is that it stay
+    // well clear of StreamDeadlineSeconds. Underneath it, the transport wins every
+    // race and the deadline above becomes decoration — which is precisely the bug
+    // that .NET's default 100s produced here. It bounds sending the request and
+    // receiving the response headers only: the providers read with
+    // ResponseHeadersRead, after which HttpClient.Timeout no longer applies, so a
+    // stream that goes silent is ended by StreamIdleSeconds when that is set, and by
+    // StreamDeadlineSeconds otherwise, not by this.
     public static readonly TimeSpan TransportTimeout = TimeSpan.FromMinutes(5);
+}
+
+// How the chat options are read from configuration. Program.cs registers them with
+// AddAiChatOptions, and nothing is read until something first asks for them.
+public static class AiChatOptionsBinding
+{
+    // The same registration as services.Configure<AiChatOptions>(section), which this
+    // replaces, except that a blank StreamIdleSeconds is read as the setting left out.
+    // It takes the whole configuration, not the section, because reading a blank
+    // needs the sources behind it (see Bind).
+    public static IServiceCollection AddAiChatOptions(this IServiceCollection services, IConfigurationRoot configuration)
+    {
+        var section = configuration.GetSection(AiChatOptions.SectionName);
+        services.AddOptions();
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsChangeTokenSource<AiChatOptions>>(
+            new Microsoft.Extensions.Options.ConfigurationChangeTokenSource<AiChatOptions>(
+                Microsoft.Extensions.Options.Options.DefaultName, section));
+        services.Configure<AiChatOptions>(options => Bind(configuration, options));
+        return services;
+    }
+
+    // Binding refuses a blank where a number belongs (an environment placeholder left
+    // empty, `"StreamIdleSeconds": ""` in appsettings), and a server that ran before
+    // that setting existed would fail on it. So a blank there is read as 0, which is
+    // off. It is decided here, each time an options instance is built, from the value
+    // that wins at that moment: nothing is written back into the configuration, so a
+    // value set later in any source is read as it is by the next instance built. Chat
+    // asks through IOptions, which builds one instance and keeps it, so chat goes on
+    // with what it first read, as it did before; an options monitor builds a new
+    // instance after the configuration reloads.
+    //
+    // Every other setting, and this one when it is not blank, is bound exactly as
+    // before. With a blank, the section is bound through BlankIdleAsOff, where only
+    // that one value differs.
+    internal static void Bind(IConfigurationRoot configuration, AiChatOptions options)
+    {
+        var section = configuration.GetSection(AiChatOptions.SectionName);
+        if (!IsBlank(section[nameof(AiChatOptions.StreamIdleSeconds)]))
+        {
+            section.Bind(options);
+            return;
+        }
+        var view = new ConfigurationRoot(new List<IConfigurationProvider> { new BlankIdleAsOff(configuration) });
+        try { view.GetSection(AiChatOptions.SectionName).Bind(options); }
+        finally { view.Dispose(); }
+    }
+
+    // Present, and empty or only whitespace. A setting that is absent is not blank.
+    internal static bool IsBlank(string? value) => value is not null && string.IsNullOrWhiteSpace(value);
+
+    // The application's configuration as one source, the same for every key but one:
+    // a blank AiChat:StreamIdleSeconds reads as "0". Every other key gives what the
+    // application's own sources give, asked in the order the configuration asks them:
+    // the same value, an empty string as an empty string, a key present with no value
+    // (null in appsettings) as present with no value, an absent key as absent, and the
+    // same keys under each name. The binder tells those apart, so a copy that dropped
+    // empty values would bind the other settings differently. The keys keep their
+    // full names (AiChat:MaxIterations), so a binding error names a setting as it did
+    // before. It only reads: Set does nothing, and nothing here holds on to the
+    // application's sources or is told when they change, since it is built for one
+    // read and thrown away.
+    private sealed class BlankIdleAsOff(IConfigurationRoot configuration) : IConfigurationProvider
+    {
+        private static readonly string IdleKey =
+            ConfigurationPath.Combine(AiChatOptions.SectionName, nameof(AiChatOptions.StreamIdleSeconds));
+
+        private readonly Microsoft.Extensions.Primitives.IChangeToken _never = new ConfigurationReloadToken();
+
+        // The last source that has the key wins, as in the configuration itself.
+        public bool TryGet(string key, out string? value)
+        {
+            var sources = configuration.Providers as IList<IConfigurationProvider> ?? configuration.Providers.ToList();
+            for (var i = sources.Count - 1; i >= 0; i--)
+            {
+                if (!Has(sources[i], key, out value)) continue;
+                if (IsBlank(value) && string.Equals(key, IdleKey, StringComparison.OrdinalIgnoreCase)) value = "0";
+                return true;
+            }
+            value = null;
+            return false;
+        }
+
+        // A source removed while the configuration is being read is skipped, as the
+        // configuration skips it.
+        private static bool Has(IConfigurationProvider source, string key, out string? value)
+        {
+            try { return source.TryGet(key, out value); }
+            catch (ObjectDisposedException) { value = null; return false; }
+        }
+
+        public IEnumerable<string> GetChildKeys(IEnumerable<string> earlierKeys, string? parentPath) =>
+            configuration.Providers.Aggregate(earlierKeys, (keys, source) => source.GetChildKeys(keys, parentPath)).ToList();
+
+        public void Set(string key, string? value) { }
+
+        public void Load() { }
+
+        public Microsoft.Extensions.Primitives.IChangeToken GetReloadToken() => _never;
+    }
 }

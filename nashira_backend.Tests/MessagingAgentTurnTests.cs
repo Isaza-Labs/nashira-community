@@ -55,6 +55,174 @@ public class MessagingAgentTurnTests
         Assert.Contains(" outcome=failed", Assert.Single(kit.Log.Rounds));
     }
 
+    // A turn that fails after the model has started answering leaves part of an answer.
+    // The web chat shows the error beside it; a channel gets one message, so the part
+    // goes out with a line saying it may be incomplete, in each way a turn can fail.
+
+    [Fact]
+    public async Task A_reply_whose_connection_breaks_part_way_is_sent_with_a_note_that_it_may_be_incomplete()
+    {
+        var body = new ScriptedBody(
+            RunnerTestKit.Sse("{\"choices\":[{\"delta\":{\"content\":\"Two devices are\"}}]}"),
+            ScriptedBody.Ending.Break);
+        var caller = new MutableCurrentUser();
+        await using var kit = new RunnerTestKit(new ScriptedHttp(body), caller: caller);
+        var (job, _) = await InboundMessageAsync(kit, "which devices are down?");
+
+        await Processor(kit, caller).ProcessAsync(job, CancellationToken.None);
+
+        Assert.Equal(CollectingAgentEventSink.IncompleteNote + "\n\nTwo devices are", (await QueuedReplyAsync(kit)).Text);
+        Assert.Equal(AgentTurn.StatusError, (await kit.StoredTurnAsync()).Status);
+    }
+
+    [Fact]
+    public async Task A_reply_that_goes_silent_part_way_is_sent_with_a_note_that_it_may_be_incomplete()
+    {
+        // The server stops sending with the connection open; the provider's limit is one second.
+        var body = new ScriptedBody(
+            RunnerTestKit.Sse("{\"choices\":[{\"delta\":{\"content\":\"Two devices are\"}}]}"),
+            ScriptedBody.Ending.Hang);
+        var caller = new MutableCurrentUser();
+        await using var kit = new RunnerTestKit(
+            new ScriptedHttp(body), caller: caller, providerConfig: """{"stream_idle_seconds":1}""");
+        var (job, _) = await InboundMessageAsync(kit, "which devices are down?");
+
+        await Processor(kit, caller).ProcessAsync(job, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(CollectingAgentEventSink.IncompleteNote + "\n\nTwo devices are", (await QueuedReplyAsync(kit)).Text);
+        var turn = await kit.StoredTurnAsync();
+        Assert.Equal(AgentTurn.StatusError, turn.Status);
+        Assert.Contains("stopped sending", turn.Error);
+    }
+
+    // No idle limit: the silent server holds the turn until its deadline.
+    //
+    // The deadline is real time. On a machine slow enough it passes before the model's
+    // text has been read, and then there is no part of an answer for a note to go with:
+    // that run says nothing about the note, and the test tries again with a longer
+    // deadline. Once the turn is waiting on the silent server (HangToken), the text has
+    // been handed on and only the deadline can end the turn.
+    [Fact]
+    public async Task A_reply_cut_off_by_the_deadline_is_sent_with_a_note_that_it_may_be_incomplete()
+    {
+        foreach (var deadlineSeconds in new[] { 2, 10, 60 })
+        {
+            var body = new ScriptedBody(
+                RunnerTestKit.Sse("{\"choices\":[{\"delta\":{\"content\":\"Two devices are\"}}]}"),
+                ScriptedBody.Ending.Hang);
+            var caller = new MutableCurrentUser();
+            await using var kit = new RunnerTestKit(new ScriptedHttp(body), deadlineSeconds: deadlineSeconds, caller: caller);
+            var (job, _) = await InboundMessageAsync(kit, "which devices are down?");
+
+            try
+            {
+                await Processor(kit, caller).ProcessAsync(job, CancellationToken.None).WaitAsync(TimeSpan.FromMinutes(2));
+            }
+            catch (OperationCanceledException) when (body.HangToken is null)
+            {
+                continue;
+            }
+            if (body.HangToken is null) continue;
+
+            Assert.Equal(CollectingAgentEventSink.IncompleteNote + "\n\nTwo devices are", (await QueuedReplyAsync(kit)).Text);
+            Assert.Equal(AgentTurn.StatusTimeout, (await kit.StoredTurnAsync()).Status);
+            return;
+        }
+
+        Assert.Fail("the turn never got as far as waiting on the silent server, even with a 60 s deadline");
+    }
+
+    // The sink's own choice of what to send, without a turn around it.
+    [Fact]
+    public async Task The_reply_text_carries_the_note_only_when_text_and_an_error_are_both_present()
+    {
+        var none = CancellationToken.None;
+
+        var finished = new CollectingAgentEventSink();
+        await finished.TextAsync("All four are up.", none);
+        Assert.Equal("All four are up.", finished.ReplyText());
+
+        var partWay = new CollectingAgentEventSink();
+        await partWay.TextAsync("All four", none);
+        await partWay.ErrorAsync("the connection was reset", null, none);
+        Assert.Equal(CollectingAgentEventSink.IncompleteNote + "\n\nAll four", partWay.ReplyText());
+
+        var nothingSaid = new CollectingAgentEventSink();
+        await nothingSaid.ErrorAsync("the connection was reset", null, none);
+        Assert.StartsWith("Sorry", nothingSaid.ReplyText());
+        Assert.DoesNotContain(CollectingAgentEventSink.IncompleteNote, nothingSaid.ReplyText());
+
+        // A confirmation request still wins over text and error alike.
+        var needsApproval = new CollectingAgentEventSink();
+        await needsApproval.TextAsync("I will restart it.", none);
+        await needsApproval.ConfirmationRequiredAsync("restart_device", default, "single_confirm", none);
+        await needsApproval.ErrorAsync("the connection was reset", null, none);
+        Assert.Contains("needs confirmation", needsApproval.ReplyText());
+        Assert.DoesNotContain(CollectingAgentEventSink.IncompleteNote, needsApproval.ReplyText());
+    }
+
+    // Telegram and WhatsApp send only the first 4,096 characters of a message. The
+    // note has to be in what is left of a long reply, or the user gets a cut-off
+    // answer with nothing to say so.
+    [Fact]
+    public async Task The_note_is_still_there_after_Telegram_shortens_a_long_reply()
+    {
+        var sent = new SentBodies();
+        var channel = new MessagingChannel { MessagingChannelId = Guid.NewGuid(), Provider = MessagingChannel.ProviderTelegram, Name = "t", Slug = "t" };
+
+        await new nashira_backend.Services.Messaging.Providers.TelegramProvider(
+                sent, NullLogger<nashira_backend.Services.Messaging.Providers.TelegramProvider>.Instance)
+            .SendAsync(channel, "token", new OutboundMessage { ExternalThreadId = "42", Text = await LongReplyThatFailedAsync() }, CancellationToken.None);
+
+        var text = System.Text.Json.JsonDocument.Parse(Assert.Single(sent.Bodies)).RootElement.GetProperty("text").GetString()!;
+        Assert.Equal(4096, text.Length);
+        Assert.Contains(CollectingAgentEventSink.IncompleteNote, text);
+    }
+
+    [Fact]
+    public async Task The_note_is_still_there_after_WhatsApp_shortens_a_long_reply()
+    {
+        var sent = new SentBodies();
+        var channel = new MessagingChannel
+        {
+            MessagingChannelId = Guid.NewGuid(), Provider = MessagingChannel.ProviderWhatsApp, Name = "w", Slug = "w",
+            ExternalConfigJson = """{"phone_number_id":"1"}""",
+        };
+
+        await new nashira_backend.Services.Messaging.Providers.WhatsAppProvider(
+                sent, NullLogger<nashira_backend.Services.Messaging.Providers.WhatsAppProvider>.Instance)
+            .SendAsync(channel, "token", new OutboundMessage { ExternalThreadId = "15550001111", Text = await LongReplyThatFailedAsync() }, CancellationToken.None);
+
+        var text = System.Text.Json.JsonDocument.Parse(Assert.Single(sent.Bodies)).RootElement.GetProperty("text").GetProperty("body").GetString()!;
+        Assert.Equal(4096, text.Length);
+        Assert.Contains(CollectingAgentEventSink.IncompleteNote, text);
+    }
+
+    // What the sink hands over for a reply of 5,000 characters that then failed.
+    private static async Task<string> LongReplyThatFailedAsync()
+    {
+        var sink = new CollectingAgentEventSink();
+        await sink.TextAsync(new string('a', 5000), CancellationToken.None);
+        await sink.ErrorAsync("the connection was reset", null, CancellationToken.None);
+        return sink.ReplyText();
+    }
+
+    // Answers every request with 200 and keeps what was sent.
+    private sealed class SentBodies : IHttpClientFactory
+    {
+        public List<string> Bodies { get; } = [];
+        public HttpClient CreateClient(string name) => new(new Handler(this));
+
+        private sealed class Handler(SentBodies owner) : HttpMessageHandler
+        {
+            protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            {
+                owner.Bodies.Add(await request.Content!.ReadAsStringAsync(ct));
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") };
+            }
+        }
+    }
+
     private static MessagingJobProcessor Processor(RunnerTestKit kit, MutableCurrentUser caller) =>
         // Only the agent_message path runs here; sending is the provider's and the
         // secret store's business, and neither is reached.

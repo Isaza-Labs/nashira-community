@@ -4,6 +4,43 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-14 — A chat-channel reply that ended in an error says it may be incomplete
+
+A turn that fails after the model has started answering (the model goes silent, the
+connection breaks, or the turn deadline passes) leaves the start of an answer. The web
+chat shows the error beside that text. A Slack or Telegram thread got the text alone,
+which read as a finished answer. The channel reply now starts with a line saying that
+something went wrong and what follows may be incomplete. The line is first because
+Telegram and WhatsApp send only the first 4,096 characters of a message, and a line at
+the end of a long reply would be the part that is dropped. A reply that finished
+normally is unchanged, and so is the apology sent when the model had said nothing.
+
+
+## 2026-11-13 — A limit for a reply that goes silent, per provider
+
+A model server that stops sending part-way through a reply, without closing the
+connection, holds the turn until the turn deadline (240 s by default). A provider can
+now have a quiet-stream limit: set `stream_idle_seconds` in the provider's Config (for
+example `{"stream_idle_seconds": 60}`) and a reply that sends nothing for that long,
+after the model has started it, ends with the text that had arrived and a message that
+it may be cut off. `AiChat__StreamIdleSeconds` sets the same limit for every provider
+that has none of its own. A provider's value is 0 (off for that provider) or between one
+second and a day. The server-wide setting is a whole number of seconds that fits a signed
+32-bit integer (at most 2147483647). Within that, a negative value counts as 0 and one
+above a day as a day. A blank value (an environment placeholder left empty,
+`"StreamIdleSeconds": ""`) is the setting left out, so the limit is off. A value that is
+not a whole number (2.5, a word), or a whole number that does not fit (2147483648), stops
+the server at startup with the setting named. A list or an object in the number's place
+is not read, so the limit is off.
+
+**It is off unless you set it, and it is not safe for every provider.** Some send
+nothing while the model builds a tool call: Anthropic holds each tool parameter back
+until it is whole, and Gemini delivers a function call in one piece. A reply that says
+a sentence and then writes a large tool call is silent for as long as that takes, and a
+limit shorter than that would end a healthy reply. Set it for a server that keeps the
+connection busy while the model works, with keepalive comments or with tool calls
+streamed as they are generated.
+
 ## 2026-11-12 — Token usage counted once, and prompt-cache figures kept
 
 **Token totals recorded before this release can be too high for OpenAI-compatible

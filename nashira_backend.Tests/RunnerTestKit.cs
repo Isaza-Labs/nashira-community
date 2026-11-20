@@ -56,10 +56,11 @@ internal sealed class RunnerTestKit : IAsyncDisposable
         Db.SaveChanges();
 
         var user = caller ?? new SignedInUser();
+        var chat = Options.Create(new AiChatOptions { StreamDeadlineSeconds = deadlineSeconds });
         var registry = new ToolRegistry(NullLogger<ToolRegistry>.Instance);
         Runner = new AgentConversationRunner(
             Db,
-            new LlmProviderFactory(Db, user, http, new PassthroughProtector(), NullLoggerFactory.Instance),
+            new LlmProviderFactory(Db, user, http, new PassthroughProtector(), NullLoggerFactory.Instance, chat),
             registry,
             // An unregistered tool is answered before the guard, autonomy, audit and
             // self-correction services are reached, so those stay null.
@@ -73,7 +74,7 @@ internal sealed class RunnerTestKit : IAsyncDisposable
             new AgentTurnScope(),
             Log,
             new NoopTrace(),
-            Options.Create(new AiChatOptions { StreamDeadlineSeconds = deadlineSeconds }));
+            chat);
     }
 
     public Task RunAsync(string message = "hello", CancellationToken ct = default) =>
@@ -162,10 +163,22 @@ internal sealed class ScriptedBody(string text, ScriptedBody.Ending ending = Scr
     private readonly byte[] _bytes = Encoding.UTF8.GetBytes(text);
     private int _position;
 
+    // The token the first read was given: the provider's own, from before anything in
+    // the reply could have put a read under a limit.
+    public CancellationToken? FirstReadToken { get; private set; }
+
+    // The token of the read that went silent (Ending.Hang), once the reader has got
+    // that far: everything in the body has been read and handed on by then. A test
+    // whose turn has a real deadline can tell from it whether the deadline passed while
+    // the turn was waiting on the silent server or before it got there, and, against
+    // FirstReadToken, whether that read was under a limit of its own.
+    public CancellationToken? HangToken { get; private set; }
+
     public static implicit operator ScriptedBody(string text) => new(text);
 
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
     {
+        FirstReadToken ??= ct;
         if (_position < _bytes.Length)
         {
             var count = Math.Min(buffer.Length, _bytes.Length - _position);
@@ -178,6 +191,7 @@ internal sealed class ScriptedBody(string text, ScriptedBody.Ending ending = Scr
             case Ending.Break:
                 throw new IOException("the connection was reset");
             case Ending.Hang:
+                HangToken = ct;
                 await Task.Delay(Timeout.Infinite, ct);
                 return 0;
             default:
