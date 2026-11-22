@@ -255,7 +255,12 @@ public sealed partial class NashiraAdapter
         };
 
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["Python:Executable"] = exe })
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Python:Executable"] = exe,
+                // The probe checks the contract's output conventions, not isolation.
+                ["Python:AllowUnsandboxed"] = "true",
+            })
             .Build();
 
         using var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()

@@ -44,24 +44,30 @@ public interface IPythonSandbox
 //     __import__, which catches importlib and dynamic imports the static scan
 //     cannot see.
 //   - The script is passed on stdin and never written to disk.
-//   - An optional `Python:SandboxCommand` wrapper, so an operator can put real OS
-//     isolation in front of the interpreter (bwrap, firejail, a container shim).
+//   - `Python:SandboxCommand`, a wrapper that puts real OS isolation in front of the
+//     interpreter (bwrap, firejail, a container shim). Without one, snippets are
+//     REFUSED (`sandbox_not_configured`): the child would otherwise run as the same
+//     user as the backend, with its filesystem and network, and the Data Protection
+//     keyring is on that filesystem. Running without a wrapper is possible only by
+//     setting `Python:AllowUnsandboxed` to true: a server-side decision, logged when
+//     the first snippet runs, for machines where snippet authors are already trusted
+//     with a shell.
+//   - `open` is not among the builtins the snippet's own code sees. That stops the
+//     casual read of a host file; it is NOT a boundary (see below).
 //
 // NOT IN PLACE — an operator must know these:
-//   - NO OS-level isolation BY DEFAULT. Unless `Python:SandboxCommand` is set, the
-//     child runs as the same user as the backend with the same filesystem and
-//     network access. `NetworkEnabled` gates which modules are offered, not what
-//     the kernel allows.
+//   - The wrapper is the only OS-level isolation, and nothing here checks that the one
+//     configured actually isolates anything. `NetworkEnabled` gates which modules are
+//     offered, not what the kernel allows.
 //   - NO memory or CPU limit. The deadline bounds wall time only; a busy loop
 //     consumes a core until it expires.
-//   - The import hook is defence in depth, not a jail. CPython's object graph
-//     reaches the real builtins from almost any object, and its own documentation
-//     says a reliable in-process sandbox is not achievable.
+//   - The import hook and the narrowed builtins are defence in depth, not a jail.
+//     CPython's object graph reaches the real builtins from almost any object,
+//     and its own documentation says a reliable in-process sandbox is not achievable.
 //
-// So the boundary that actually holds is operational. Writing a `python_snippet`
-// is close to shell access on the backend host; the admin-only module allowlist
-// and the Operator role on snippet authoring are what keep it with people who
-// already have that. Set `Python:SandboxCommand` anywhere that is not true.
+// So the boundary that actually holds is the wrapper. Without one, writing a
+// `python_snippet` is shell access on the backend host, which is why that case is
+// refused unless an operator says otherwise.
 public sealed class PythonSandbox : IPythonSandbox
 {
     private const string DefaultExecutable = "python3";
@@ -78,6 +84,7 @@ public sealed class PythonSandbox : IPythonSandbox
 
     private readonly string _executable;
     private readonly string? _sandboxCommand;
+    private readonly bool _allowUnsandboxed;
     private readonly ILogger<PythonSandbox> _logger;
     private bool _warnedNoIsolation;
 
@@ -87,7 +94,14 @@ public sealed class PythonSandbox : IPythonSandbox
         _executable = config["Python:Executable"] ?? DefaultExecutable;
         // `;`-delimited, e.g. "bwrap;--unshare-all;--ro-bind;/usr;/usr;--tmpfs;/tmp;--"
         _sandboxCommand = config["Python:SandboxCommand"];
+        // Off unless the deployment sets it. Only consulted when no wrapper is configured.
+        _allowUnsandboxed = config.GetValue<bool>("Python:AllowUnsandboxed");
         _logger = logger;
+
+        if (SplitCommand(_sandboxCommand).Count == 0 && !_allowUnsandboxed)
+            _logger.LogWarning(
+                "python.sandbox.not_configured — neither Python:SandboxCommand nor Python:AllowUnsandboxed " +
+                "is set, so python_snippet steps are refused");
     }
 
     private static List<string> SplitCommand(string? command) =>
@@ -103,6 +117,23 @@ public sealed class PythonSandbox : IPythonSandbox
 
     public async Task<PythonRunResult> RunAsync(PythonRunRequest request, CancellationToken ct)
     {
+        // An operator can put real OS isolation in front of the interpreter. The
+        // in-interpreter controls cannot be a boundary (see the class comment), so
+        // this hook is how a deployment gets one — and without it nothing is run.
+        var wrapper = SplitCommand(_sandboxCommand);
+        if (wrapper.Count == 0 && !_allowUnsandboxed)
+        {
+            _logger.LogWarning(
+                "python.sandbox.refused — no Python:SandboxCommand is configured and Python:AllowUnsandboxed is not set");
+            return Fail(
+                "sandbox_not_configured",
+                "python_snippet is disabled: no OS sandbox is configured, so snippet code would run with the " +
+                "backend's own filesystem and network access. Set Python:SandboxCommand (environment variable " +
+                "Python__SandboxCommand) to a wrapper such as bwrap or a container shim. To run snippets " +
+                "without isolation on a host where that is acceptable, set Python:AllowUnsandboxed=true " +
+                "(Python__AllowUnsandboxed).");
+        }
+
         var harness = BuildHarness(request);
 
         // Per-run working directory. Without it the child inherits the backend's
@@ -119,10 +150,6 @@ public sealed class PythonSandbox : IPythonSandbox
             WorkingDirectory = workDir,
         };
 
-        // An operator can put real OS isolation in front of the interpreter. The
-        // in-interpreter controls cannot be a boundary (see the class comment), so
-        // this hook is how a deployment gets one.
-        var wrapper = SplitCommand(_sandboxCommand);
         if (wrapper.Count > 0)
         {
             psi.FileName = wrapper[0];
@@ -136,8 +163,8 @@ public sealed class PythonSandbox : IPythonSandbox
             {
                 _warnedNoIsolation = true;
                 _logger.LogWarning(
-                    "python.sandbox.no_os_isolation — Python:SandboxCommand is unset, so python_snippet " +
-                    "runs with the worker's own filesystem and network access");
+                    "python.sandbox.no_os_isolation — Python:AllowUnsandboxed is set and Python:SandboxCommand " +
+                    "is not, so python_snippet runs with the worker's own filesystem and network access");
             }
         }
 
@@ -307,6 +334,16 @@ public sealed class PythonSandbox : IPythonSandbox
                 return _real_import(name, globals, locals, fromlist, level)
 
             builtins.__import__ = _guarded_import
+
+            # The builtins the snippet's own code sees: the interpreter's, without `open`.
+            # Copied AFTER the import hook above is installed, so a snippet's `import`
+            # still goes through the guard. Libraries the snippet imports are separate
+            # modules and keep the real builtins; only this namespace is narrowed. That
+            # stops a snippet reading a host file with one line — it is not a boundary,
+            # which is the wrapper's job.
+            _env["__builtins__"] = {
+                _name: _value for _name, _value in vars(builtins).items() if _name != "open"
+            }
 
             _envelope = {}
             try:

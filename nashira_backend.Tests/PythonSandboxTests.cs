@@ -15,7 +15,7 @@ namespace nashira_backend.Tests;
 // build agent without one.
 public class PythonSandboxTests
 {
-    private static readonly string? Exe = FindPython();
+    internal static readonly string? Exe = FindPython();
 
     private static string? FindPython()
     {
@@ -42,7 +42,14 @@ public class PythonSandboxTests
     private static PythonSandbox Sandbox()
     {
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["Python:Executable"] = Exe })
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Python:Executable"] = Exe,
+                // These tests exercise the harness (typing, the import guard, deadlines), not
+                // OS isolation, so they opt in to running without a sandbox command. What
+                // happens without the opt-in is pinned in PythonSandboxIsolationTests.
+                ["Python:AllowUnsandboxed"] = "true",
+            })
             .Build();
         return new PythonSandbox(config, NullLogger<PythonSandbox>.Instance);
     }
