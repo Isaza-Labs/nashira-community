@@ -18,8 +18,8 @@ namespace nashira_backend.Tests;
 // plaintext there — a person who may not read the secret store could read the secret by running
 // the workflow.
 //
-// The script still receives the plaintext; what comes back out is masked. This does not make a
-// script that deliberately re-encodes a value safe to run — see SecretRedactor.
+// Secret-consuming scripts receive plaintext but their output is withheld as a whole,
+// because exact-value masking cannot protect deliberate encodings.
 public class PythonSnippetSecretLeakTests
 {
     private const string Token = "example-token-value";
@@ -111,7 +111,7 @@ public class PythonSnippetSecretLeakTests
         // … and what the step stores and shows does not carry it.
         Assert.DoesNotContain(Token, result.Output.GetRawText(), StringComparison.Ordinal);
         Assert.DoesNotContain(Token, result.Logs ?? string.Empty, StringComparison.Ordinal);
-        Assert.Equal("[redacted]", result.Output.GetProperty("resolved").GetProperty("tok").GetString());
+        Assert.Equal("[redacted]", result.Output.GetString());
     }
 
     [Fact]
@@ -126,14 +126,12 @@ public class PythonSnippetSecretLeakTests
     }
 
     [Fact]
-    public async Task A_secret_inside_a_longer_value_is_masked_and_the_rest_is_kept()
+    public async Task A_secret_inside_a_longer_value_taints_the_whole_execution()
     {
         var result = await RunAsync(
             new EchoSandbox(), $$"""{"header":"Bearer {{Marker}} suffix","host":"203.0.113.1"}""", WithToken());
 
-        var resolved = result.Output.GetProperty("resolved");
-        Assert.Equal("Bearer [redacted] suffix", resolved.GetProperty("header").GetString());
-        Assert.Equal("203.0.113.1", resolved.GetProperty("host").GetString());
+        Assert.Equal("[redacted]", result.Output.GetString());
     }
 
     [Fact]
@@ -149,7 +147,7 @@ public class PythonSnippetSecretLeakTests
             new EchoSandbox { PrintOverride = $"password is {escaped}" }, $$"""{"tok":"{{Marker}}"}""", secrets);
 
         Assert.DoesNotContain(escaped, result.Logs ?? string.Empty, StringComparison.Ordinal);
-        Assert.Equal("[redacted]", result.Output.GetProperty("resolved").GetProperty("tok").GetString());
+        Assert.Equal("[redacted]", result.Output.GetString());
     }
 
     [Fact]
@@ -164,7 +162,7 @@ public class PythonSnippetSecretLeakTests
     }
 
     [Fact]
-    public async Task A_credential_username_is_given_to_the_script_but_not_masked()
+    public async Task Credential_fields_are_also_resolved_material_and_taint_the_output()
     {
         var secrets = WithToken();
         secrets.Values["${secret:credential:core-sw:username}"] = "admin";
@@ -175,11 +173,7 @@ public class PythonSnippetSecretLeakTests
             $$"""{"user":"${secret:credential:core-sw:username}","pw":"${secret:credential:core-sw:password}"}""",
             secrets);
 
-        // A username is stored in the clear and shows up in device output all the time; only
-        // the password is a secret.
-        var resolved = result.Output.GetProperty("resolved");
-        Assert.Equal("admin", resolved.GetProperty("user").GetString());
-        Assert.Equal("[redacted]", resolved.GetProperty("pw").GetString());
+        Assert.Equal("[redacted]", result.Output.GetString());
     }
 
     [Fact]

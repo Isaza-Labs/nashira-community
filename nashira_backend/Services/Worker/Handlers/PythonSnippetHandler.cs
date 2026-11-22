@@ -50,6 +50,9 @@ public sealed class PythonSnippetHandler : ISnippetHandler
 
     public async Task<SnippetResult> ExecuteAsync(SnippetRequest request, CancellationToken ct)
     {
+        if (!StepOutputPrivacy.TryRead(request.Input, out var redactOutput))
+            return SnippetResult.Fail("redact_output must be a boolean", "invalid_redact_output");
+        using var secrets = new SecretResolutionScope();
         if (string.IsNullOrWhiteSpace(request.Code))
             return SnippetResult.Fail("this python_snippet has no code", "bad_snippet");
 
@@ -125,22 +128,35 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             return SnippetResult.Fail($"module(s) {string.Join("; ", parts)}", "module_denied");
         }
 
-        // The plaintext goes to the script, and the values it was given are remembered so they
-        // can be taken back out of whatever the script returns (see SecretRedactor).
+        // The script needs plaintext to act, but its output cannot be trusted to
+        // distinguish public data from encoded secrets. Track resolution, not just matches.
         var (scriptInput, secretValues) = await ResolveSecretsAsync(request.Input, ct);
 
-        var result = await _sandbox.RunAsync(
-            new PythonRunRequest(
-                Code: request.Code!,
-                Input: scriptInput,
-                TimeoutSeconds: request.TimeoutSeconds,
-                NetworkEnabled: networkEnabled,
-                AllowedModules: allowed,
-                // Null unless something is actually installed there, so a deployment
-                // that never approved a pip package runs the identical harness it did
-                // before this existed.
-                PackagesDir: PythonPackagesLayout.ResolveSiteDirIfPopulated(_config)),
-            ct);
+        PythonRunResult result;
+        try
+        {
+            result = await _sandbox.RunAsync(
+                new PythonRunRequest(
+                    Code: request.Code!,
+                    Input: scriptInput,
+                    TimeoutSeconds: request.TimeoutSeconds,
+                    NetworkEnabled: networkEnabled,
+                    AllowedModules: allowed,
+                    PackagesDir: PythonPackagesLayout.ResolveSiteDirIfPopulated(_config)),
+                ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException &&
+            (secrets.HasResolvedMaterial || secretValues.Count > 0 || redactOutput))
+        {
+            return StepOutputPrivacy.Withhold(SnippetResult.Fail("script failed", "script_error"));
+        }
+
+        if (secrets.HasResolvedMaterial || secretValues.Count > 0 || redactOutput)
+            return StepOutputPrivacy.Withhold(new SnippetResult
+            {
+                Success = result.Ok, Change = StepChange.AuthorDecides,
+                Retryable = result.ErrorKind == "timeout",
+            });
 
         if (!result.Ok)
         {
@@ -216,9 +232,8 @@ public sealed class PythonSnippetHandler : ISnippetHandler
     /// reference is left literal by the resolver, so a typo reaches the script as the marker
     /// the author typed instead of as a silent empty string.
     ///
-    /// What the script hands back is masked with the values it was given (SecretRedactor): the
-    /// output and logs are stored on the run, and a script that returns or prints its input
-    /// would otherwise put the plaintext where people who may not read the secret store can.
+    /// Any successful resolution withholds the entire script result. Value masking alone
+    /// cannot stop encoded output from entering a stored run readable by other roles.
     /// </remarks>
     private async Task<(JsonElement Input, IReadOnlyCollection<string> Secrets)> ResolveSecretsAsync(
         JsonElement input, CancellationToken ct)
@@ -252,7 +267,7 @@ public sealed class PythonSnippetHandler : ISnippetHandler
 
             var value = await _secrets.SubstituteAsync(reference.Raw, ct);
             sb.Append(value);
-            if (!string.Equals(value, reference.Raw, StringComparison.Ordinal) && IsSecretField(reference))
+            if (!string.Equals(value, reference.Raw, StringComparison.Ordinal))
                 secrets.Add(value);
 
             cursor = at + reference.Raw.Length;
@@ -260,12 +275,6 @@ public sealed class PythonSnippetHandler : ISnippetHandler
         sb.Append(raw, cursor, raw.Length - cursor);
         return sb.ToString();
     }
-
-    // A credential's username and client id are stored in the clear and are not secrets; masking
-    // them would hide every "admin" in a device's output for no gain.
-    private static bool IsSecretField(SecretResolver.SecretReference reference) =>
-        !(string.Equals(reference.Source.Trim(), "credential", StringComparison.OrdinalIgnoreCase)
-          && reference.Field.Trim().ToLowerInvariant() is "username" or "client_id" or "clientid");
 
     // Walks the whole payload, not just its top level: a credential is as likely to sit in
     // `{"steps": [{"send": "${secret:…}"}]}` as directly on the object.

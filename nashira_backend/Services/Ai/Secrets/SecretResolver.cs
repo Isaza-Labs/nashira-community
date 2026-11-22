@@ -183,6 +183,7 @@ public sealed partial class SecretResolver : ISecretResolver
                     "secret.resolve.hit source={Source} id_or_name={IdOrName} field={Field} value_bytes={ValueBytes}",
                     src, key, fld, value.Length);
             }
+            if (value is not null) SecretResolutionScope.MarkResolved();
             return value;
         }
         catch (ForbiddenException)

@@ -4,6 +4,7 @@ using nashira_backend.Data.Db;
 using nashira_backend.Exceptions;
 using nashira_backend.Services.Engine;
 using nashira_backend.Services.Worker;
+using nashira_backend.Services.Ai.Secrets;
 
 namespace nashira_backend.Services.Workflow;
 
@@ -359,6 +360,9 @@ public sealed class SnippetNodeExecutor : INodeExecutor
         WorkflowNode node, Data.Models.Snippet snippet, ISnippetHandler handler,
         JsonElement input, CancellationToken ct)
     {
+        if (!StepOutputPrivacy.TryRead(input, out var redactOutput))
+            return SnippetResult.Fail("redact_output must be a boolean", "invalid_redact_output");
+        using var secrets = new SecretResolutionScope();
         // The one place the canonical-vs-alias question is answered
         // (snippets/SPEC.md rule 1, bundle/SPEC.md §4). Handlers still read both keys —
         // they are called directly by tests and by nothing else — but a node that
@@ -386,19 +390,23 @@ public sealed class SnippetNodeExecutor : INodeExecutor
 
         try
         {
-            return await handler.ExecuteAsync(request, ct);
+            var result = await handler.ExecuteAsync(request, ct);
+            return redactOutput || secrets.HasResolvedMaterial ? StepOutputPrivacy.Withhold(result) : result;
         }
         catch (ForbiddenException ex)
         {
             // Permission failures stop the step and are not retryable. Preserve
             // the resolver's code rather than reporting an unexpected handler bug.
-            return SnippetResult.Fail(ex.Message, ex.Code);
+            var result = SnippetResult.Fail(ex.Message, ex.Code);
+            return secrets.HasResolvedMaterial ? StepOutputPrivacy.Withhold(result) : result;
         }
         catch (Exception ex)
         {
             // A handler that throws is a bug in the handler, not a workflow failure
             // the author can act on — but the run still has to end, so it becomes a
             // failed step with the message attached.
+            if (secrets.HasResolvedMaterial || redactOutput)
+                return StepOutputPrivacy.Withhold(SnippetResult.Fail("handler failed", "exception"));
             _logger.LogError(ex, "workflow.node.handler_threw node={Node} type={Type}", node.Id, snippet.Type);
             return SnippetResult.Fail(ex.Message, "exception");
         }

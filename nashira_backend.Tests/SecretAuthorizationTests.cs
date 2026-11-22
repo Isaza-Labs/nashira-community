@@ -25,7 +25,7 @@ namespace nashira_backend.Tests;
 
 // Use the real resolver and seeded records: a fake substitution service cannot
 // test authorization. The protector counts decryptions; the sandbox counts calls.
-public class SecretAuthorizationTests
+public partial class SecretAuthorizationTests
 {
     private const string Value = "example-token-value";
     private const string Marker = "${secret:secret:protected:value}";
@@ -209,7 +209,7 @@ public class SecretAuthorizationTests
 
     [Theory]
     [MemberData(nameof(ExtractionScripts))]
-    public async Task Authorized_controls_execute_the_real_scripts_and_masking_is_only_additional_protection(
+    public async Task Authorized_controls_execute_real_scripts_but_withhold_all_secret_derived_output(
         string technique, string code)
     {
         // Missing Python must not silently turn this acceptance test into a pass.
@@ -218,7 +218,7 @@ public class SecretAuthorizationTests
         var sandbox = new CountingSandbox();
         var result = await fixture.Handler(sandbox).ExecuteAsync(new SnippetRequest
         {
-            NodeId = "py", WorkflowId = Guid.NewGuid(), SnippetId = Guid.NewGuid(),
+            NodeId = technique, WorkflowId = Guid.NewGuid(), SnippetId = Guid.NewGuid(),
             SnippetType = Snippet.TypePythonSnippet, Code = code,
             Input = JsonSerializer.SerializeToElement(new { tok = Marker }), TimeoutSeconds = 10,
         }, default);
@@ -227,15 +227,8 @@ public class SecretAuthorizationTests
         Assert.Equal(1, sandbox.Calls);
         Assert.Equal(1, fixture.Protector.Decryptions);
         Assert.DoesNotContain(Value, result.Logs ?? "");
-        var recovered = technique switch
-        {
-            "echo" => result.Output.GetString(),
-            "reverse" => new string(result.Output.GetString()!.Reverse().ToArray()),
-            "base64" => Encoding.UTF8.GetString(Convert.FromBase64String(result.Output.GetString()!)),
-            "split" => string.Concat(result.Output.EnumerateArray().Select(x => x.GetString())),
-            _ => throw new InvalidOperationException(),
-        };
-        Assert.Equal(technique == "echo" ? "[redacted]" : Value, recovered);
+        Assert.Equal("[redacted]", result.Output.GetString());
+        Assert.Equal("[redacted]", result.Logs);
     }
 
     private sealed class Fixture : IDisposable
