@@ -153,11 +153,12 @@ public class SelfApiCallTests
         Assert.Null(await resolver.ResolveAsync("session", "current", "jwt", CancellationToken.None));
     }
 
-    // Stored secrets are unaffected by any of the above.
+    // Stored secrets still require Admin; the self-API switch grants no extra access.
     [Fact]
     public async Task Stored_secrets_still_resolve_and_ignore_the_session_switch()
     {
-        var resolver = NewResolver(out var db, RequestWith("Bearer abc.def.ghi"));
+        var resolver = NewResolver(out var db, RequestWith("Bearer abc.def.ghi"),
+            new FakeUser { Authenticated = true, Id = Guid.NewGuid(), RoleList = ["admin"] });
         db.Secrets.Add(new Secret
         {
             SecretId = Guid.NewGuid(),

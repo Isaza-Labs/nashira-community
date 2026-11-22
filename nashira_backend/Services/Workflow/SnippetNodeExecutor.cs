@@ -1,6 +1,7 @@
 ﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
+using nashira_backend.Exceptions;
 using nashira_backend.Services.Engine;
 using nashira_backend.Services.Worker;
 
@@ -386,6 +387,12 @@ public sealed class SnippetNodeExecutor : INodeExecutor
         try
         {
             return await handler.ExecuteAsync(request, ct);
+        }
+        catch (ForbiddenException ex)
+        {
+            // Permission failures stop the step and are not retryable. Preserve
+            // the resolver's code rather than reporting an unexpected handler bug.
+            return SnippetResult.Fail(ex.Message, ex.Code);
         }
         catch (Exception ex)
         {

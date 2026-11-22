@@ -31,7 +31,7 @@ public class SecretResolverTests
             .Options);
 
         return new SecretResolver(
-            db, new PassthroughProtector(), new AnonymousUser(),
+            db, new PassthroughProtector(), new AdminUser(),
             new HttpContextAccessor(),
             new JwtTokenService(
                 Options.Create(new JwtOptions
@@ -297,12 +297,14 @@ public class SecretResolverTests
             ciphertext is null || ciphertext.Length == 0 ? null : Encoding.UTF8.GetString(ciphertext);
     }
 
-    private sealed class AnonymousUser : ICurrentUser
+    // Grammar/field-map tests run as an authorized caller. Denied identities are
+    // covered with the real resolver in SecretAuthorizationTests.
+    private sealed class AdminUser : ICurrentUser
     {
-        public Guid UserId => throw new InvalidOperationException("anonymous");
-        public string? Username => null;
-        public IReadOnlyList<string> Roles => [];
-        public bool IsAuthenticated => false;
+        public Guid UserId { get; } = Guid.NewGuid();
+        public string? Username => "test-admin";
+        public IReadOnlyList<string> Roles => ["admin"];
+        public bool IsAuthenticated => true;
     }
 
     private sealed class NoopTrace : ITraceLogger
