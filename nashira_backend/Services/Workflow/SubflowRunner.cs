@@ -2,6 +2,7 @@
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
+using nashira_backend.Services.Identity;
 
 namespace nashira_backend.Services.Workflow;
 
@@ -124,12 +125,15 @@ public interface ISubflowRunner
 public sealed class SubflowRunner : ISubflowRunner
 {
     private readonly IServiceScopeFactory _scopes;
+    private readonly ICurrentUser? _caller;
     private readonly ILogger<SubflowRunner> _logger;
 
-    public SubflowRunner(IServiceScopeFactory scopes, ILogger<SubflowRunner> logger)
+    public SubflowRunner(
+        IServiceScopeFactory scopes, ILogger<SubflowRunner> logger, ICurrentUser? caller = null)
     {
         _scopes = scopes;
         _logger = logger;
+        _caller = caller;
     }
 
     public async Task<SubflowOutcome> RunAsync(
@@ -138,6 +142,14 @@ public sealed class SubflowRunner : ISubflowRunner
     {
         using var scope = _scopes.CreateScope();
         var sp = scope.ServiceProvider;
+        // The child runs in a scope of its own, which has no HTTP context. Carry the
+        // parent's effective caller into it so authorization inside the child (stored
+        // secrets, self-API calls) is decided for the same identity as the parent. A
+        // parent with no authenticated caller binds nothing, and the child stays
+        // unauthenticated: this never grants more than the parent had. (A host that
+        // supplies its own fixed ICurrentUser has no MutableCurrentUser to bind.)
+        if (_caller is { IsAuthenticated: true } caller)
+            sp.GetService<MutableCurrentUser>()?.Bind(caller.UserId, caller.Username, caller.Roles);
         var db = sp.GetRequiredService<AppDbContext>();
 
         // No version pinning: the CURRENT row is what runs (execution/SPEC.md §5).
