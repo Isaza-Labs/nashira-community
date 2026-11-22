@@ -14,8 +14,8 @@ namespace nashira_backend.Controllers;
 // MessagingIngestService (HMAC, secret token, or a Bot Framework JWT), never by
 // this controller, and never by trusting anything in the URL.
 //
-// GET exists because two providers use it as a handshake: WhatsApp echoes
-// hub.challenge, and it doubles as a reachability check an admin can curl.
+// GET is reserved for WhatsApp's token-verified hub.challenge handshake.
+// Other GETs receive a uniform rejection without looking up the channel.
 [ApiController]
 [Route("api/messaging/webhooks")]
 [AllowAnonymous]
