@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
 using nashira_backend.Services.Ai.Secrets;
+using nashira_backend.Services.Identity;
 using nashira_backend.Services.Security;
 using CredentialEntity = nashira_backend.Data.Models.Credential;
 using IntegrationEntity = nashira_backend.Data.Models.Integration;
@@ -182,12 +183,14 @@ public sealed class IntegrationAuthApplier : IIntegrationAuthApplier
     private readonly IIntegrationOAuthTokenService _oauth;
     private readonly AppDbContext _db;
     private readonly ISecretProtector _protector;
+    private readonly ICurrentUser _user;
     private readonly ILogger<IntegrationAuthApplier> _logger;
 
     public IntegrationAuthApplier(
         ISecretResolver secrets, IIntegrationOAuthTokenService oauth, AppDbContext db,
-        ISecretProtector protector, ILogger<IntegrationAuthApplier> logger)
+        ISecretProtector protector, ICurrentUser user, ILogger<IntegrationAuthApplier> logger)
     {
+        _user = user;
         _secrets = secrets;
         _oauth = oauth;
         _db = db;
@@ -286,7 +289,7 @@ public sealed class IntegrationAuthApplier : IIntegrationAuthApplier
 
             case IntegrationAuthConfig.MethodOAuthClientCredentials:
             {
-                var token = await _oauth.GetAccessTokenAsync(integration, auth, ct);
+                var token = await _oauth.GetAccessTokenAsync(integration, auth, _user, ct);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 break;
             }

@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using nashira_backend.Exceptions;
 using nashira_backend.Services.Ai.Secrets;
+using nashira_backend.Services.Identity;
 using nashira_backend.Services.Net;
 using IntegrationEntity = nashira_backend.Data.Models.Integration;
 
@@ -10,8 +12,13 @@ namespace nashira_backend.Services.Integration;
 
 public interface IIntegrationOAuthTokenService
 {
+    // The access token is secret-derived material: only a caller who may resolve stored
+    // secrets (an authenticated admin) gets it, whether it is freshly granted or served
+    // from the cache, and every use marks the current execution as holding resolved
+    // material so the step's output is withheld. A denied caller gets a
+    // ForbiddenException (secret_access_denied) and must stop, not retry.
     Task<string> GetAccessTokenAsync(
-        IntegrationEntity integration, IntegrationAuthConfig auth, CancellationToken ct);
+        IntegrationEntity integration, IntegrationAuthConfig auth, ICurrentUser caller, CancellationToken ct);
 }
 
 // Obtains and caches OAuth2 client-credentials access tokens, one entry per
@@ -52,7 +59,25 @@ public sealed class IntegrationOAuthTokenService : IIntegrationOAuthTokenService
     }
 
     public async Task<string> GetAccessTokenAsync(
-        IntegrationEntity integration, IntegrationAuthConfig auth, CancellationToken ct)
+        IntegrationEntity integration, IntegrationAuthConfig auth, ICurrentUser caller, CancellationToken ct)
+    {
+        // Authorization comes before the cache is even looked at: a token an admin's
+        // grant put there must not be usable by whoever happens to ask next.
+        if (!SecretAccessPolicy.MayResolveStored(caller))
+        {
+            _logger.LogWarning("integration.oauth.denied integration={Integration}", integration.Name);
+            throw new ForbiddenException(SecretAccessPolicy.DeniedMessage, SecretResolver.AccessDeniedCode);
+        }
+
+        var token = await GetOrGrantAsync(integration, auth, caller, ct);
+        // Cache hits resolve nothing, so the resolver never marks them; the token is
+        // exactly as sensitive as the credentials it was granted from.
+        SecretResolutionScope.MarkResolved();
+        return token;
+    }
+
+    private async Task<string> GetOrGrantAsync(
+        IntegrationEntity integration, IntegrationAuthConfig auth, ICurrentUser caller, CancellationToken ct)
     {
         if (TryGetCached(integration.IntegrationId, out var cached)) return cached;
 
@@ -63,7 +88,7 @@ public sealed class IntegrationOAuthTokenService : IIntegrationOAuthTokenService
             // Re-check: another caller may have obtained one while we waited.
             if (TryGetCached(integration.IntegrationId, out cached)) return cached;
 
-            var (token, lifetime) = await GrantAsync(integration, auth, ct);
+            var (token, lifetime) = await GrantAsync(integration, auth, caller, ct);
             _cache[integration.IntegrationId] = new CacheEntry(token, DateTime.UtcNow.Add(lifetime));
             return token;
         }
@@ -87,13 +112,18 @@ public sealed class IntegrationOAuthTokenService : IIntegrationOAuthTokenService
     }
 
     private async Task<(string Token, TimeSpan Lifetime)> GrantAsync(
-        IntegrationEntity integration, IntegrationAuthConfig auth, CancellationToken ct)
+        IntegrationEntity integration, IntegrationAuthConfig auth, ICurrentUser caller, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(auth.TokenUrl))
             throw new InvalidOperationException(
                 $"integration '{integration.Name}' uses oauth2_client_credentials but auth_config has no token_url");
 
         using var scope = _scopes.CreateScope();
+        // A fresh scope has no HTTP context, so without this a background run would
+        // resolve the client credentials as an anonymous caller. The caller was already
+        // authorized above; the resolver still applies its own check to every lookup.
+        scope.ServiceProvider.GetRequiredService<MutableCurrentUser>()
+            .Bind(caller.UserId, caller.Username, caller.Roles);
         var secrets = scope.ServiceProvider.GetRequiredService<ISecretResolver>();
 
         var tokenUrl = await secrets.SubstituteAsync(auth.TokenUrl!, ct);

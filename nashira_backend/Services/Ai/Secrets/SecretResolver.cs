@@ -112,12 +112,11 @@ public sealed partial class SecretResolver : ISecretResolver
         // and nested integration references. Match the application's Admin policy.
         // The session source is different: it lends only the caller's own identity
         // to explicitly opted-in self-API calls, under the rules below.
-        if (src != SessionSource
-            && (!_user.IsAuthenticated || !_user.Roles.Contains("admin", StringComparer.Ordinal)))
+        if (src != SessionSource && !SecretAccessPolicy.MayResolveStored(_user))
         {
             _trace.Event(TraceEvent.CategorySystem, "secret.access",
                 new { secret_source = src, id_or_name = key, field = fld }, error: AccessDeniedCode);
-            throw new ForbiddenException("Admin role is required to resolve stored secrets", AccessDeniedCode);
+            throw new ForbiddenException(SecretAccessPolicy.DeniedMessage, AccessDeniedCode);
         }
 
         Guid.TryParse(key, out var id);
