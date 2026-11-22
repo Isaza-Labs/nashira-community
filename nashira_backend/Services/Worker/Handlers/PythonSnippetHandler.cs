@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
@@ -124,10 +125,14 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             return SnippetResult.Fail($"module(s) {string.Join("; ", parts)}", "module_denied");
         }
 
+        // The plaintext goes to the script, and the values it was given are remembered so they
+        // can be taken back out of whatever the script returns (see SecretRedactor).
+        var (scriptInput, secretValues) = await ResolveSecretsAsync(request.Input, ct);
+
         var result = await _sandbox.RunAsync(
             new PythonRunRequest(
                 Code: request.Code!,
-                Input: await ResolveSecretsAsync(request.Input, ct),
+                Input: scriptInput,
                 TimeoutSeconds: request.TimeoutSeconds,
                 NetworkEnabled: networkEnabled,
                 AllowedModules: allowed,
@@ -149,18 +154,20 @@ public sealed class PythonSnippetHandler : ISnippetHandler
                 // The script failed; whether it had already mutated something before it did
                 // is exactly what this handler cannot know, so the author still decides.
                 Change = StepChange.AuthorDecides,
-                Output = JsonSerializer.SerializeToElement(new
+                Output = SecretRedactor.Redact(JsonSerializer.SerializeToElement(new
                 {
                     error = result.Stderr,
                     stdout = result.Stdout,
                     error_kind = result.ErrorKind,
-                }),
-                Error = string.IsNullOrWhiteSpace(result.Stderr) ? "the script failed" : result.Stderr,
+                }), secretValues),
+                Error = SecretRedactor.Redact(
+                    string.IsNullOrWhiteSpace(result.Stderr) ? "the script failed" : result.Stderr,
+                    secretValues) ?? string.Empty,
                 ErrorCode = result.ErrorKind ?? "script_error",
                 // What the script printed before it failed is the first thing anyone reads
                 // when diagnosing it, and it belongs in the same place as on the success
                 // path rather than only inside the output object.
-                Logs = result.Stdout,
+                Logs = SecretRedactor.Redact(result.Stdout, secretValues),
                 // A timeout may be a slow dependency; a syntax or import error will
                 // fail identically forever.
                 Retryable = result.ErrorKind == "timeout",
@@ -181,10 +188,12 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             // `{result, stdout}` this used to build was a second wrap around an
             // already-separated pair — and it put the script's object one level deeper than
             // any workflow written against the contract addresses it.
-            Output = PortableOutput(result),
+            // Masked on the way out: this is stored on the run and read by people who may not
+            // be allowed to read the secrets the script was given.
+            Output = SecretRedactor.Redact(PortableOutput(result), secretValues),
             // Where the printed text belongs: the step already carries logs, the run detail
             // already shows them, and nothing downstream addresses them by field.
-            Logs = result.Stdout,
+            Logs = SecretRedactor.Redact(result.Stdout, secretValues),
 
         };
     }
@@ -206,23 +215,62 @@ public sealed class PythonSnippetHandler : ISnippetHandler
     /// plaintext lives only inside this call and the child process it feeds. An unresolvable
     /// reference is left literal by the resolver, so a typo reaches the script as the marker
     /// the author typed instead of as a silent empty string.
+    ///
+    /// What the script hands back is masked with the values it was given (SecretRedactor): the
+    /// output and logs are stored on the run, and a script that returns or prints its input
+    /// would otherwise put the plaintext where people who may not read the secret store can.
     /// </remarks>
-    private async Task<JsonElement> ResolveSecretsAsync(JsonElement input, CancellationToken ct)
+    private async Task<(JsonElement Input, IReadOnlyCollection<string> Secrets)> ResolveSecretsAsync(
+        JsonElement input, CancellationToken ct)
     {
-        if (input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return input;
+        if (input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return (input, []);
 
+        var secrets = new HashSet<string>(StringComparer.Ordinal);
         using var buffer = new MemoryStream();
         await using (var writer = new Utf8JsonWriter(buffer))
         {
-            await WriteWithSecretsAsync(writer, input, ct);
+            await WriteWithSecretsAsync(writer, input, secrets, ct);
         }
         using var doc = JsonDocument.Parse(buffer.ToArray());
-        return doc.RootElement.Clone();
+        return (doc.RootElement.Clone(), secrets);
     }
+
+    // Substitutes marker by marker rather than the whole string at once, which is what lets
+    // this know which plaintext values it inserted. An unresolved marker stays literal, as it
+    // always did, and is not a value to mask.
+    private async Task<string> SubstituteTrackedAsync(string raw, ISet<string> secrets, CancellationToken ct)
+    {
+        var references = SecretResolver.References(raw);
+        if (references.Count == 0) return raw;
+
+        var sb = new StringBuilder(raw.Length);
+        var cursor = 0;
+        foreach (var reference in references)
+        {
+            var at = raw.IndexOf(reference.Raw, cursor, StringComparison.Ordinal);
+            sb.Append(raw, cursor, at - cursor);
+
+            var value = await _secrets.SubstituteAsync(reference.Raw, ct);
+            sb.Append(value);
+            if (!string.Equals(value, reference.Raw, StringComparison.Ordinal) && IsSecretField(reference))
+                secrets.Add(value);
+
+            cursor = at + reference.Raw.Length;
+        }
+        sb.Append(raw, cursor, raw.Length - cursor);
+        return sb.ToString();
+    }
+
+    // A credential's username and client id are stored in the clear and are not secrets; masking
+    // them would hide every "admin" in a device's output for no gain.
+    private static bool IsSecretField(SecretResolver.SecretReference reference) =>
+        !(string.Equals(reference.Source.Trim(), "credential", StringComparison.OrdinalIgnoreCase)
+          && reference.Field.Trim().ToLowerInvariant() is "username" or "client_id" or "clientid");
 
     // Walks the whole payload, not just its top level: a credential is as likely to sit in
     // `{"steps": [{"send": "${secret:…}"}]}` as directly on the object.
-    private async Task WriteWithSecretsAsync(Utf8JsonWriter writer, JsonElement el, CancellationToken ct)
+    private async Task WriteWithSecretsAsync(
+        Utf8JsonWriter writer, JsonElement el, ISet<string> secrets, CancellationToken ct)
     {
         switch (el.ValueKind)
         {
@@ -230,7 +278,7 @@ public sealed class PythonSnippetHandler : ISnippetHandler
                 var raw = el.GetString() ?? string.Empty;
                 writer.WriteStringValue(
                     raw.Contains("${secret:", StringComparison.Ordinal)
-                        ? await _secrets.SubstituteAsync(raw, ct)
+                        ? await SubstituteTrackedAsync(raw, secrets, ct)
                         : raw);
                 break;
 
@@ -239,7 +287,7 @@ public sealed class PythonSnippetHandler : ISnippetHandler
                 foreach (var prop in el.EnumerateObject())
                 {
                     writer.WritePropertyName(prop.Name);
-                    await WriteWithSecretsAsync(writer, prop.Value, ct);
+                    await WriteWithSecretsAsync(writer, prop.Value, secrets, ct);
                 }
                 writer.WriteEndObject();
                 break;
@@ -247,7 +295,7 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             case JsonValueKind.Array:
                 writer.WriteStartArray();
                 foreach (var item in el.EnumerateArray())
-                    await WriteWithSecretsAsync(writer, item, ct);
+                    await WriteWithSecretsAsync(writer, item, secrets, ct);
                 writer.WriteEndArray();
                 break;
 
