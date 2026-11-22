@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using nashira_backend.Exceptions;
 using nashira_backend.Services.Ai.Secrets;
 using nashira_backend.Services.Net;
 using IntegrationEntity = nashira_backend.Data.Models.Integration;
@@ -120,6 +121,12 @@ public sealed class IntegrationHealthChecker : IIntegrationHealthChecker
             return new IntegrationHealth(
                 IntegrationEntity.StatusUnreachable, null, (int)sw.ElapsedMilliseconds,
                 $"timed out after {Timeout.TotalSeconds:0}s");
+        }
+        catch (ForbiddenException)
+        {
+            // An authorization denial says nothing about the system being probed. Turning
+            // it into "unreachable" would persist a false status; let it surface as a 403.
+            throw;
         }
         catch (Exception ex)
         {
