@@ -24,3 +24,14 @@ effects or timing/status covert channels. Keep the OS sandbox, secret Admin
 authorization and UrlGuard enabled. Existing handler paths that use credentials
 directly rather than `ISecretResolver` retain their own security controls; this
 change does not redesign those credential-use APIs.
+
+## Upgrade note: OAuth integrations
+
+An integration using the OAuth2 client-credentials method obtains its access token from
+the client ID, client secret and token URL in its settings. If any of them is a
+stored-secret reference (`${secret:...}`), the token is derived from stored secrets:
+reusing it, whether it is obtained now or was already held in memory, requires an
+Admin, and a step that used it has its output withheld like any other step that
+received resolved secret material. Operators and Viewers get `secret_access_denied`,
+which is final and not retried. Integrations whose OAuth settings are literal values
+or come from a linked credential are unchanged.

@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-22 — Reusing an OAuth token obtained from stored secrets needs an Admin
+
+An integration that uses the OAuth2 client-credentials method gets its access token
+from the client ID, client secret and token URL in its settings. When any of those is a
+stored-secret reference (`${secret:...}`), the token is derived from stored secrets, and
+reusing it, including a token already held in memory, now needs an Admin, the same as
+resolving those secrets directly. An Operator or Viewer who uses such an integration
+from a workflow step, an integration check or an agent tool gets `secret_access_denied`,
+and a workflow step that used the token has its output withheld. The denial is final:
+the step is not retried. Integrations whose OAuth settings are literal values, or come
+from a linked credential, are unchanged. To see which integrations are affected, look
+for `${secret:` in the OAuth settings of each integration that is used by non-Admin
+users. An integration check run by a non-Admin on such an integration now answers 403
+and no longer records the integration as unreachable.
+
+
 ## 2026-11-14 — A chat-channel reply that ended in an error says it may be incomplete
 
 A turn that fails after the model has started answering (the model goes silent, the
