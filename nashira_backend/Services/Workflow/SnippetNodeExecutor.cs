@@ -398,7 +398,7 @@ public sealed class SnippetNodeExecutor : INodeExecutor
             // Permission failures stop the step and are not retryable. Preserve
             // the resolver's code rather than reporting an unexpected handler bug.
             var result = SnippetResult.Fail(ex.Message, ex.Code);
-            return secrets.HasResolvedMaterial ? StepOutputPrivacy.Withhold(result) : result;
+            return redactOutput || secrets.HasResolvedMaterial ? StepOutputPrivacy.Withhold(result) : result;
         }
         catch (Exception ex)
         {

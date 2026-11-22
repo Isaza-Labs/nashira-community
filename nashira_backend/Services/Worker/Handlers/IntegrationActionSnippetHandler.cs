@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
+using nashira_backend.Exceptions;
 using nashira_backend.Services.Ai.Secrets;
 using nashira_backend.Services.Integration;
 using nashira_backend.Services.Net;
@@ -121,6 +122,12 @@ public sealed class IntegrationActionSnippetHandler : ISnippetHandler
         try
         {
             await _auth.ApplyAsync(message, integration, ct);
+        }
+        catch (ForbiddenException)
+        {
+            // A denied secret lookup is an authorization decision, not a broken grant:
+            // it must reach the executor as secret_access_denied, which does not retry.
+            throw;
         }
         catch (Exception ex)
         {
