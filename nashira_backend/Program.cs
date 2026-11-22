@@ -340,13 +340,7 @@ try
     builder.Services.AddScoped<ISecretResolver, SecretResolver>();
     builder.Services.AddSingleton<IUrlGuard, UrlGuard>();
     builder.Services.AddScoped<IRestOperationExecutor, RestOperationExecutor>();
-    builder.Services.AddHttpClient("rest_call");
-    builder.Services.AddHttpClient("rest_call_insecure")
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-        {
-            // For on-prem integrations with self-signed certs (AiApiSpec.verify_ssl=false).
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
-        });
+    builder.Services.AddGuardedHttpClients();
 
     // Integrations (Phase 9): base URL + credentials for an external system, plus the
     // action catalog projected from the OpenAPI specs linked to it.
@@ -357,13 +351,6 @@ try
     // Attaching skills and specs from the integration itself, so one upload updates
     // the spec, the agent's index and the action catalog together.
     builder.Services.AddScoped<IIntegrationCatalog, IntegrationCatalog>();
-    builder.Services.AddHttpClient(IntegrationHttpClients.Secure);
-    builder.Services.AddHttpClient(IntegrationHttpClients.Insecure)
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-        {
-            // Opt-in per integration (verify_ssl=false) for appliances behind a private CA.
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
-        });
 
     // MCP (Phase 9): Nashira as an MCP *client* — connects to registered servers over
     // Streamable HTTP, caches their tool catalogs, and calls them.
@@ -376,16 +363,8 @@ try
     // PKCE verifier and tokens (scoped — it writes McpServer rows).
     builder.Services.AddSingleton<IMcpOAuthService, McpOAuthService>();
     builder.Services.AddScoped<IMcpOAuthFlowService, McpOAuthFlowService>();
-    // Infinite client timeout on purpose: SSE streams must not be cut mid-flight.
-    // The real budgets are the per-operation linked CTS deadlines inside McpClient.
-    builder.Services.AddHttpClient(McpHttpClients.Secure)
-        .ConfigureHttpClient(c => c.Timeout = Timeout.InfiniteTimeSpan);
-    builder.Services.AddHttpClient(McpHttpClients.Insecure)
-        .ConfigureHttpClient(c => c.Timeout = Timeout.InfiniteTimeSpan)
-        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback = HttpClientHandler.DangerousAcceptAnyServerCertificateValidator,
-        });
+    // GuardedHttpClients keeps MCP's transport timeout infinite for SSE; McpClient
+    // supplies the per-operation deadlines.
 
     // SSH command execution (Phase 4): spawns the Python netmiko runner as a subprocess.
     builder.Services.AddSingleton<ISshCommandRunner, SshCommandRunner>();
@@ -422,8 +401,6 @@ try
     // Outbound notification channels (Slack / Teams / generic webhook).
     builder.Services.AddScoped<nashira_backend.Services.Notifications.INotificationDispatcher,
         nashira_backend.Services.Notifications.NotificationDispatcher>();
-    builder.Services.AddHttpClient(nashira_backend.Services.Notifications.NotificationHttpClients.Name)
-        .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(20));
 
     // Bidirectional messaging channels (Slack / Telegram / WhatsApp / Teams).
     builder.Services.Configure<nashira_backend.Services.Messaging.MessagingOptions>(
