@@ -33,6 +33,14 @@ public sealed class AuditLogger : IAuditLogger
     public async Task LogAsync(
         string entityType, Guid? entityId, string action,
         object? before = null, object? after = null, CancellationToken ct = default)
+        => await WriteAsync(entityType, entityId, action, before, after, false, ct);
+
+    public Task LogRequiredAsync(string entityType, Guid? entityId, string action,
+        object? after = null, CancellationToken ct = default) =>
+        WriteAsync(entityType, entityId, action, null, after, true, ct);
+
+    private async Task WriteAsync(string entityType, Guid? entityId, string action,
+        object? before, object? after, bool required, CancellationToken ct)
     {
         var userId = _user.IsAuthenticated ? _user.UserId : (Guid?)null;
         // The username when someone is signed in; otherwise whatever synthetic
@@ -98,11 +106,13 @@ public sealed class AuditLogger : IAuditLogger
             // Swallowed, matching AuditMutationFilter's policy — the two must agree,
             // because they are two halves of the same trail.
             //
-            // Every caller writes this AFTER committing its mutation, so rethrowing
+            // Ordinary callers write AFTER committing their mutation, so rethrowing
             // answered a request that had already taken effect with a 500: the client
             // retries, the change lands twice, and the trail is still missing the first
             // one. Losing the row is bad; lying about whether the change happened is
-            // worse.
+            // worse. Required callers instead stage the mutation in this same
+            // context before calling us; this SaveChanges commits both atomically
+            // and a failure must propagate to prevent a later unaudited save.
             //
             // Error level precisely so it can be alerted on — it means the trail has a
             // hole, and the chain detects a MODIFIED row, never a missing one.
@@ -121,6 +131,7 @@ public sealed class AuditLogger : IAuditLogger
             // SaveChangesAsync would throw on the same stale insert, taking an unrelated
             // write down with it.
             if (row is not null) _db.Entry(row).State = EntityState.Detached;
+            if (required) throw;
         }
         finally
         {

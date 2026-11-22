@@ -255,7 +255,8 @@ function toBody(p: ChannelPayload): Record<string, unknown> {
 	// Only the secrets the caller actually decided about. An omitted key keeps the
 	// stored credential; sending '' would clear it.
 	if (p.botToken !== undefined) body.bot_token = p.botToken;
-	if (p.signingSecret !== undefined) body.signing_secret = p.signingSecret;
+	if (p.signingSecret === '') body.clear_signing_secret = true;
+	else if (p.signingSecret !== undefined) body.signing_secret = p.signingSecret;
 	if (p.appToken !== undefined) body.app_token = p.appToken;
 	return body;
 }
