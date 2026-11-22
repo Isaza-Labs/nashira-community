@@ -55,11 +55,9 @@ public sealed class SlackProvider : IMessagingProvider
         if (!HttpMethods.IsPost(request.Method))
             return WebhookVerifyResult.Verified();
 
-        if (string.IsNullOrEmpty(secret))
+        if (string.IsNullOrWhiteSpace(secret))
         {
-            return channel.AllowUnsigned
-                ? WebhookVerifyResult.Verified()
-                : WebhookVerifyResult.Rejected(401, "no signing secret configured; set one or enable allow_unsigned");
+            return WebhookVerifyResult.Rejected(401, "no signing secret configured");
         }
 
         var ts = request.Header("X-Slack-Request-Timestamp");

@@ -89,8 +89,8 @@ public class MessagingChannel : BaseModel
     // "no allowlist" — anyone who passes the linking rules may talk to the bot.
     public string? AllowedExternalIdsJson { get; set; }
 
-    // Escape hatch mirroring GitWebhook's: accept unverified inbound deliveries
-    // (test emitters). Defaults false so the safe path is the default.
+    // Legacy stored setting, retained for API/database compatibility only.
+    // Public webhook providers always require authentication, regardless of this flag.
     public bool AllowUnsigned { get; set; }
 
     public bool Enabled { get; set; } = true;

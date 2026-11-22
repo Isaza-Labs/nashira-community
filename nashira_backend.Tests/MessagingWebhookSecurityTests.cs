@@ -11,6 +11,26 @@ namespace nashira_backend.Tests;
 
 public class MessagingWebhookSecurityTests
 {
+    [Fact]
+    public async Task Unsigned_slack_ingest_cannot_create_events_or_jobs()
+    {
+        using var services = Services();
+        var channelId = await SeedChannelAsync(services, "slack", allowUnsigned: true);
+        var request = new MessagingHttpRequest
+        {
+            Method = "POST",
+            Body = System.Text.Encoding.UTF8.GetBytes("""
+                {"type":"event_callback","event_id":"unsigned-test","event":{
+                  "type":"app_mention","user":"Utest","channel":"Ctest","ts":"1","text":"test"}}
+                """),
+        };
+
+        var result = await Ingest(services).ReceiveAsync("slack", channelId, request, default);
+
+        Assert.Equal(401, result.StatusCode);
+        await AssertNoEffectsAsync(services);
+    }
+
     [Theory]
     [InlineData("slack")]
     [InlineData("telegram")]
@@ -95,7 +115,7 @@ public class MessagingWebhookSecurityTests
     private static MessagingIngestService Ingest(ServiceProvider services) =>
         new(services.GetRequiredService<IServiceScopeFactory>(), NullLogger<MessagingIngestService>.Instance);
 
-    private static async Task<Guid> SeedChannelAsync(ServiceProvider services, string provider)
+    private static async Task<Guid> SeedChannelAsync(ServiceProvider services, string provider, bool allowUnsigned = false)
     {
         using var scope = services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -103,6 +123,7 @@ public class MessagingWebhookSecurityTests
         db.MessagingChannels.Add(new MessagingChannel
         {
             MessagingChannelId = id, Provider = provider, IsActive = true, Enabled = true,
+            AllowUnsigned = allowUnsigned, RequireLinkedUser = false,
             ExternalConfigJson = """{"verify_token":"test-verify-token"}""",
         });
         await db.SaveChangesAsync();

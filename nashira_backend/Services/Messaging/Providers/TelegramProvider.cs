@@ -38,11 +38,9 @@ public sealed class TelegramProvider : IMessagingProvider
         if (!HttpMethods.IsPost(request.Method))
             return Task.FromResult(WebhookVerifyResult.Verified());
 
-        if (string.IsNullOrEmpty(decryptedSigningSecret))
+        if (string.IsNullOrWhiteSpace(decryptedSigningSecret))
         {
-            return Task.FromResult(channel.AllowUnsigned
-                ? WebhookVerifyResult.Verified()
-                : WebhookVerifyResult.Rejected(401, "no secret token configured; set one or enable allow_unsigned"));
+            return Task.FromResult(WebhookVerifyResult.Rejected(401, "no secret token configured"));
         }
 
         var presented = request.Header(SecretHeader);
