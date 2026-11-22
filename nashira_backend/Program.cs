@@ -278,7 +278,7 @@ try
     builder.Services.AddSingleton<ISnippetHandlerRegistry>(sp =>
         new SnippetHandlerRegistry(snippetHandlerTypes, sp));
 
-    builder.Services.AddSingleton<nashira_backend.Services.Worker.Python.IPythonSandbox,
+    builder.Services.AddScoped<nashira_backend.Services.Worker.Python.IPythonSandbox,
         nashira_backend.Services.Worker.Python.PythonSandbox>();
     builder.Services.AddSingleton<IVariableResolver, VariableResolver>();
     builder.Services.AddSingleton<IConditionEvaluator, ConditionEvaluator>();

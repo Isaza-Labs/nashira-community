@@ -26,7 +26,7 @@ public class PythonSandboxIsolationTests
         foreach (var (key, value) in settings) values[key] = value;
         return new PythonSandbox(
             new ConfigurationBuilder().AddInMemoryCollection(values).Build(),
-            NullLogger<PythonSandbox>.Instance);
+            NullLogger<PythonSandbox>.Instance, new HardeningTestUser());
     }
 
     private static Task<PythonRunResult> RunAsync(PythonSandbox sandbox, string code)
@@ -91,7 +91,7 @@ public class PythonSandboxIsolationTests
 
         // `env` stands in for bwrap or a container shim: it runs the rest of the command
         // line, which is all the wrapper contract asks of it.
-        var r = await RunAsync(Sandbox(("Python:SandboxCommand", "env")), "result = {'ok': True}");
+        var r = await RunAsync(Sandbox(("Python:SandboxCommand", "/usr/bin/env")), "result = {'ok': True}");
 
         Assert.True(r.Ok, r.Stderr);
         Assert.True(r.Output.GetProperty("ok").GetBoolean());

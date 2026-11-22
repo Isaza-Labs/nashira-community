@@ -311,7 +311,7 @@ public class SecretAuthorizationTests
                 // These test-only processes handle synthetic inputs, not deployment isolation.
                 ["Python:AllowUnsandboxed"] = "true",
             }).Build();
-            return new PythonSandbox(config, NullLogger<PythonSandbox>.Instance).RunAsync(request, ct);
+            return new PythonSandbox(config, NullLogger<PythonSandbox>.Instance, new HardeningTestUser()).RunAsync(request, ct);
         }
     }
 

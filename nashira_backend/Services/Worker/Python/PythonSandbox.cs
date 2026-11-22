@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using nashira_backend.Services.Identity;
 
 namespace nashira_backend.Services.Worker.Python;
 
@@ -49,8 +50,8 @@ public interface IPythonSandbox
 //     REFUSED (`sandbox_not_configured`): the child would otherwise run as the same
 //     user as the backend, with its filesystem and network, and the Data Protection
 //     keyring is on that filesystem. Running without a wrapper is possible only by
-//     setting `Python:AllowUnsandboxed` to true: a server-side decision, logged when
-//     the first snippet runs, for machines where snippet authors are already trusted
+//     setting `Python:AllowUnsandboxed` to true AND running as an authenticated Admin:
+//     a server-side decision, logged when the first snippet runs in the scope, where authors are trusted
 //     with a shell.
 //   - `open` is not among the builtins the snippet's own code sees. That stops the
 //     casual read of a host file; it is NOT a boundary (see below).
@@ -85,18 +86,20 @@ public sealed class PythonSandbox : IPythonSandbox
     private readonly string _executable;
     private readonly string? _sandboxCommand;
     private readonly bool _allowUnsandboxed;
+    private readonly ICurrentUser? _user;
     private readonly ILogger<PythonSandbox> _logger;
     private bool _warnedNoIsolation;
 
-    public PythonSandbox(IConfiguration config, ILogger<PythonSandbox> logger)
+    public PythonSandbox(IConfiguration config, ILogger<PythonSandbox> logger, ICurrentUser? user = null)
     {
         // Same setting the SSH runner uses; one Python for the image.
         _executable = config["Python:Executable"] ?? DefaultExecutable;
-        // `;`-delimited, e.g. "bwrap;--unshare-all;--ro-bind;/usr;/usr;--tmpfs;/tmp;--"
+        // `;`-delimited, e.g. "/opt/nashira/bin/python-sandbox;--profile;snippets".
         _sandboxCommand = config["Python:SandboxCommand"];
         // Off unless the deployment sets it. Only consulted when no wrapper is configured.
         _allowUnsandboxed = config.GetValue<bool>("Python:AllowUnsandboxed");
         _logger = logger;
+        _user = user;
 
         if (SplitCommand(_sandboxCommand).Count == 0 && !_allowUnsandboxed)
             _logger.LogWarning(
@@ -121,6 +124,10 @@ public sealed class PythonSandbox : IPythonSandbox
         // in-interpreter controls cannot be a boundary (see the class comment), so
         // this hook is how a deployment gets one — and without it nothing is run.
         var wrapper = SplitCommand(_sandboxCommand);
+        // Configuration is deployment-owned, never supplied by a workflow. Require an
+        // absolute executable so PATH cannot silently substitute a different wrapper.
+        if (wrapper.Count > 0 && !Path.IsPathFullyQualified(wrapper[0]))
+            return Fail("sandbox_invalid", "Python:SandboxCommand must name an absolute OS sandbox executable path.");
         if (wrapper.Count == 0 && !_allowUnsandboxed)
         {
             _logger.LogWarning(
@@ -131,8 +138,12 @@ public sealed class PythonSandbox : IPythonSandbox
                 "backend's own filesystem and network access. Set Python:SandboxCommand (environment variable " +
                 "Python__SandboxCommand) to a wrapper such as bwrap or a container shim. To run snippets " +
                 "without isolation on a host where that is acceptable, set Python:AllowUnsandboxed=true " +
-                "(Python__AllowUnsandboxed).");
+                "(Python__AllowUnsandboxed); execution also requires an authenticated Admin. See docs/python-sandbox.md.");
         }
+
+        if (wrapper.Count == 0 &&
+            (_user?.IsAuthenticated != true || !_user.Roles.Contains("admin", StringComparer.Ordinal)))
+            return Fail("unsandboxed_admin_required", "Unsandboxed Python requires an authenticated Admin and Python:AllowUnsandboxed=true.");
 
         var harness = BuildHarness(request);
 

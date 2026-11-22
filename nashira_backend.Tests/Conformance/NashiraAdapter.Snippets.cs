@@ -280,7 +280,7 @@ public sealed partial class NashiraAdapter
 
         var handler = new PythonSnippetHandler(
             db,
-            new PythonSandbox(config, NullLogger<PythonSandbox>.Instance),
+            new PythonSandbox(config, NullLogger<PythonSandbox>.Instance, new HardeningTestUser()),
             // Throws rather than no-ops: a vector carrying a ${secret:…} reference would be
             // describing a credential this harness never set up, and handing the script the
             // literal marker instead is not what either side of the contract means.

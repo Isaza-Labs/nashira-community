@@ -194,7 +194,7 @@ public class PythonSnippetSecretLeakTests
                 ["Python:Executable"] = exe,
                 ["Python:AllowUnsandboxed"] = "true",
             }).Build(),
-            NullLogger<PythonSandbox>.Instance);
+            NullLogger<PythonSandbox>.Instance, new HardeningTestUser());
 
         var result = await RunAsync(
             sandbox, $$"""{"changes":false,"tok":"{{Marker}}"}""", WithToken(),

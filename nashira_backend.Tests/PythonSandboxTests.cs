@@ -51,7 +51,7 @@ public class PythonSandboxTests
                 ["Python:AllowUnsandboxed"] = "true",
             })
             .Build();
-        return new PythonSandbox(config, NullLogger<PythonSandbox>.Instance);
+        return new PythonSandbox(config, NullLogger<PythonSandbox>.Instance, new HardeningTestUser());
     }
 
     private static Task<PythonRunResult> RunAsync(
