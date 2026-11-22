@@ -168,6 +168,20 @@ public sealed class NotificationDispatcher : INotificationDispatcher
             {
                 lastError = ex.Message;
             }
+            catch (InvalidOperationException)
+            {
+                // The guarded client refuses to follow a redirect, and a redirect will
+                // not go away on a retry. Record it as a failed delivery so the channel's
+                // health and delivery history say so. The message is fixed text: the
+                // Location header belongs to the remote server, and the request URL is
+                // the webhook's secret.
+                _logger.LogWarning(
+                    "notifications.redirect_refused channel={Channel} attempt={Attempt}", channel.Name, attempt);
+                sw.Stop();
+                return new NotificationResult(
+                    false, null, "redirect refused; configure the channel's final webhook URL",
+                    attempt, (int)sw.ElapsedMilliseconds);
+            }
 
             _logger.LogWarning(
                 "notifications.attempt_failed channel={Channel} attempt={Attempt} error={Error}",
