@@ -155,6 +155,9 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             return StepOutputPrivacy.Withhold(new SnippetResult
             {
                 Success = result.Ok, Change = StepChange.AuthorDecides,
+                // Only host-decided sandbox codes survive Withhold; script_error, timeout
+                // and the rest still become output_redacted.
+                ErrorCode = result.Ok ? null : result.ErrorKind,
                 Retryable = result.ErrorKind == "timeout",
             });
 

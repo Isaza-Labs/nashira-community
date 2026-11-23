@@ -77,10 +77,64 @@ public class WorkflowDenialHandlingTests
 
         Assert.Equal(NodeResult.Failed, step.Result);
         Assert.False(step.Retryable);
+        // The decision is reported as documented; only the payload, logs and text are withheld.
+        Assert.Equal(Denied, step.ErrorCode);
         Assert.Equal("[redacted]", step.Error);
         Assert.Equal("[redacted]", step.Logs);
         Assert.Equal("\"[redacted]\"", step.Output);
         Assert.DoesNotContain(Message, JsonSerializer.Serialize(step));
+    }
+
+    [Fact]
+    public async Task A_denial_after_secret_material_was_resolved_keeps_its_code_and_withholds_the_rest()
+    {
+        using var db = NewDb();
+        var snippet = new Snippet
+        {
+            SnippetId = Guid.NewGuid(), Name = "deny", Type = "denies", Idempotency = "idempotent", ChangesState = false,
+            RetryPolicyJson = """{"max_retries":2,"initial_delay_seconds":0}""",
+        };
+        db.Snippets.Add(snippet);
+        await db.SaveChangesAsync();
+
+        // No redact_output flag: the step already received resolved material before the denial.
+        var step = await RunStepAsync(db, new DenyingHandler(markResolvedFirst: true), snippet, new { });
+
+        Assert.Equal(Denied, step.ErrorCode);
+        Assert.False(step.Retryable);
+        Assert.Equal(1, step.Attempts);
+        Assert.Equal("[redacted]", step.Error);
+        Assert.Equal("[redacted]", step.Logs);
+        Assert.DoesNotContain(Message, JsonSerializer.Serialize(step));
+    }
+
+    [Theory]
+    [InlineData("script_error")]
+    [InlineData("http_500")]
+    [InlineData("exception")]
+    [InlineData("example-token-value")]
+    [InlineData("SECRET_ACCESS_DENIED")]
+    [InlineData("secret_access_denied ")]
+    [InlineData("secret_access_denied:example-token-value")]
+    [InlineData("admin_required")]
+    public async Task A_code_supplied_by_a_handler_is_still_replaced_when_output_is_withheld(string code)
+    {
+        using var db = NewDb();
+        var snippet = new Snippet
+        {
+            SnippetId = Guid.NewGuid(), Name = "fail", Type = "fails", Idempotency = "idempotent", ChangesState = false,
+        };
+        db.Snippets.Add(snippet);
+        await db.SaveChangesAsync();
+
+        var step = await RunStepAsync(
+            db, new ReturningHandler(SnippetResult.Fail("example-token-value leaked", code)), snippet,
+            new { redact_output = true });
+
+        Assert.Equal(NodeResult.Failed, step.Result);
+        Assert.Equal("output_redacted", step.ErrorCode);
+        Assert.Equal("[redacted]", step.Error);
+        Assert.DoesNotContain("example-token-value", JsonSerializer.Serialize(step));
     }
 
     [Fact]
@@ -133,12 +187,23 @@ public class WorkflowDenialHandlingTests
         }
     }
 
-    private sealed class DenyingHandler : ISnippetHandler
+    private sealed class DenyingHandler(bool markResolvedFirst = false) : ISnippetHandler
     {
         public string Type => "denies";
 
-        public Task<SnippetResult> ExecuteAsync(SnippetRequest request, CancellationToken ct) =>
+        public Task<SnippetResult> ExecuteAsync(SnippetRequest request, CancellationToken ct)
+        {
+            if (markResolvedFirst) SecretResolutionScope.MarkResolved();
             throw new ForbiddenException(Message, Denied);
+        }
+    }
+
+    private sealed class ReturningHandler(SnippetResult result) : ISnippetHandler
+    {
+        public string Type => "fails";
+
+        public Task<SnippetResult> ExecuteAsync(SnippetRequest request, CancellationToken ct) =>
+            Task.FromResult(result);
     }
 
     private sealed class Registry(ISnippetHandler handler) : ISnippetHandlerRegistry

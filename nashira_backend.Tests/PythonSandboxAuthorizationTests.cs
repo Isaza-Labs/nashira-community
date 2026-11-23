@@ -11,6 +11,7 @@ public class PythonSandboxAuthorizationTests
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
+            ["Python:Executable"] = PythonSandboxTests.Exe ?? "python3",
             ["Python:AllowUnsandboxed"] = optIn.ToString(),
             ["Python:SandboxCommand"] = wrapper,
         }).Build();
@@ -43,7 +44,10 @@ public class PythonSandboxAuthorizationTests
     public async Task Missing_identity_fails_closed_even_with_opt_in()
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
-        { ["Python:AllowUnsandboxed"] = "true" }).Build();
+        {
+            ["Python:Executable"] = PythonSandboxTests.Exe ?? "python3",
+            ["Python:AllowUnsandboxed"] = "true",
+        }).Build();
         var result = await new PythonSandbox(config, NullLogger<PythonSandbox>.Instance)
             .RunAsync(new PythonRunRequest("result = 42", JsonSerializer.SerializeToElement(new { }), 5, false, []), default);
         Assert.Equal("unsandboxed_admin_required", result.ErrorKind);
@@ -68,7 +72,8 @@ public class PythonSandboxAuthorizationTests
     [Fact]
     public async Task Admin_and_explicit_flag_can_run_in_disposable_test_environment()
     {
-        Assert.NotNull(PythonSandboxTests.Exe);
+        // Same convention as PythonSandboxTests: nothing to execute on a host without an interpreter.
+        if (PythonSandboxTests.Exe is null) return;
         var result = await Run("admin", true, true);
         Assert.True(result.Ok, result.Stderr);
         Assert.Equal(42, result.Output.GetInt32());

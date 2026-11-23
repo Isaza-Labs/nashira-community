@@ -4,6 +4,14 @@
 output, logs and error details. `false` (the default) preserves them **only for
 steps that did not receive resolved secret material**.
 
+A withheld failure reports the error code `output_redacted`, except for decisions the
+host makes itself before or instead of running any step code: `secret_access_denied`
+and the Python sandbox codes `unsandboxed_admin_required`, `sandbox_not_configured`,
+`sandbox_invalid` and `runtime_unavailable`. These keep their code, so a denial can be
+told apart from a failure, while the output, logs and error text stay withheld; none
+of them is retried. A code that a handler builds from a script exit, a remote response
+or a status line is always replaced.
+
 Successful resolution through `ISecretResolver` marks the current execution as
 sensitive, including credential usernames/client IDs stored in clear. Its entire
 output is replaced by `[redacted]` before run persistence or downstream template
