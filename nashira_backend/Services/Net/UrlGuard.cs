@@ -5,7 +5,8 @@ namespace nashira_backend.Services.Net;
 
 // Blocks requests to localhost, private ranges, link-local and the cloud
 // metadata endpoint. RFC-1918 ranges pass when allowPrivate=true (on-prem
-// integrations); IPv6 local ranges, loopback and link-local never do.
+// integrations); IPv6 local ranges (unique-local, link-local, site-local),
+// loopback and IPv4-compatible addresses never do.
 // Dev bypass: Security:AllowInternalUrls.
 // Lifted from flow-weaver.
 public sealed class UrlGuard : IUrlGuard
@@ -89,6 +90,13 @@ public sealed class UrlGuard : IUrlGuard
                     throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 unique-local address {ip}");
                 if (ip.IsIPv6LinkLocal)
                     throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 link-local address {ip}");
+                // fec0::/10, deprecated but still routed on some networks. Never bypassed by allowPrivate.
+                if (ip.IsIPv6SiteLocal)
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 site-local address {ip}");
+                // IPv4-compatible (::a.b.c.d, the whole ::/96 block) is deprecated and reserved; it can spell any
+                // IPv4 target, so it is refused rather than mapped. Covers :: and ::1 as well.
+                if (bytes.AsSpan(0, 12).IndexOfAnyExcept((byte)0) < 0)
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv4-compatible IPv6 address {ip}");
                 if (ip.Equals(IPAddress.IPv6Any))
                     throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 unspecified address {ip}");
             }
