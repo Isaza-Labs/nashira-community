@@ -38,6 +38,8 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
     // Null means "do not send an output cap": OpenAI then allows up to the model's
     // own maximum, which is the right default for it. From Config.model_limits.
     private readonly ModelLimits? _limits;
+    // How long a reply that has started may stay silent; see StreamLineReader.
+    private readonly TimeSpan _streamIdle;
 
     // Set once an endpoint has rejected `stream_options`. Provider instances are
     // per-turn, so this only has to survive the tool-calling rounds of one turn —
@@ -46,7 +48,8 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
 
     public OpenAiProvider(
         HttpClient http, string apiKey, string? baseUrl = null, ILogger<OpenAiProvider>? logger = null,
-        string providerType = "openai", string chatPath = DefaultChatPath, ModelLimits? limits = null)
+        string providerType = "openai", string chatPath = DefaultChatPath, ModelLimits? limits = null,
+        TimeSpan? streamIdle = null)
     {
         _http = http;
         _apiKey = apiKey;
@@ -54,6 +57,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
         _logger = logger;
         _providerType = providerType;
         _limits = limits;
+        _streamIdle = streamIdle ?? TimeSpan.Zero;
         // A base URL pasted with the version on it ("https://api.deepseek.com/v1",
         // which is what DeepSeek's own docs publish) would otherwise become
         // /v1/v1/chat/completions. See LlmHttp.CombineUrl.
@@ -81,12 +85,14 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
     {
         using var response = await PostChatAsync(messages, tools, model, temperature, stream: true, ct);
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var reader = new StreamReader(stream);
+        using var lines = new StreamLineReader(stream, _streamIdle);
 
         var toolCallsInProgress = new Dictionary<int, (string id, string name, StringBuilder args)>();
         // Last non-null finish_reason seen on a choice. OpenAI sends it once, on the
         // final content chunk; it is reported on every "done" event that follows.
         string? finishReason = null;
+        // Whether the model has produced anything yet; see the "progress" event below.
+        var generating = false;
 
         _logger?.LogDebug(
             "{Tag}.stream.connected model={Model} messages={MessageCount} tools={ToolCount}",
@@ -94,7 +100,7 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
 
         while (!ct.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(ct);
+            var line = await lines.ReadLineAsync(ct);
             if (line is null) break; // end of stream
             if (line.Length == 0 || !line.StartsWith("data: ")) continue;
             var data = line[6..];
@@ -168,6 +174,20 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
 
             if (delta is { } deltaVal)
             {
+                // One "progress" event, on the first chunk that carries something the
+                // model generated: answer text, reasoning text or a piece of a tool call.
+                // Tool calls are only handed over at [DONE] and reasoning is not handed
+                // over at all, so without it a round that thinks and then calls a tool
+                // shows no sign of life until it has finished. The opening chunk that
+                // only names the role does not count. Consumers that do not know the type
+                // ignore it.
+                if (!generating && HasGeneratedContent(deltaVal))
+                {
+                    generating = true;
+                    lines.ReplyStarted();
+                    yield return new ChatStreamEvent { Type = "progress" };
+                }
+
                 if (deltaVal.TryGetProperty("content", out var contentEl)
                     && contentEl.ValueKind == JsonValueKind.String)
                 {
@@ -218,6 +238,19 @@ public sealed class OpenAiProvider : IStreamingToolCallingLlmProvider
                 };
             }
         }
+    }
+
+    // Whether a stream delta carries generated output: non-empty answer text,
+    // reasoning text (`reasoning_content`, or `reasoning` on some servers) or at least
+    // one tool-call fragment.
+    internal static bool HasGeneratedContent(JsonElement delta)
+    {
+        foreach (var key in new[] { "content", "reasoning_content", "reasoning" })
+            if (delta.TryGetProperty(key, out var el) && el.ValueKind == JsonValueKind.String
+                && !string.IsNullOrEmpty(el.GetString()))
+                return true;
+        return delta.TryGetProperty("tool_calls", out var tcs)
+            && tcs.ValueKind == JsonValueKind.Array && tcs.GetArrayLength() > 0;
     }
 
     // The part of prompt_tokens the server served from its prompt cache, or null

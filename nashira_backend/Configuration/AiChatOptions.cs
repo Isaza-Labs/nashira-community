@@ -71,26 +71,168 @@ public class AiChatOptions
     // Where the guidance message goes in a request. It is the second system message:
     // the topic-guide index, the text of the guides in play and the guidance for the
     // integrations in play, so it differs from one conversation to the next. Sent
-    // second (the default), it comes ahead of the tool definitions in a prompt whose
-    // chat template renders the tools after the first system message, as DeepSeek's
-    // does, and a server that reuses a prompt it has already read can reuse nothing past
-    // the first difference: a question that brings a guide in makes a local model read
-    // all the tool definitions again. True sends the same message, unchanged, right
-    // behind the user's message instead, so the part every conversation shares (the base
-    // prompt and the tool definitions) stays identical. Nothing is added or removed, but
-    // the model sees the guidance after the question rather than before it, which is why
-    // this is a switch. It applies to OpenAI-compatible providers only: Anthropic would
-    // render a system message there as user text and Gemini lifts every system message
-    // into its leading instruction; Ollama keeps the position but is left out until it
-    // is measured with its own templates. Override with
-    // `AiChat__ScopedPromptAfterUserMessage`.
+    // second (the default), it sits between the base prompt and the user's persona
+    // and earlier turns. True sends the same message, unchanged, right behind the
+    // user's message instead. Nothing is added or removed, but the model reads the
+    // guidance after the question rather than before it, which is why this is a
+    // switch.
+    //
+    // Why it helps, as far as it was measured: on TensorFold serving DeepSeek-V4.1,
+    // whose template puts the tool definitions inside the first system message, a
+    // question that brings a guide in reused 32,768 of its 45,139 prompt tokens with
+    // the switch on and none with it off. It is not free: in that run a one-word chat
+    // sent right after it reused nothing and read all 35,332 tokens again. TensorFold's prompt cache keeps some entries
+    // at the cut of a shared system block for other conversations to resume; the
+    // likely reading is that the cut falls at the end of the opening run of system
+    // messages, which with the guidance in it differs for every conversation. That is
+    // an inference from the measurement and the cache's own description, not from the
+    // engine's source. A persona or a note about omitted history is also in that run,
+    // so with one of those the reuse is per user rather than across users.
+    //
+    // A template that merges every system message into one block at the top
+    // (DeepSeek-V3's does) keeps the guidance ahead of the conversation either way;
+    // with a persona it only changes the order, base-guidance-persona becoming
+    // base-persona-guidance.
+    //
+    // It applies to OpenAI-compatible providers only: Anthropic would render a system
+    // message there as user text and Gemini lifts every system message into its
+    // leading instruction; Ollama keeps the position but is left out until it is
+    // measured with its own templates. A provider row can decide for itself with
+    // Config.guidance_after_question (true or false), which wins over this setting;
+    // that matters for an OpenAI-compatible gateway in front of another vendor's
+    // model, which may translate the message the way Anthropic or Gemini would.
+    // Override with `AiChat__ScopedPromptAfterUserMessage`.
     public bool ScopedPromptAfterUserMessage { get; set; }
 
+    // How long a model's stream may send nothing once the model has started its
+    // reply, before the round ends as failed with a message saying the reply may be
+    // cut off. Any bytes reset it, keepalive comments included, and it does not start
+    // until the model has generated something, so a server still reading a long
+    // prompt is never cut off by it, whatever it sends first.
+    // 0, the default, is off: a server that stops sending part-way through without
+    // closing the connection then holds the turn until StreamDeadlineSeconds, as it
+    // always did. It is off by default because some providers are silent while the
+    // model builds a large tool call (Anthropic and Gemini are), and a limit would end
+    // those replies. Turn it on for a provider whose server keeps the connection busy
+    // with Config.stream_idle_seconds on that provider, which wins over this setting;
+    // this one, `AiChat__StreamIdleSeconds`, applies to every provider that has none.
+    // A whole number of seconds that fits this int (at most 2147483647). Within that,
+    // a negative value counts as 0 and one above a day as a day; the value has to fit
+    // first, so 2147483648 is refused, not brought down to a day. A blank value is off,
+    // the same as leaving the setting out (see AiChatOptionsBinding). A value that is
+    // not a whole number (2.5, a word), or a whole number too large or too small for an
+    // int (2147483648), stops the server at startup (see
+    // LlmProviderFactory.CheckServerStreamIdle). A list or an object in the number's
+    // place is not read, so the limit is off. See StreamLineReader.
+    public int StreamIdleSeconds { get; set; }
+
     // The "llm" HttpClient's own timeout, applied in Program.cs. Not part of the
-    // budget and deliberately not configurable: it exists only so a wedged socket
-    // cannot hold a turn open forever, and its one requirement is that it stay well
-    // clear of StreamDeadlineSeconds. Underneath it, the transport wins every race
-    // and the deadline above becomes decoration — which is precisely the bug that
-    // .NET's default 100s produced here.
+    // budget and deliberately not configurable; its one requirement is that it stay
+    // well clear of StreamDeadlineSeconds. Underneath it, the transport wins every
+    // race and the deadline above becomes decoration — which is precisely the bug
+    // that .NET's default 100s produced here. It bounds sending the request and
+    // receiving the response headers only: the providers read with
+    // ResponseHeadersRead, after which HttpClient.Timeout no longer applies, so a
+    // stream that goes silent is ended by StreamIdleSeconds when that is set, and by
+    // StreamDeadlineSeconds otherwise, not by this.
     public static readonly TimeSpan TransportTimeout = TimeSpan.FromMinutes(5);
+}
+
+// How the chat options are read from configuration. Program.cs registers them with
+// AddAiChatOptions, and nothing is read until something first asks for them.
+public static class AiChatOptionsBinding
+{
+    // The same registration as services.Configure<AiChatOptions>(section), which this
+    // replaces, except that a blank StreamIdleSeconds is read as the setting left out.
+    // It takes the whole configuration, not the section, because reading a blank
+    // needs the sources behind it (see Bind).
+    public static IServiceCollection AddAiChatOptions(this IServiceCollection services, IConfigurationRoot configuration)
+    {
+        var section = configuration.GetSection(AiChatOptions.SectionName);
+        services.AddOptions();
+        services.AddSingleton<Microsoft.Extensions.Options.IOptionsChangeTokenSource<AiChatOptions>>(
+            new Microsoft.Extensions.Options.ConfigurationChangeTokenSource<AiChatOptions>(
+                Microsoft.Extensions.Options.Options.DefaultName, section));
+        services.Configure<AiChatOptions>(options => Bind(configuration, options));
+        return services;
+    }
+
+    // Binding refuses a blank where a number belongs (an environment placeholder left
+    // empty, `"StreamIdleSeconds": ""` in appsettings), and a server that ran before
+    // that setting existed would fail on it. So a blank there is read as 0, which is
+    // off. It is decided here, each time an options instance is built, from the value
+    // that wins at that moment: nothing is written back into the configuration, so a
+    // value set later in any source is read as it is by the next instance built. Chat
+    // asks through IOptions, which builds one instance and keeps it, so chat goes on
+    // with what it first read, as it did before; an options monitor builds a new
+    // instance after the configuration reloads.
+    //
+    // Every other setting, and this one when it is not blank, is bound exactly as
+    // before. With a blank, the section is bound through BlankIdleAsOff, where only
+    // that one value differs.
+    internal static void Bind(IConfigurationRoot configuration, AiChatOptions options)
+    {
+        var section = configuration.GetSection(AiChatOptions.SectionName);
+        if (!IsBlank(section[nameof(AiChatOptions.StreamIdleSeconds)]))
+        {
+            section.Bind(options);
+            return;
+        }
+        var view = new ConfigurationRoot(new List<IConfigurationProvider> { new BlankIdleAsOff(configuration) });
+        try { view.GetSection(AiChatOptions.SectionName).Bind(options); }
+        finally { view.Dispose(); }
+    }
+
+    // Present, and empty or only whitespace. A setting that is absent is not blank.
+    internal static bool IsBlank(string? value) => value is not null && string.IsNullOrWhiteSpace(value);
+
+    // The application's configuration as one source, the same for every key but one:
+    // a blank AiChat:StreamIdleSeconds reads as "0". Every other key gives what the
+    // application's own sources give, asked in the order the configuration asks them:
+    // the same value, an empty string as an empty string, a key present with no value
+    // (null in appsettings) as present with no value, an absent key as absent, and the
+    // same keys under each name. The binder tells those apart, so a copy that dropped
+    // empty values would bind the other settings differently. The keys keep their
+    // full names (AiChat:MaxIterations), so a binding error names a setting as it did
+    // before. It only reads: Set does nothing, and nothing here holds on to the
+    // application's sources or is told when they change, since it is built for one
+    // read and thrown away.
+    private sealed class BlankIdleAsOff(IConfigurationRoot configuration) : IConfigurationProvider
+    {
+        private static readonly string IdleKey =
+            ConfigurationPath.Combine(AiChatOptions.SectionName, nameof(AiChatOptions.StreamIdleSeconds));
+
+        private readonly Microsoft.Extensions.Primitives.IChangeToken _never = new ConfigurationReloadToken();
+
+        // The last source that has the key wins, as in the configuration itself.
+        public bool TryGet(string key, out string? value)
+        {
+            var sources = configuration.Providers as IList<IConfigurationProvider> ?? configuration.Providers.ToList();
+            for (var i = sources.Count - 1; i >= 0; i--)
+            {
+                if (!Has(sources[i], key, out value)) continue;
+                if (IsBlank(value) && string.Equals(key, IdleKey, StringComparison.OrdinalIgnoreCase)) value = "0";
+                return true;
+            }
+            value = null;
+            return false;
+        }
+
+        // A source removed while the configuration is being read is skipped, as the
+        // configuration skips it.
+        private static bool Has(IConfigurationProvider source, string key, out string? value)
+        {
+            try { return source.TryGet(key, out value); }
+            catch (ObjectDisposedException) { value = null; return false; }
+        }
+
+        public IEnumerable<string> GetChildKeys(IEnumerable<string> earlierKeys, string? parentPath) =>
+            configuration.Providers.Aggregate(earlierKeys, (keys, source) => source.GetChildKeys(keys, parentPath)).ToList();
+
+        public void Set(string key, string? value) { }
+
+        public void Load() { }
+
+        public Microsoft.Extensions.Primitives.IChangeToken GetReloadToken() => _never;
+    }
 }

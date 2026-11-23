@@ -42,6 +42,9 @@ public class SessionTurn
     [JsonPropertyName("tool_call_count")] public int ToolCallCount { get; set; }
     [JsonPropertyName("tokens_in")] public int TokensIn { get; set; }
     [JsonPropertyName("tokens_out")] public int TokensOut { get; set; }
+    // Null for a turn recorded before cache figures were kept; see AgentTurn.
+    [JsonPropertyName("tokens_cache_read")] public int? TokensCacheRead { get; set; }
+    [JsonPropertyName("tokens_cache_write")] public int? TokensCacheWrite { get; set; }
     [JsonPropertyName("iterations")] public int Iterations { get; set; }
     [JsonPropertyName("status")] public string Status { get; set; } = string.Empty;
     [JsonPropertyName("error")] public string? Error { get; set; }

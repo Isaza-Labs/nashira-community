@@ -239,7 +239,9 @@
 								{#if expanded[t.id]}
 									<div class="space-y-2 border-t border-surface-200-800/80 px-3 py-2">
 										<div class="text-xs text-surface-600-400">
-											{t.model} · {t.iterations} iterations · {t.tokensIn.toLocaleString()} in / {t.tokensOut.toLocaleString()}
+											{t.model} · {t.iterations} iterations · {t.tokensIn.toLocaleString()} in{#if t.tokensCacheRead}
+												({t.tokensCacheRead.toLocaleString()} cached){/if}{#if t.tokensCacheWrite}
+												· {t.tokensCacheWrite.toLocaleString()} written to cache{/if} / {t.tokensOut.toLocaleString()}
 											out · {absolute(t.startedAt)}
 										</div>
 

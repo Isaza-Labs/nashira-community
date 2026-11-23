@@ -9,7 +9,7 @@
 //   { type: 'token',        delta: string }
 //   { type: 'tool_start',   name: string, args: unknown }
 //   { type: 'tool_result',  name: string, success: boolean, result: unknown }
-//   { type: 'done',         tokens_in: number, tokens_out: number, iterations: number }
+//   { type: 'done',         tokens_in: number, tokens_out: number, tokens_cache_read: number, iterations: number }
 //   { type: 'error',        message: string, code: string | null }
 
 import { authStore } from '$lib/stores/auth.svelte';
@@ -27,7 +27,9 @@ export type ChatStreamEvent =
 	// The agent wants to run a tool that needs the user's approval; the turn ends
 	// and the client re-sends with the tool name in `approvals` to proceed.
 	| { type: 'confirmation_required'; name: string; args?: unknown; tier: string }
-	| { type: 'done'; tokens_in?: number; tokens_out?: number; iterations?: number }
+	// tokens_cache_read is the part of tokens_in the provider served from its prompt
+	// cache (0 when it reports none).
+	| { type: 'done'; tokens_in?: number; tokens_out?: number; tokens_cache_read?: number; iterations?: number }
 	// `code` lets callers pivot on machine-readable reasons (e.g. show a
 	// "Configure an AI provider" hint when code === 'no_provider') while still
 	// defaulting to the raw message for anything unrecognized.

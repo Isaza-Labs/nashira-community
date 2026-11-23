@@ -37,16 +37,19 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
     private readonly string _baseUrl;
     private readonly ILogger<GeminiProvider>? _logger;
     private readonly ModelLimits? _limits;
+    // How long a reply that has started may stay silent; see StreamLineReader.
+    private readonly TimeSpan _streamIdle;
 
     public GeminiProvider(
         HttpClient http, string apiKey, string? baseUrl = null, ILogger<GeminiProvider>? logger = null,
-        ModelLimits? limits = null)
+        ModelLimits? limits = null, TimeSpan? streamIdle = null)
     {
         _http = http;
         _apiKey = apiKey;
         _baseUrl = (baseUrl ?? "https://generativelanguage.googleapis.com").TrimEnd('/');
         _logger = logger;
         _limits = limits;
+        _streamIdle = streamIdle ?? TimeSpan.Zero;
     }
 
     public async Task<ChatResult> ChatAsync(
@@ -76,10 +79,13 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
         var body = BuildBody(messages, tools, temperature);
         using var response = await PostAsync(model, body, stream: true, ct);
         await using var stream = await response.Content.ReadAsStreamAsync(ct);
-        using var reader = new StreamReader(stream);
+        using var lines = new StreamLineReader(stream, _streamIdle);
 
         var toolCallCount = 0;
         int inputTokens = 0, outputTokens = 0;
+        // Part of promptTokenCount served from Gemini's context cache (implicit or
+        // explicit); null until a chunk reports one.
+        int? cacheRead = null;
         // finishReason rides on the candidate of the last chunk ("STOP",
         // "MAX_TOKENS", ...). Kept so the synthesised `done` can carry it.
         string? finishReason = null;
@@ -90,7 +96,7 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
 
         while (!ct.IsCancellationRequested)
         {
-            var line = await reader.ReadLineAsync(ct);
+            var line = await lines.ReadLineAsync(ct);
             if (line is null) break;
             if (string.IsNullOrEmpty(line) || !line.StartsWith("data: ")) continue;
             var data = line[6..];
@@ -110,6 +116,10 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
 
             foreach (var part in Parts(candidate))
             {
+                // A part with something in it, a thought summary included: the model
+                // is answering. An empty part does not start the idle limit.
+                if (HasGeneratedContent(part)) lines.ReplyStarted();
+
                 // Thought summaries ride in the same parts array as the answer when a
                 // 2.5 model is asked for them; they are not reply text.
                 if (part.TryGetProperty("thought", out var th)
@@ -138,6 +148,9 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             {
                 inputTokens = ReadInt(usage, "promptTokenCount", inputTokens);
                 outputTokens = ReadInt(usage, "candidatesTokenCount", outputTokens);
+                if (usage.TryGetProperty("cachedContentTokenCount", out var cachedEl)
+                    && cachedEl.ValueKind == JsonValueKind.Number)
+                    cacheRead = cachedEl.GetInt32();
             }
         }
 
@@ -150,6 +163,8 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             Type = "done",
             InputTokens = inputTokens,
             OutputTokens = outputTokens,
+            // Already included in promptTokenCount, as the runner expects.
+            CacheReadTokens = cacheRead,
             // "MAX_TOKENS" is Gemini's spelling of a cut-off answer; the runner reads
             // it as one alongside OpenAI's "length" and Anthropic's "max_tokens".
             StopReason = finishReason,
@@ -621,6 +636,7 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             ToolCalls = toolCalls.Count > 0 ? toolCalls : null,
             InputTokens = ReadInt(usage, "promptTokenCount", 0),
             OutputTokens = ReadInt(usage, "candidatesTokenCount", 0),
+            CacheReadTokens = ReadInt(usage, "cachedContentTokenCount", 0),
             StopReason = candidate.ValueKind == JsonValueKind.Object
                 && candidate.TryGetProperty("finishReason", out var fr)
                 && fr.ValueKind == JsonValueKind.String
@@ -635,6 +651,16 @@ public sealed class GeminiProvider : IStreamingToolCallingLlmProvider
             && cs.GetArrayLength() > 0
                 ? cs[0]
                 : default;
+
+    // Whether a part carries generated output: non-empty text (answer or thought
+    // summary) or a function call.
+    internal static bool HasGeneratedContent(JsonElement part)
+    {
+        if (part.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String
+            && !string.IsNullOrEmpty(text.GetString()))
+            return true;
+        return part.TryGetProperty("functionCall", out var call) && call.ValueKind == JsonValueKind.Object;
+    }
 
     private static IEnumerable<JsonElement> Parts(JsonElement candidate)
     {
