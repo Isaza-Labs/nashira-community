@@ -67,8 +67,9 @@ returns it, but every inbound delivery must pass the provider's signature or tok
 any other. A GET to a webhook of any other provider now answers 405. The console no longer
 offers the setting. A signing secret is write-only and must be 32 to 4096 characters with no
 whitespace or control characters and at least 8 distinct characters. An empty string is
-rejected: to remove a signing secret send `clear_signing_secret: true`. A channel with no
-signing secret rejects every delivery. Setting, rotating and clearing are audited without the value, a
+rejected: to remove a signing secret send `clear_signing_secret: true`. A Slack, Telegram or
+WhatsApp channel with no signing secret rejects every delivery; Teams does not use one and
+authenticates each activity with its Bot Framework token. Setting, rotating and clearing are audited without the value, a
 new value replaces the old one immediately, and an existing stored secret is not rewritten by
 an unrelated edit. See `docs/messaging-secret-rotation.md`.
 

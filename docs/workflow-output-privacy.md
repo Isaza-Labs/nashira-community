@@ -43,4 +43,6 @@ reusing it, whether it is obtained now or was already held in memory, requires a
 Admin, and a step that used it has its output withheld like any other step that
 received resolved secret material. Operators and Viewers get `secret_access_denied`,
 which is final and not retried. Integrations whose OAuth settings are literal values
-or come from a linked credential are unchanged.
+or come from a linked credential keep their authorization; their token requests no
+longer follow redirects, so a token endpoint that redirects fails with `redirect_refused`
+and has to be configured with its final URL.
