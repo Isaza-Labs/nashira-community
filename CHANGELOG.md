@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-19 — A run budget that ordinary use does not exhaust
+
+The `workflow_run` rate limit — starting a run or a workflow test — is now 40 per minute
+per user, up from 20 per hour. The hourly budget was exhausted by ordinary use, such as
+launching a workflow once per device. The rate-limit table in the in-app docs says the same.
+
+
 ## 2026-11-14 — A chat-channel reply that ended in an error says it may be incomplete
 
 A turn that fails after the model has started answering (the model goes silent, the

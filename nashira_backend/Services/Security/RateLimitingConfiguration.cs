@@ -25,7 +25,7 @@ namespace nashira_backend.Services.Security;
 //   write_normal    per user    60 / minute    Create/update/delete.
 //   ai_chat         per user    30 / hour      Costly — every request
 //                                              hits an external LLM.
-//   workflow_run    per user    20 / hour      Very costly — schedules
+//   workflow_run    per user    40 / minute    Costly — schedules
 //                                              actual work on devices.
 //
 // Every 429 response carries `Retry-After: 60` and a JSON body with
@@ -91,7 +91,7 @@ public static class RateLimitingConfiguration
             options.AddPolicy(ReadHeavy, PerUser(300, TimeSpan.FromMinutes(1)));
             options.AddPolicy(WriteNormal, PerUser(60, TimeSpan.FromMinutes(1)));
             options.AddPolicy(AiChat, PerUser(30, TimeSpan.FromMinutes(1)));
-            options.AddPolicy(WorkflowRun, PerUser(20, TimeSpan.FromHours(1)));
+            options.AddPolicy(WorkflowRun, PerUser(40, TimeSpan.FromMinutes(1)));
 
             // Git webhook ingest: anonymous endpoint hit by external
             // providers. Partitioning by (IP, hook route) gives backpressure
