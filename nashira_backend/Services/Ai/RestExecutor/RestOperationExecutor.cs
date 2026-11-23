@@ -218,7 +218,21 @@ public sealed class RestOperationExecutor : IRestOperationExecutor
                     "rest.executor.spec_auth_empty api={Api} auth_type={AuthType} integration={Integration} " +
                     "— the spec declares an auth type but carries no material; falling back to the integration",
                     op.Api, spec.AuthType, integration.Name);
-            await _integrationAuth.ApplyAsync(msg, integration, cts.Token);
+            try
+            {
+                await _integrationAuth.ApplyAsync(msg, integration, cts.Token);
+            }
+            catch (RedirectRefusedException ex)
+            {
+                // The token endpoint redirected, before the API was called at all. Same final
+                // refusal as for the API itself, worded for the setting that has to change.
+                _logger.LogWarning(
+                    "rest.executor.auth_redirect_refused operation_id={OperationId} status={Status} reason={Reason}",
+                    operationId, ex.StatusCode, ex.Reason);
+                return Fail(
+                    $"authentication did not complete: the OAuth token endpoint answered HTTP {ex.StatusCode} " +
+                    "with a redirect; configure the final token URL", RedirectRefusedException.Code);
+            }
         }
         else if (!applied && specDeclaresAuth)
         {
@@ -286,8 +300,8 @@ public sealed class RestOperationExecutor : IRestOperationExecutor
         {
             // A redirect will not go away on a retry; say what to change instead.
             _logger.LogWarning(
-                "rest.executor.redirect_refused operation_id={OperationId} host={Host} status={Status}",
-                operationId, host, ex.StatusCode);
+                "rest.executor.redirect_refused operation_id={OperationId} host={Host} status={Status} reason={Reason}",
+                operationId, host, ex.StatusCode, ex.Reason);
             return Fail($"{ex.Message} (the server answered HTTP {ex.StatusCode})", RedirectRefusedException.Code);
         }
         catch (HttpRequestException ex)

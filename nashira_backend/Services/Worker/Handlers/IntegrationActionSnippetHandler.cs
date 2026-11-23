@@ -129,6 +129,14 @@ public sealed class IntegrationActionSnippetHandler : ISnippetHandler
             // it must reach the executor as secret_access_denied, which does not retry.
             throw;
         }
+        catch (RedirectRefusedException ex)
+        {
+            // The token endpoint redirected. Repeating the grant cannot change that, and the API
+            // has not been called.
+            return SnippetResult.Fail(
+                $"authentication did not complete: the OAuth token endpoint answered HTTP {ex.StatusCode} " +
+                "with a redirect; configure the final token URL", RedirectRefusedException.Code);
+        }
         catch (Exception ex)
         {
             // A broken grant is a credentials problem, and saying so beats letting

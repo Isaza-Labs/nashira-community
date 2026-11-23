@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
@@ -62,8 +63,43 @@ public class NotificationRedirectDeliveryTests
         }
     }
 
+    [Theory]
+    [InlineData("http://[fd00::1]/next?t=example-location-token")]
+    [InlineData("ftp://203.0.113.50/next?t=example-location-token")]
+    public async Task A_rejected_redirect_target_is_still_recorded_as_a_refused_redirect_without_the_location(string location)
+    {
+        var guard = new UrlGuard(new ConfigurationBuilder().Build(), NullLogger<UrlGuard>.Instance);
+        var (dispatcher, db, transport, channelId) = await Build(HttpStatusCode.Found, location, guard);
+
+        var result = await dispatcher.SendAsync(channelId, "example message", null, default);
+
+        Assert.False(result.Success);
+        Assert.Equal(1, result.Attempts);
+        Assert.Equal(1, transport.Requests);
+        Assert.Contains("redirect refused", result.Error);
+        foreach (var text in new[] { result.Error, (await db.NotificationDeliveries.SingleAsync()).Error })
+        {
+            Assert.DoesNotContain("example-location-token", text);
+            Assert.DoesNotContain("example-webhook-token", text);
+        }
+    }
+
+    [Fact]
+    public async Task A_send_failure_that_is_not_a_redirect_is_not_reported_as_one_and_hides_its_message()
+    {
+        var (dispatcher, db, _, channelId) = await Build(
+            HttpStatusCode.OK, null, transportError: new InvalidOperationException($"example failure for {WebhookUrl}"));
+
+        var result = await dispatcher.SendAsync(channelId, "example message", null, default);
+
+        Assert.False(result.Success);
+        Assert.DoesNotContain("redirect", result.Error);
+        Assert.DoesNotContain("example-webhook-token", result.Error);
+        Assert.DoesNotContain("example-webhook-token", (await db.NotificationDeliveries.SingleAsync()).Error);
+    }
+
     private static async Task<(NotificationDispatcher, AppDbContext, Transport, Guid)> Build(
-        HttpStatusCode status, string? location)
+        HttpStatusCode status, string? location, IUrlGuard? redirectGuard = null, Exception? transportError = null)
     {
         var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase($"notification-redirect-{Guid.NewGuid()}").Options);
@@ -76,21 +112,22 @@ public class NotificationRedirectDeliveryTests
         });
         await db.SaveChangesAsync();
 
-        var transport = new Transport(status, location);
+        var transport = new Transport(status, location, transportError);
         var guard = new AllowAllGuard();
-        var client = new HttpClient(new RejectRedirectHandler(guard) { InnerHandler = transport });
+        var client = new HttpClient(new RejectRedirectHandler(redirectGuard ?? guard) { InnerHandler = transport });
         var dispatcher = new NotificationDispatcher(
             db, protector, guard, new Factory(client), NullLogger<NotificationDispatcher>.Instance);
         return (dispatcher, db, transport, channelId);
     }
 
-    private sealed class Transport(HttpStatusCode status, string? location) : HttpMessageHandler
+    private sealed class Transport(HttpStatusCode status, string? location, Exception? error = null) : HttpMessageHandler
     {
         public int Requests;
 
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Requests++;
+            if (error is not null) throw error;
             var response = new HttpResponseMessage(status);
             if (location is not null) response.Headers.Location = new Uri(location);
             return Task.FromResult(response);

@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
@@ -30,38 +31,42 @@ namespace nashira_backend.Tests;
 public class RedirectRefusalMappingTests
 {
     private const string Code = "redirect_refused";
-    private const string LocationToken = "example-location-token";
+    internal const string LocationToken = "example-location-token";
 
-    private static readonly string Target = $"https://203.0.113.99/next?t={LocationToken}";
+    internal static readonly string Target = $"https://203.0.113.99/next?t={LocationToken}";
 
     // A transport that always answers with a redirect, behind the real refusing handler.
-    private sealed class RedirectingFactory(HttpStatusCode status = HttpStatusCode.Found) : IHttpClientFactory
+    // `location` and `guard` let a test point the redirect at a target the real validator rejects.
+    internal sealed class RedirectingFactory(
+        HttpStatusCode status = HttpStatusCode.Found, string? location = null, IUrlGuard? guard = null)
+        : IHttpClientFactory
     {
         public int Requests;
 
-        public HttpClient CreateClient(string name) => new(new RejectRedirectHandler(new AllowAllGuard())
+        public HttpClient CreateClient(string name) => new(new RejectRedirectHandler(guard ?? new AllowAllGuard())
         {
-            InnerHandler = new Transport(this, status),
+            InnerHandler = new Transport(this, status, location ?? Target),
         });
 
-        private sealed class Transport(RedirectingFactory owner, HttpStatusCode status) : HttpMessageHandler
+        private sealed class Transport(RedirectingFactory owner, HttpStatusCode status, string location)
+            : HttpMessageHandler
         {
             protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
             {
                 Interlocked.Increment(ref owner.Requests);
                 var response = new HttpResponseMessage(status);
-                response.Headers.Location = new Uri(Target);
+                response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
                 return Task.FromResult(response);
             }
         }
     }
 
-    private sealed class AllowAllGuard : IUrlGuard
+    internal sealed class AllowAllGuard : IUrlGuard
     {
         public void EnsureSafe(string url, bool allowPrivate = false) { }
     }
 
-    private sealed class PassthroughSecrets : ISecretResolver
+    internal sealed class PassthroughSecrets : ISecretResolver
     {
         public Task<string?> ResolveAsync(string source, string idOrName, string field, CancellationToken ct) =>
             Task.FromResult<string?>(null);
@@ -70,13 +75,13 @@ public class RedirectRefusalMappingTests
             Task.FromResult(template);
     }
 
-    private sealed class NoAuth : IIntegrationAuthApplier
+    internal sealed class NoAuth : IIntegrationAuthApplier
     {
         public Task ApplyAsync(HttpRequestMessage request, IntegrationEntity integration, CancellationToken ct) =>
             Task.CompletedTask;
     }
 
-    private sealed class OneOperationIndex : IApiSpecIndex
+    internal sealed class OneOperationIndex : IApiSpecIndex
     {
         private readonly ApiOperation _op = new()
         {
@@ -89,17 +94,18 @@ public class RedirectRefusalMappingTests
         public ApiOperation? GetByOperationId(string operationId) => operationId == _op.OperationId ? _op : null;
     }
 
-    private sealed class UnusedExecutor : IRestOperationExecutor
+    internal sealed class UnusedExecutor : IRestOperationExecutor
     {
         public Task<RestExecutionResult> ExecuteAsync(
             string operationId, JsonElement pathParams, JsonElement queryParams, JsonElement body,
             CancellationToken ct, string? source = null) => throw new InvalidOperationException("not used");
     }
 
-    private static AppDbContext NewDb() => new(new DbContextOptionsBuilder<AppDbContext>()
+    internal static AppDbContext NewDb() => new(new DbContextOptionsBuilder<AppDbContext>()
         .UseInMemoryDatabase($"redirect-refusal-{Guid.NewGuid()}").Options);
 
-    private static async Task<RestOperationExecutor> NewExecutorAsync(AppDbContext db, IHttpClientFactory factory)
+    internal static async Task<RestOperationExecutor> NewExecutorAsync(
+        AppDbContext db, IHttpClientFactory factory, ILogger<RestOperationExecutor>? logger = null)
     {
         db.AiApiSpecs.Add(new AiApiSpec
         {
@@ -109,16 +115,16 @@ public class RedirectRefusalMappingTests
         await db.SaveChangesAsync();
         return new RestOperationExecutor(
             db, new OneOperationIndex(), new PassthroughSecrets(), new AllowAllGuard(), new HardeningTestUser(),
-            factory, new NoAuth(), new ConfigurationBuilder().Build(), NullLogger<RestOperationExecutor>.Instance);
+            factory, new NoAuth(), new ConfigurationBuilder().Build(), logger ?? NullLogger<RestOperationExecutor>.Instance);
     }
 
-    private static SnippetRequest Request(string type, object input) => new()
+    internal static SnippetRequest Request(string type, object input) => new()
     {
         NodeId = "step", WorkflowId = Guid.NewGuid(), SnippetId = Guid.NewGuid(), SnippetType = type,
         Input = JsonSerializer.SerializeToElement(input), TimeoutSeconds = 10,
     };
 
-    private static void AssertRefusal(SnippetResult result, int status)
+    internal static void AssertRefusal(SnippetResult result, int status)
     {
         Assert.False(result.Success);
         Assert.Equal(Code, result.ErrorCode);

@@ -81,7 +81,20 @@ public sealed class IntegrationHealthChecker : IIntegrationHealthChecker
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
-            await _auth.ApplyAsync(request, integration, ct);
+            try
+            {
+                await _auth.ApplyAsync(request, integration, ct);
+            }
+            catch (RedirectRefusedException ex)
+            {
+                // The token endpoint redirected before the probe was sent, so nothing is known about
+                // the system itself; it is the authentication setting that needs the final URL.
+                sw.Stop();
+                return new IntegrationHealth(
+                    IntegrationEntity.StatusDegraded, null, (int)sw.ElapsedMilliseconds,
+                    $"authentication did not complete: the OAuth token endpoint answered HTTP {ex.StatusCode} " +
+                    "with a redirect; configure the final token URL");
+            }
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(Timeout);

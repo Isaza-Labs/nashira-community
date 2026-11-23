@@ -25,10 +25,15 @@ public class GuardedHttpClientTests
         var transport = new ResponseHandler((HttpStatusCode)status, target);
         using var client = new HttpClient(new RejectRedirectHandler(Guard()) { InnerHandler = transport });
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+        var error = await Assert.ThrowsAsync<RedirectRefusedException>(
             () => client.GetAsync("https://public.invalid/start"));
 
-        Assert.Contains("SSRF blocked", error.Message);
+        // The validator's own message repeats the target, so it is neither kept nor wrapped.
+        Assert.Equal(RedirectRefusalReason.TargetNotAllowed, error.Reason);
+        Assert.Equal(status, error.StatusCode);
+        Assert.Null(error.InnerException);
+        Assert.DoesNotContain("SSRF", error.ToString());
+        Assert.DoesNotContain(target, error.ToString());
         Assert.Equal(1, transport.Requests);
     }
 
@@ -42,10 +47,11 @@ public class GuardedHttpClientTests
         var transport = new ResponseHandler(HttpStatusCode.Redirect, "/next");
         using var client = new HttpClient(new RejectRedirectHandler(guard) { InnerHandler = transport });
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+        var error = await Assert.ThrowsAsync<RedirectRefusedException>(
             () => client.GetAsync("https://test.invalid/start"));
 
-        Assert.Contains("SSRF blocked", error.Message);
+        Assert.Equal(RedirectRefusalReason.TargetNotAllowed, error.Reason);
+        Assert.DoesNotContain("SSRF", error.ToString());
         Assert.Equal(2, lookups);
         Assert.Equal(1, transport.Requests);
     }

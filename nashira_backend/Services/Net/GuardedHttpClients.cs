@@ -35,16 +35,30 @@ public static class GuardedHttpClients
             .AddHttpMessageHandler(sp => new RejectRedirectHandler(sp.GetRequiredService<IUrlGuard>()));
 }
 
+// Why a guarded client refused a redirect. A bounded classification, deliberately without
+// the target: the Location header belongs to the remote server and may carry anything.
+public enum RedirectRefusalReason
+{
+    /// <summary>Redirects are not followed, and the target was not examined further or was acceptable.</summary>
+    Disabled,
+
+    /// <summary>The target failed validation: a blocked address, a failed lookup, a non-HTTP scheme or an unparseable URL.</summary>
+    TargetNotAllowed,
+}
+
 // A guarded client refused to follow a redirect. It is an InvalidOperationException so existing
-// handlers keep working, but callers that can say something better catch it by type. The
-// message is fixed text: the Location header belongs to the remote server and is not echoed.
-public sealed class RedirectRefusedException(int statusCode) : InvalidOperationException(
-    "HTTP redirects are disabled for guarded requests; configure the final endpoint")
+// handlers keep working, but callers that can say something better catch it by type. Every
+// refusal, including one for a rejected target, is this type with fixed text: neither the
+// Location header nor the validator's own message is carried.
+public sealed class RedirectRefusedException(int statusCode, RedirectRefusalReason reason = RedirectRefusalReason.Disabled)
+    : InvalidOperationException("HTTP redirects are disabled for guarded requests; configure the final endpoint")
 {
     public const string Code = "redirect_refused";
 
     /// <summary>The redirect status the server answered with.</summary>
     public int StatusCode { get; } = statusCode;
+
+    public RedirectRefusalReason Reason { get; } = reason;
 }
 
 // Recheck redirect destinations (including DNS answers), then fail closed rather
@@ -58,14 +72,24 @@ internal sealed class RejectRedirectHandler(IUrlGuard guard) : DelegatingHandler
         if ((int)response.StatusCode is not (300 or 301 or 302 or 303 or 307 or 308))
             return response;
 
+        var status = (int)response.StatusCode;
         try
         {
             if (response.Headers.Location is { } location)
             {
-                var target = location.IsAbsoluteUri ? location : new Uri(request.RequestUri!, location);
-                guard.EnsureSafe(target.AbsoluteUri);
+                try
+                {
+                    var target = location.IsAbsoluteUri ? location : new Uri(request.RequestUri!, location);
+                    guard.EnsureSafe(target.AbsoluteUri);
+                }
+                catch (Exception)
+                {
+                    // Whatever the validator or the URI parser said can repeat the Location, so it is
+                    // not kept; the refusal says only that the target was not acceptable.
+                    throw new RedirectRefusedException(status, RedirectRefusalReason.TargetNotAllowed);
+                }
             }
-            throw new RedirectRefusedException((int)response.StatusCode);
+            throw new RedirectRefusedException(status);
         }
         finally
         {

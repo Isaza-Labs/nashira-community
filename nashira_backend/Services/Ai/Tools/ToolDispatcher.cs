@@ -2,6 +2,7 @@
 using System.Text.Json.Nodes;
 using nashira_backend.Data.Models;
 using nashira_backend.Exceptions;
+using nashira_backend.Services.Net;
 using nashira_backend.Services.Ai.Permissions;
 using nashira_backend.Services.Ai.Secrets;
 using nashira_backend.Services.Ai.SelfCorrection;
@@ -160,7 +161,8 @@ public sealed class ToolDispatcher
         // hint, but the reported Success must reflect the ACTUAL outcome — only a clean run
         // or a successful retry is a success. `result` still carries the error text either
         // way so the model (and the SSE tool_result frame) can react to it.
-        // A denied lookup is final: correcting the arguments cannot change who is asking.
+        // A denied lookup or a refused redirect is final: correcting the arguments cannot change
+        // who is asking or where the endpoint lives.
         if (denied || !IsCorrectable(toolName)) return new ToolCallOutput { Success = false, Result = result };
 
         var correction = await _selfCorrection.SuggestCorrectionAsync(toolName, args, error, ct);
@@ -187,7 +189,7 @@ public sealed class ToolDispatcher
         try
         {
             var r = await handler.ExecuteAsync(args, ct);
-            return (r, ExtractError(r), false);
+            return (r, ExtractError(r), IsFinalRefusal(r));
         }
         catch (ForbiddenException ex) when (ex.Code == SecretResolver.AccessDeniedCode)
         {
@@ -202,6 +204,19 @@ public sealed class ToolDispatcher
             return (JsonSerializer.SerializeToElement(new { error = ex.Message }), ex.Message, false);
         }
     }
+
+    // Host-defined failures that no change of arguments can fix: the endpoint has to be
+    // reconfigured. A handler returns them as `error_code`; the dispatcher must not try to
+    // correct and re-run the call, which would repeat the original request.
+    private static readonly HashSet<string> FinalErrorCodes = new(StringComparer.Ordinal)
+    {
+        RedirectRefusedException.Code,
+    };
+
+    private static bool IsFinalRefusal(JsonElement result) =>
+        result.ValueKind == JsonValueKind.Object
+        && result.TryGetProperty("error_code", out var code) && code.ValueKind == JsonValueKind.String
+        && code.GetString() is { } c && FinalErrorCodes.Contains(c);
 
     private static readonly string[] SkipCorrectionSubstrings = ["csv", "html", "bulk", "export"];
 
