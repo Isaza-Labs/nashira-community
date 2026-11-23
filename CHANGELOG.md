@@ -4,6 +4,75 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-23 — Python snippets are off until an OS sandbox is configured
+
+`python_snippet` steps are refused (`sandbox_not_configured`) unless the deployment sets
+`Python:SandboxCommand` (compose variable `PYTHON_SANDBOX_COMMAND`) to the absolute path
+of an OS isolation wrapper. A relative or missing wrapper is refused too, and there is no
+fallback to running unsandboxed. Where everyone who can write a snippet is already trusted
+with a shell on the host, `Python:AllowUnsandboxed=true` (`PYTHON_ALLOW_UNSANDBOXED`) runs
+snippets without a wrapper, and then only for an authenticated Admin: Operators, Viewers and
+runs with no Admin identity get `unsandboxed_admin_required`. The module allowlist is not an
+OS sandbox. The wrapper owns the isolation, and Nashira cannot verify it. See
+`docs/python-sandbox.md`.
+
+
+## 2026-11-23 — Stored secret references resolve only for an Admin
+
+A `${secret:...}` reference to a stored secret, credential or integration value now resolves
+only for an authenticated Admin, in workflow steps, integration settings and agent tools
+alike (the OAuth case below is one instance of this). Anyone else, and any run with no
+authenticated caller, gets `secret_access_denied`, which is final and is not retried. A
+workflow that runs unattended and uses stored references needs an Admin identity bound to
+the run. References that use the caller's own session (`session`) are unchanged, and
+handlers that use a linked credential directly rather than through a reference keep their
+existing authorization.
+
+
+## 2026-11-23 — Output of steps that used secrets is withheld; `redact_output` must be a boolean
+
+A workflow step that received resolved secret material (a stored reference, a
+secret-derived OAuth token, or a secret substituted into Python input) has its whole
+output, logs and error text replaced by `[redacted]` before the run is stored, so a later
+step cannot read data from it. Put anything that must stay visible in a separate step that
+never receives the secret. `config_overrides.redact_output` now accepts only `true` or
+`false`; any other value fails the step with `invalid_redact_output`. A failed step whose
+output is withheld reports the code `output_redacted`, except for decisions the host makes
+itself (`secret_access_denied` and the Python sandbox codes), which keep their code. Steps
+that did not receive secret material are unchanged, and handlers that use credentials
+directly are not covered by this. See `docs/workflow-output-privacy.md`.
+
+
+## 2026-11-23 — Outbound requests no longer follow redirects, and more address forms are refused
+
+REST calls, integration calls and OAuth token requests, MCP connections, notifications and
+the GitHub and NetBox clients no longer follow an HTTP redirect, including from an
+integration whose OAuth settings are literal values or come from a linked credential. The
+request fails instead of being replayed, so configure the final endpoint. A workflow step or
+an agent tool call reports `redirect_refused`, also when the redirect came from an OAuth
+token endpoint. It is final and is not retried (a withheld step reports `output_redacted`);
+an integration check answers `degraded`; the GitHub and NetBox clients answer 400. The redirect target and the
+remote `Location` header are never included in the error. The URL guard also refuses IPv6
+site-local (`fec0::/10`) and IPv4-compatible (`::a.b.c.d`) addresses, in addition to
+unique-local and link-local ones, whatever the integration's private-network setting says (the deployment-wide
+`Security:AllowInternalUrls` development bypass still disables the guard). These checks are
+not a defence against DNS rebinding.
+
+
+## 2026-11-23 — Messaging webhooks always require verification; signing secrets are validated
+
+The channel setting `allow_unsigned` no longer has any effect: the API still accepts and
+returns it, but every inbound delivery must pass the provider's signature or token check
+(WhatsApp's verification challenge is unchanged), and a channel that sets it is treated like
+any other. A GET to a webhook of any other provider now answers 405. The console no longer
+offers the setting. A signing secret is write-only and must be 32 to 4096 characters with no
+whitespace or control characters and at least 8 distinct characters. An empty string is
+rejected: to remove a signing secret send `clear_signing_secret: true`. A channel with no
+signing secret rejects every delivery. Setting, rotating and clearing are audited without the value, a
+new value replaces the old one immediately, and an existing stored secret is not rewritten by
+an unrelated edit. See `docs/messaging-secret-rotation.md`.
+
+
 ## 2026-11-22 — Reusing an OAuth token obtained from stored secrets needs an Admin
 
 An integration that uses the OAuth2 client-credentials method gets its access token
@@ -14,7 +83,7 @@ resolving those secrets directly. An Operator or Viewer who uses such an integra
 from a workflow step, an integration check or an agent tool gets `secret_access_denied`,
 and a workflow step that used the token has its output withheld. The denial is final:
 the step is not retried. Integrations whose OAuth settings are literal values, or come
-from a linked credential, are unchanged. To see which integrations are affected, look
+from a linked credential, keep their authorization (their token requests no longer follow redirects, see above). To see which integrations are affected, look
 for `${secret:` in the OAuth settings of each integration that is used by non-Admin
 users. An integration check run by a non-Admin on such an integration now answers 403
 and no longer records the integration as unreachable.

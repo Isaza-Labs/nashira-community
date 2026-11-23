@@ -425,7 +425,7 @@ export const integrations: DocSection[] = [
 					{ name: 'max_role', type: 'string | null', desc: '`viewer`, `operator` or `admin`: a ceiling on the role a turn from this channel runs with. It only lowers the linked user\'s real role, never raises it. Null means no extra ceiling.' },
 					{ name: 'require_linked_user', type: 'boolean', default: 'true', desc: 'An external user with no linked Nashira account gets a linking link instead of an answer.' },
 					{ name: 'allowed_external_ids', type: 'string[]', default: '[]', desc: 'Optional allowlist of provider user ids. Empty means anyone who passes the linking rule.' },
-					{ name: 'allow_unsigned', type: 'boolean', default: 'false', desc: 'Accept deliveries that fail verification. Only for a test emitter.' },
+					{ name: 'allow_unsigned', type: 'boolean', default: 'false', desc: 'Legacy setting, kept so existing clients keep working. It is ignored: every delivery must pass the provider\'s signature or token verification, whatever this is set to.' },
 					{ name: 'enabled', type: 'boolean', default: 'true', desc: 'Stop listening without deleting the channel.' },
 					{ name: 'has_bot_token / has_signing_secret / has_app_token', type: 'boolean', desc: 'Read-only. Which secrets are stored.' },
 					{ name: 'webhook_url', type: 'string', desc: 'Read-only. The URL to paste into the provider. Empty until `Messaging:PublicBaseUrl` is configured.' },
