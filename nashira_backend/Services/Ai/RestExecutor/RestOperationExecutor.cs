@@ -19,6 +19,12 @@ public sealed class RestExecutionResult
     public string? Error { get; init; }
 
     /// <summary>
+    /// Set when the failure has a stable code a caller can act on (today only `redirect_refused`).
+    /// Null for the general errors, which callers still treat as transient.
+    /// </summary>
+    public string? ErrorCode { get; init; }
+
+    /// <summary>
     /// The HTTP verb the operation used. Carried so a caller can tell a read from a write
     /// without re-opening the spec — `rest_call` needs it to report whether the step changed
     /// anything, and the executor is the only party that already knows.
@@ -276,6 +282,14 @@ public sealed class RestOperationExecutor : IRestOperationExecutor
         {
             return Fail($"request timed out after {RequestTimeout.TotalSeconds:n0}s");
         }
+        catch (RedirectRefusedException ex)
+        {
+            // A redirect will not go away on a retry; say what to change instead.
+            _logger.LogWarning(
+                "rest.executor.redirect_refused operation_id={OperationId} host={Host} status={Status}",
+                operationId, host, ex.StatusCode);
+            return Fail($"{ex.Message} (the server answered HTTP {ex.StatusCode})", RedirectRefusedException.Code);
+        }
         catch (HttpRequestException ex)
         {
             _logger.LogError(ex, "rest.executor.http_error operation_id={OperationId} host={Host}", operationId, host);
@@ -441,10 +455,11 @@ public sealed class RestOperationExecutor : IRestOperationExecutor
         catch { return JsonSerializer.SerializeToElement(new { raw }); }
     }
 
-    private static RestExecutionResult Fail(string error) => new()
+    private static RestExecutionResult Fail(string error, string? code = null) => new()
     {
         StatusCode = 0,
         Body = JsonDocument.Parse("null").RootElement.Clone(),
         Error = error,
+        ErrorCode = code,
     };
 }

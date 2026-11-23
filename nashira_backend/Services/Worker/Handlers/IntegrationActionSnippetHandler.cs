@@ -183,6 +183,11 @@ public sealed class IntegrationActionSnippetHandler : ISnippetHandler
         {
             return SnippetResult.Fail($"timed out after {request.TimeoutSeconds}s", "timeout", retryable: true);
         }
+        catch (RedirectRefusedException ex)
+        {
+            return SnippetResult.Fail(
+                $"{ex.Message} (the server answered HTTP {ex.StatusCode})", RedirectRefusedException.Code);
+        }
         catch (HttpRequestException ex)
         {
             return SnippetResult.Fail($"http error: {ex.Message}", "http_error", retryable: true);

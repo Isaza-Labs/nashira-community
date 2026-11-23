@@ -122,6 +122,15 @@ public sealed class IntegrationHealthChecker : IIntegrationHealthChecker
                 IntegrationEntity.StatusUnreachable, null, (int)sw.ElapsedMilliseconds,
                 $"timed out after {Timeout.TotalSeconds:0}s");
         }
+        catch (RedirectRefusedException ex)
+        {
+            // The host answered, so it is not unreachable; the configured URL needs to point at
+            // the final endpoint. Degraded is the "answered, but something to fix" state.
+            sw.Stop();
+            return new IntegrationHealth(
+                IntegrationEntity.StatusDegraded, ex.StatusCode, (int)sw.ElapsedMilliseconds,
+                $"reachable, but the probe was redirected (HTTP {ex.StatusCode}); configure the final endpoint");
+        }
         catch (ForbiddenException)
         {
             // An authorization denial says nothing about the system being probed. Turning

@@ -58,10 +58,12 @@ public class GuardedHttpClientTests
         var transport = new ResponseHandler(HttpStatusCode.TemporaryRedirect, location);
         using var client = new HttpClient(new RejectRedirectHandler(Guard()) { InnerHandler = transport });
 
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+        var error = await Assert.ThrowsAsync<RedirectRefusedException>(
             () => client.PostAsync("https://public.invalid/start", new StringContent("sensitive-body")));
 
         Assert.Contains("redirects are disabled", error.Message);
+        Assert.Equal(307, error.StatusCode);
+        Assert.Equal("redirect_refused", RedirectRefusedException.Code);
         Assert.Equal(1, transport.Requests);
     }
 
@@ -104,9 +106,10 @@ public class GuardedHttpClientTests
         try
         {
             var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            var error = await Assert.ThrowsAsync<RedirectRefusedException>(
                 () => client.GetAsync($"http://127.0.0.1:{port}/start", stop.Token));
             Assert.Contains("redirects are disabled", error.Message);
+            Assert.Equal(302, error.StatusCode);
             Assert.Equal(1, Volatile.Read(ref count));
             Assert.Single(guard.Urls);
             Assert.EndsWith("/redirected", guard.Urls[0]);

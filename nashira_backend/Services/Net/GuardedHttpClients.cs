@@ -35,6 +35,18 @@ public static class GuardedHttpClients
             .AddHttpMessageHandler(sp => new RejectRedirectHandler(sp.GetRequiredService<IUrlGuard>()));
 }
 
+// A guarded client refused to follow a redirect. It is an InvalidOperationException so existing
+// handlers keep working, but callers that can say something better catch it by type. The
+// message is fixed text: the Location header belongs to the remote server and is not echoed.
+public sealed class RedirectRefusedException(int statusCode) : InvalidOperationException(
+    "HTTP redirects are disabled for guarded requests; configure the final endpoint")
+{
+    public const string Code = "redirect_refused";
+
+    /// <summary>The redirect status the server answered with.</summary>
+    public int StatusCode { get; } = statusCode;
+}
+
 // Recheck redirect destinations (including DNS answers), then fail closed rather
 // than replaying a request/body or forwarding credentials to a new destination.
 // Integrations that redirect must be configured with their final endpoint.
@@ -53,7 +65,7 @@ internal sealed class RejectRedirectHandler(IUrlGuard guard) : DelegatingHandler
                 var target = location.IsAbsoluteUri ? location : new Uri(request.RequestUri!, location);
                 guard.EnsureSafe(target.AbsoluteUri);
             }
-            throw new InvalidOperationException("HTTP redirects are disabled for guarded requests; configure the final endpoint");
+            throw new RedirectRefusedException((int)response.StatusCode);
         }
         finally
         {

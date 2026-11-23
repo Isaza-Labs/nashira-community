@@ -89,7 +89,18 @@ public sealed class NetBoxSyncService : INetBoxSyncService
             if (!string.IsNullOrEmpty(token))
                 req.Headers.TryAddWithoutValidation("Authorization", $"Token {token}");
 
-            using var resp = await client.SendAsync(req, ct);
+            HttpResponseMessage resp;
+            try
+            {
+                resp = await client.SendAsync(req, ct);
+            }
+            catch (RedirectRefusedException ex)
+            {
+                throw new ValidationException(
+                    $"NetBox answered with a redirect (HTTP {ex.StatusCode}); set the source's final base URL",
+                    RedirectRefusedException.Code);
+            }
+            using var respLease = resp;
             if (!resp.IsSuccessStatusCode)
             {
                 var body = await resp.Content.ReadAsStringAsync(ct);

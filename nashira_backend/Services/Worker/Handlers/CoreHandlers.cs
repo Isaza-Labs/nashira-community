@@ -387,8 +387,10 @@ public sealed class RestCallSnippetHandler : ISnippetHandler
         var result = await _executor.ExecuteAsync(
             operationId, pathParams, queryParams, body, ct, source: Str(request.Input, "source"));
 
+        // A coded failure (a refused redirect) is a configuration fault, so it is not retried;
+        // the uncoded errors (timeouts, transport failures) still are.
         if (result.Error is { Length: > 0 })
-            return SnippetResult.Fail(result.Error, "rest_error", retryable: true);
+            return SnippetResult.Fail(result.Error, result.ErrorCode ?? "rest_error", retryable: result.ErrorCode is null);
 
         var ok = result.Success;
         return new SnippetResult
@@ -501,6 +503,11 @@ public sealed class RestCallSnippetHandler : ISnippetHandler
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             return SnippetResult.Fail($"timed out after {request.TimeoutSeconds}s", "timeout", retryable: true);
+        }
+        catch (RedirectRefusedException ex)
+        {
+            return SnippetResult.Fail(
+                $"{ex.Message} (the server answered HTTP {ex.StatusCode})", RedirectRefusedException.Code);
         }
         catch (HttpRequestException ex)
         {
