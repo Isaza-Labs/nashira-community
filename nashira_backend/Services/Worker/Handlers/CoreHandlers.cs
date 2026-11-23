@@ -630,6 +630,13 @@ public sealed class McpCallSnippetHandler : ISnippetHandler
         {
             return SnippetResult.Fail(ex.Message, "catalog_error");
         }
+        catch (Exception ex) when (RedirectRefusedException.Find(ex) is { } refused)
+        {
+            // Final: the endpoint has to be reconfigured, and a repeat would only run the original request again.
+            return SnippetResult.Fail(
+                $"MCP call failed: {refused.Message} (the server answered HTTP {refused.StatusCode})",
+                RedirectRefusedException.Code);
+        }
         catch (Exception ex)
         {
             return SnippetResult.Fail($"MCP call failed: {ex.Message}", "mcp_error", retryable: true);

@@ -4,6 +4,7 @@ using nashira_backend.Data.Db;
 using nashira_backend.Exceptions;
 using nashira_backend.Services.Identity;
 using nashira_backend.Services.Mcp;
+using nashira_backend.Services.Net;
 
 namespace nashira_backend.Services.Ai.Tools.Handlers;
 
@@ -82,6 +83,20 @@ public sealed class McpCallHandler : IToolHandler
             // Catalog-level refusals (unknown/disabled/retired tool) are the caller's
             // problem to fix, so they come back as a message rather than a 500.
             return Err(ex.Message);
+        }
+        catch (Exception ex) when (RedirectRefusedException.Find(ex) is { } refused)
+        {
+            // Configuration fault, not a transient one: the code lets the dispatcher treat it as final
+            // instead of offering a correction that would call the server again. Only the fixed text
+            // and the status are reported; the Location header is never carried.
+            _logger.LogWarning(
+                "mcp.call.redirect_refused server={Server} tool={Tool} status={Status} reason={Reason}",
+                serverName, toolName, refused.StatusCode, refused.Reason);
+            return JsonSerializer.SerializeToElement(new
+            {
+                error = $"MCP call failed: {refused.Message} (the server answered HTTP {refused.StatusCode})",
+                error_code = RedirectRefusedException.Code,
+            });
         }
         catch (Exception ex)
         {

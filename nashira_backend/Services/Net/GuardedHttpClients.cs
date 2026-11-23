@@ -59,6 +59,26 @@ public sealed class RedirectRefusedException(int statusCode, RedirectRefusalReas
     public int StatusCode { get; } = statusCode;
 
     public RedirectRefusalReason Reason { get; } = reason;
+
+    /// <summary>
+    /// The refusal behind a failure, if there is one. A client library between the transport and the
+    /// caller (the MCP SDK, for one) may wrap what the handler threw, so the inner chain is searched,
+    /// to a fixed depth, instead of relying on the outermost type.
+    /// </summary>
+    public static RedirectRefusedException? Find(Exception? error)
+    {
+        for (var depth = 0; error is not null && depth < 8; depth++)
+        {
+            if (error is RedirectRefusedException refused) return refused;
+            if (error is AggregateException aggregate)
+            {
+                foreach (var inner in aggregate.InnerExceptions)
+                    if (Find(inner) is { } found) return found;
+            }
+            error = error.InnerException;
+        }
+        return null;
+    }
 }
 
 // Recheck redirect destinations (including DNS answers), then fail closed rather
