@@ -67,10 +67,9 @@ public class PythonSandboxTests
             AllowedModules: allowed ?? ["json", "datetime", "collections"]), CancellationToken.None);
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task Minimal_snippet_returns_its_result_typed()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""result = {"ok": True, "html": "<html><body>ok</body></html>"}""");
 
@@ -79,10 +78,9 @@ public class PythonSandboxTests
         Assert.Equal("<html><body>ok</body></html>", r.Output.GetProperty("html").GetString());
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task Input_arrives_typed_and_is_addressable()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync(
             """result = {"total": sum(input["items"]), "name": input["meta"]["name"]}""",
@@ -93,10 +91,9 @@ public class PythonSandboxTests
         Assert.Equal("dashboard", r.Output.GetProperty("name").GetString());
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task Prints_stay_in_stdout_and_do_not_corrupt_the_envelope()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""
             print("log line one")
@@ -111,10 +108,9 @@ public class PythonSandboxTests
         Assert.DoesNotContain("__NASHIRA_RESULT__", r.Stdout);
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task A_snippet_exception_is_a_script_error_naming_the_exception()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""result = {"x": 1 / 0}""");
 
@@ -126,10 +122,9 @@ public class PythonSandboxTests
     // The failure mode a workflow author hits when a template path is wrong: the
     // reference stays literal, the snippet indexes a string as if it were the
     // object, and the error must point at the snippet — not at the harness.
-    [Fact]
+    [RequiresPythonFact]
     public async Task A_literal_unresolved_template_fails_inside_the_snippet_legibly()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync(
             """result = {"n": len(input["data"]["devices"])}""",
@@ -155,10 +150,9 @@ public class PythonSandboxTests
     // The caller is now read from the calling frame, which is what the argument
     // was standing in for. `os` uses the same shape as dateutil for a module that
     // is always present, so the test needs nothing installed.
-    [Fact]
+    [RequiresPythonFact]
     public async Task An_allowed_package_may_import_indirectly_without_passing_globals()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""
             import os.path
@@ -171,10 +165,9 @@ public class PythonSandboxTests
     // The clause removed above was load-bearing: it was what stopped a snippet
     // calling __import__ directly, which passes no globals either. The frame check
     // has to keep that closed, or the fix trades one bug for a hole.
-    [Fact]
+    [RequiresPythonFact]
     public async Task A_snippet_cannot_escape_the_guard_by_calling_import_directly()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""
             os = __import__("os")
@@ -189,10 +182,9 @@ public class PythonSandboxTests
     // The other way round the same corner: importlib is import machinery, and a
     // snippet reaching for it is asking to bypass the check rather than to use a
     // module.
-    [Fact]
+    [RequiresPythonFact]
     public async Task A_snippet_cannot_escape_the_guard_through_importlib()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""
             import importlib
@@ -203,10 +195,9 @@ public class PythonSandboxTests
         Assert.Contains("allowlist", r.Stderr);
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task The_import_guard_blocks_a_module_off_the_allowlist()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""
             import os
@@ -224,10 +215,9 @@ public class PythonSandboxTests
     // depended on what the harness happened to have cached in sys.modules on that
     // interpreter version. The allowlist must govern what the SNIPPET imports;
     // an approved module's dependencies are its own business.
-    [Fact]
+    [RequiresPythonFact]
     public async Task An_allowed_module_may_import_its_own_dependencies()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""
             import datetime
@@ -243,10 +233,9 @@ public class PythonSandboxTests
         Assert.Equal("a", r.Output.GetProperty("top").GetString());
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task An_allowed_module_imports_normally()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""
             import json
@@ -258,10 +247,9 @@ public class PythonSandboxTests
         Assert.Equal("a", r.Output.GetProperty("top").GetString());
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task A_runaway_loop_is_killed_at_the_deadline()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""
             while True:
@@ -274,10 +262,9 @@ public class PythonSandboxTests
 
     // A result comfortably under the stdout cap round-trips whole. Dashboards this
     // size are fine.
-    [Fact]
+    [RequiresPythonFact]
     public async Task A_100kb_result_round_trips_intact()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""result = {"html": "<div>" + "x" * 100_000 + "</div>"}""");
 
@@ -290,10 +277,9 @@ public class PythonSandboxTests
     // NEVER succeed — the child is killed mid-envelope and the step fails with an
     // empty-ish stderr. If this test ever fails because the big result came back
     // intact, the cap was raised or rerouted: delete the test with the fix.
-    [Fact]
+    [RequiresPythonFact]
     public async Task A_result_larger_than_the_output_cap_cannot_survive()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync("""result = {"html": "x" * 250_000}""");
 

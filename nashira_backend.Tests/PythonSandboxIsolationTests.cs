@@ -73,10 +73,9 @@ public class PythonSandboxIsolationTests
         Assert.Equal("sandbox_not_configured", r.ErrorKind);
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task Running_without_a_sandbox_needs_the_explicit_opt_in()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync(Sandbox(("Python:AllowUnsandboxed", "true")), "result = {'ok': True}");
 
@@ -84,10 +83,9 @@ public class PythonSandboxIsolationTests
         Assert.True(r.Output.GetProperty("ok").GetBoolean());
     }
 
-    [Fact]
+    [RequiresPythonFact(true)]
     public async Task A_configured_sandbox_command_runs_without_the_opt_in()
     {
-        if (Exe is null || OperatingSystem.IsWindows()) return;
 
         // `env` stands in for bwrap or a container shim: it runs the rest of the command
         // line, which is all the wrapper contract asks of it.
@@ -97,10 +95,9 @@ public class PythonSandboxIsolationTests
         Assert.True(r.Output.GetProperty("ok").GetBoolean());
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task Snippet_code_has_no_open_builtin()
     {
-        if (Exe is null) return;
 
         var host = Path.Combine(Path.GetTempPath(), $"nashira-host-{Guid.NewGuid():N}");
         await File.WriteAllTextAsync(host, "host-file-contents");
@@ -125,10 +122,9 @@ public class PythonSandboxIsolationTests
         }
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task Everyday_builtins_still_work_without_open()
     {
-        if (Exe is null) return;
 
         var r = await RunAsync(Sandbox(("Python:AllowUnsandboxed", "true")),
             """

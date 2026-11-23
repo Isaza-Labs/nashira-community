@@ -69,11 +69,10 @@ public class PythonSandboxAuthorizationTests
         Assert.Equal("runtime_unavailable", result.ErrorKind);
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task Admin_and_explicit_flag_can_run_in_disposable_test_environment()
     {
-        // Same convention as PythonSandboxTests: nothing to execute on a host without an interpreter.
-        if (PythonSandboxTests.Exe is null) return;
+        // Skipped, with the reason shown, on a host without an interpreter.
         var result = await Run("admin", true, true);
         Assert.True(result.Ok, result.Stderr);
         Assert.Equal(42, result.Output.GetInt32());

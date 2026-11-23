@@ -176,11 +176,10 @@ public class PythonSnippetSecretLeakTests
         Assert.Equal("[redacted]", result.Output.GetString());
     }
 
-    [Fact]
+    [RequiresPythonFact]
     public async Task A_real_script_that_echoes_its_input_returns_no_secret()
     {
         var exe = PythonSandboxTests.Exe;
-        if (exe is null) return;
 
         var sandbox = new PythonSandbox(
             new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
