@@ -211,6 +211,7 @@ public sealed class ToolDispatcher
     private static readonly HashSet<string> FinalErrorCodes = new(StringComparer.Ordinal)
     {
         RedirectRefusedException.Code,
+        RedirectSearch.IncompleteCode,
     };
 
     private static bool IsFinalRefusal(JsonElement result) =>

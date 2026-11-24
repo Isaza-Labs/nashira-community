@@ -63,50 +63,144 @@ public sealed class RedirectRefusedException(int statusCode, RedirectRefusalReas
     /// <summary>The deepest level of an exception graph that is searched (the failure itself is level 0).</summary>
     internal const int MaxSearchDepth = 8;
 
-    /// <summary>The most exceptions examined in one search, however the graph is shaped.</summary>
+    /// <summary>The most distinct exceptions examined in one search, however the graph is shaped.</summary>
     internal const int MaxSearchNodes = 64;
 
     /// <summary>
-    /// The refusal behind a failure, if there is one. A client library between the transport and the
-    /// caller (the MCP SDK, for one) may wrap what the handler threw, so the graph of inner exceptions
-    /// (including every child of an <see cref="AggregateException"/>) is searched instead of relying on
-    /// the outermost type. One work list, one visited set and one node count cover the whole search, so
-    /// nesting, width, shared children and cycles all stay bounded. When the budget runs out the answer is
-    /// "not found", which leaves the caller on its generic failure handling.
+    /// The most child links followed in one search. Links to an exception that was already examined cost
+    /// nothing against <see cref="MaxSearchNodes"/>, so this is what bounds a very wide or repetitive list.
     /// </summary>
-    public static RedirectRefusedException? Find(Exception? error)
+    internal const int MaxSearchLinks = 256;
+
+    /// <summary>
+    /// Looks for the refusal behind a failure. A client library between the transport and the caller (the
+    /// MCP SDK, for one) may wrap what the handler threw, so the graph of inner exceptions (every child of an
+    /// <see cref="AggregateException"/> included) is searched instead of relying on the outermost type.
+    /// The walk is depth-first and visits children in order. An exception reached again by a shorter path
+    /// is searched again from there, so what is found does not depend on which path got to it first.
+    /// One node budget, one link budget and one depth limit cover the whole search. There are three answers:
+    /// <see cref="RedirectSearchOutcome.Found"/>; <see cref="RedirectSearchOutcome.NotFound"/>, which means
+    /// every exception in the graph was examined; and <see cref="RedirectSearchOutcome.Incomplete"/>, which
+    /// means a limit stopped the search before it could say. A caller must treat the last one as unknown:
+    /// it neither reports a refusal nor reads the exception graph's text.
+    /// </summary>
+    public static RedirectSearch Search(Exception? error)
     {
-        if (error is null) return null;
+        if (error is null) return RedirectSearch.NotFoundResult;
 
-        var pending = new Stack<(Exception Error, int Depth)>();
-        var seen = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
-        pending.Push((error, 0));
-        var examined = 0;
+        var depthOf = new Dictionary<Exception, int>(ReferenceEqualityComparer.Instance);
+        var cutShort = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
+        var path = new Stack<SearchFrame>();
+        var links = 0;
 
-        while (pending.Count > 0)
+        Exception? entering = error;
+        var enteringDepth = 0;
+        while (true)
         {
-            var (current, depth) = pending.Pop();
-            if (!seen.Add(current)) continue;
-            if (++examined > MaxSearchNodes) return null;
-            if (current is RedirectRefusedException refused) return refused;
-            if (depth + 1 >= MaxSearchDepth) continue;
+            if (entering is not null)
+            {
+                var node = entering;
+                var depth = enteringDepth;
+                entering = null;
 
-            // Pushed in reverse so the first child is searched first, as a plain inner-exception walk would.
-            // Only as many children as could still be examined are queued, so a very wide aggregate cannot
-            // grow the work list past the budget either.
-            if (current is AggregateException aggregate)
-            {
-                var room = Math.Max(0, MaxSearchNodes + 1 - examined - pending.Count);
-                for (var i = Math.Min(aggregate.InnerExceptions.Count, room) - 1; i >= 0; i--)
-                    pending.Push((aggregate.InnerExceptions[i], depth + 1));
+                if (depthOf.TryGetValue(node, out var seenAt))
+                {
+                    // Already searched from here or from a shallower point: nothing new below it.
+                    if (seenAt <= depth) continue;
+                }
+                else if (depthOf.Count >= MaxSearchNodes)
+                {
+                    return RedirectSearch.IncompleteResult;
+                }
+                depthOf[node] = depth;
+
+                if (node is RedirectRefusedException refused) return RedirectSearch.FoundResult(refused);
+
+                var children = ChildrenOf(node);
+                if (children.Count == 0)
+                {
+                    cutShort.Remove(node);
+                }
+                else if (depth + 1 >= MaxSearchDepth)
+                {
+                    cutShort.Add(node);
+                }
+                else
+                {
+                    cutShort.Remove(node);
+                    path.Push(new SearchFrame(depth, children));
+                }
+                continue;
             }
-            else if (current.InnerException is { } inner)
+
+            if (path.Count == 0) break;
+            var frame = path.Peek();
+            if (frame.Next >= frame.Children.Count)
             {
-                pending.Push((inner, depth + 1));
+                path.Pop();
+                continue;
             }
+            if (++links > MaxSearchLinks) return RedirectSearch.IncompleteResult;
+            entering = frame.Children[frame.Next++];
+            enteringDepth = frame.Depth + 1;
         }
-        return null;
+
+        // An exception whose children sat below the depth limit, and that was not searched again from a
+        // shallower point, leaves the answer open.
+        return cutShort.Count > 0 ? RedirectSearch.IncompleteResult : RedirectSearch.NotFoundResult;
     }
+
+    private static IReadOnlyList<Exception> ChildrenOf(Exception error) => error switch
+    {
+        AggregateException aggregate => aggregate.InnerExceptions,
+        { InnerException: { } inner } => [inner],
+        _ => [],
+    };
+
+    private sealed class SearchFrame(int depth, IReadOnlyList<Exception> children)
+    {
+        public int Depth { get; } = depth;
+        public IReadOnlyList<Exception> Children { get; } = children;
+        public int Next { get; set; }
+    }
+}
+
+public enum RedirectSearchOutcome
+{
+    /// <summary>Every exception in the graph was examined and none is a refusal.</summary>
+    NotFound,
+
+    /// <summary>A refusal is in the graph.</summary>
+    Found,
+
+    /// <summary>A limit stopped the search; whether the graph holds a refusal is not known.</summary>
+    Incomplete,
+}
+
+/// <summary>The answer of <see cref="RedirectRefusedException.Search"/>.</summary>
+public readonly record struct RedirectSearch
+{
+    /// <summary>
+    /// The error code for a failure whose graph could not be searched in full. It is not a refusal code,
+    /// and it is final: repeating the call would run the original request again.
+    /// </summary>
+    public const string IncompleteCode = "failure_unclassified";
+
+    /// <summary>The fixed text an incomplete search is reported with; nothing from the failure goes in it.</summary>
+    public const string IncompleteMessage =
+        "MCP call failed; the error details were withheld because the failure could not be fully inspected";
+
+    public RedirectSearchOutcome Outcome { get; private init; }
+
+    /// <summary>The refusal, when <see cref="Outcome"/> is <see cref="RedirectSearchOutcome.Found"/>.</summary>
+    public RedirectRefusedException? Refusal { get; private init; }
+
+    public bool IsIncomplete => Outcome == RedirectSearchOutcome.Incomplete;
+
+    internal static RedirectSearch NotFoundResult => new() { Outcome = RedirectSearchOutcome.NotFound };
+    internal static RedirectSearch IncompleteResult => new() { Outcome = RedirectSearchOutcome.Incomplete };
+    internal static RedirectSearch FoundResult(RedirectRefusedException refusal) =>
+        new() { Outcome = RedirectSearchOutcome.Found, Refusal = refusal };
 }
 
 // Recheck redirect destinations (including DNS answers), then fail closed rather

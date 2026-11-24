@@ -630,15 +630,22 @@ public sealed class McpCallSnippetHandler : ISnippetHandler
         {
             return SnippetResult.Fail(ex.Message, "catalog_error");
         }
-        catch (Exception ex) when (RedirectRefusedException.Find(ex) is { } refused)
-        {
-            // Final: the endpoint has to be reconfigured, and a repeat would only run the original request again.
-            return SnippetResult.Fail(
-                $"MCP call failed: {refused.Message} (the server answered HTTP {refused.StatusCode})",
-                RedirectRefusedException.Code);
-        }
         catch (Exception ex)
         {
+            var search = RedirectRefusedException.Search(ex);
+            if (search.Refusal is { } refused)
+            {
+                // Final: the endpoint has to be reconfigured, and a repeat would only run the original request again.
+                return SnippetResult.Fail(
+                    $"MCP call failed: {refused.Message} (the server answered HTTP {refused.StatusCode})",
+                    RedirectRefusedException.Code);
+            }
+            if (search.IsIncomplete)
+            {
+                // The graph could not be inspected in full, so nothing is read from it and nothing is guessed
+                // about it: fixed text, a code that is not a refusal, and no retry.
+                return SnippetResult.Fail(RedirectSearch.IncompleteMessage, RedirectSearch.IncompleteCode);
+            }
             return SnippetResult.Fail($"MCP call failed: {ex.Message}", "mcp_error", retryable: true);
         }
     }

@@ -51,6 +51,20 @@ public class ToolDispatcherRedirectFinalityTests
     }
 
     [Fact]
+    public async Task A_failure_that_could_not_be_inspected_is_final_too()
+    {
+        var (output, handler, store) = await RunAsync(new
+        {
+            error = "MCP call failed; the error details were withheld because the failure could not be fully inspected",
+            error_code = "failure_unclassified",
+        });
+
+        Assert.False(output.Success);
+        Assert.Equal(1, handler.Calls);
+        Assert.Equal(0, store.Lookups);
+    }
+
+    [Fact]
     public async Task An_ordinary_failure_with_a_learned_correction_is_still_retried()
     {
         var (output, handler, store) = await RunAsync(new { error = "example failure: HTTP 500" });

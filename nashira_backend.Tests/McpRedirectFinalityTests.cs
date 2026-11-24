@@ -104,6 +104,93 @@ public class McpRedirectFinalityTests
         Assert.Contains("MCP call failed", tool.GetProperty("error").GetString());
     }
 
+    private const string WrapperMarker = "example-sensitive-wrapper-marker";
+    private const string FixedWithheld =
+        "MCP call failed; the error details were withheld because the failure could not be fully inspected";
+
+    // More wrappers than the search will look through, each carrying text that must never come out, with
+    // the refusal at the bottom. Whether it holds a refusal is unknown, so nothing from it may be reported.
+    public static TheoryData<string> UnsearchableFailures => new() { "deep_chain", "deep_aggregates", "wide_aggregate" };
+
+    private static Exception BuildUnsearchable(string kind)
+    {
+        Exception inner = new RedirectRefusedException(302);
+        switch (kind)
+        {
+            case "deep_chain":
+                for (var i = 0; i < RedirectRefusedException.MaxSearchDepth + 4; i++)
+                    inner = new IOException($"{WrapperMarker} chain {i}", inner);
+                break;
+            case "deep_aggregates":
+                for (var i = 0; i < RedirectRefusedException.MaxSearchDepth + 4; i++)
+                    inner = new AggregateException($"{WrapperMarker} aggregate {i}", new TimeoutException(WrapperMarker), inner);
+                break;
+            case "wide_aggregate":
+                inner = new AggregateException(
+                    $"{WrapperMarker} wide",
+                    Enumerable.Range(0, RedirectRefusedException.MaxSearchNodes + 10)
+                        .Select(i => (Exception)new TimeoutException($"{WrapperMarker} sibling {i}"))
+                        .Append(inner));
+                break;
+            default: throw new ArgumentOutOfRangeException(nameof(kind));
+        }
+        return inner;
+    }
+
+    [Theory]
+    [MemberData(nameof(UnsearchableFailures))]
+    public async Task The_workflow_step_withholds_and_does_not_retry_a_failure_that_could_not_be_inspected(string kind)
+    {
+        using var db = await DbWithServerAsync();
+        var top = new Tripwire(BuildUnsearchable(kind));
+        var handler = new McpCallSnippetHandler(db, new ThrowingMcp(top));
+
+        var result = await handler.ExecuteAsync(RedirectRefusalMappingTests.Request("mcp_call", Input), default);
+
+        Assert.False(result.Success);
+        Assert.Equal("failure_unclassified", result.ErrorCode);
+        Assert.NotEqual(Code, result.ErrorCode);
+        Assert.False(result.Retryable);
+        Assert.Equal(FixedWithheld, result.Error);
+        Assert.DoesNotContain(WrapperMarker, JsonSerializer.Serialize(result));
+        Assert.DoesNotContain("HTTP 302", JsonSerializer.Serialize(result));
+        Assert.Equal(0, top.Reads);
+    }
+
+    [Theory]
+    [MemberData(nameof(UnsearchableFailures))]
+    public async Task The_agent_tool_withholds_logs_nothing_from_and_marks_final_a_failure_that_could_not_be_inspected(string kind)
+    {
+        using var db = await DbWithServerAsync();
+        var top = new Tripwire(BuildUnsearchable(kind));
+        var log = new RedirectTargetRefusalTests.CapturingLogger<McpCallHandler>();
+        var handler = new McpCallHandler(db, new HardeningTestUser(), new ThrowingMcp(top), log);
+
+        var result = await handler.ExecuteAsync(JsonSerializer.SerializeToElement(Input), default);
+
+        Assert.Equal("failure_unclassified", result.GetProperty("error_code").GetString());
+        Assert.Equal(FixedWithheld, result.GetProperty("error").GetString());
+        Assert.DoesNotContain(WrapperMarker, result.GetRawText());
+        Assert.DoesNotContain(WrapperMarker, log.Text);
+        Assert.DoesNotContain("HTTP 302", result.GetRawText());
+        Assert.NotEqual("", log.Text);
+        Assert.Equal(0, top.Reads);
+    }
+
+    [Fact]
+    public async Task A_completed_search_that_finds_nothing_still_reads_the_message_and_stays_retryable()
+    {
+        using var db = await DbWithServerAsync();
+        var top = new Tripwire(new IOException("example connection reset"));
+
+        var step = await new McpCallSnippetHandler(db, new ThrowingMcp(top))
+            .ExecuteAsync(RedirectRefusalMappingTests.Request("mcp_call", Input), default);
+
+        Assert.Equal("mcp_error", step.ErrorCode);
+        Assert.True(step.Retryable);
+        Assert.True(top.Reads > 0);
+    }
+
     // The whole chain: real handler, real service and client, the SDK's HTTP transport and the real
     // refusing handler, with a transport that answers every request with a redirect. Nothing leaves
     // the process.
@@ -133,6 +220,15 @@ public class McpRedirectFinalityTests
     {
         public Task<McpConnection> CreateAsync(McpServer server, CancellationToken ct) =>
             Task.FromResult(new McpConnection(new Uri("https://203.0.113.30/mcp"), [], false));
+    }
+
+    // The outermost exception of a failure. It counts how often its text is read, to show that a caller
+    // which must not read the failure's text did not.
+    private sealed class Tripwire(Exception inner) : Exception("example", inner)
+    {
+        public int Reads { get; private set; }
+        public override string Message { get { Reads++; return "example-sensitive-wrapper-marker"; } }
+        public override string ToString() { Reads++; return base.ToString(); }
     }
 
     private sealed class ThrowingMcp(Exception error) : IMcpServerService
