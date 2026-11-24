@@ -137,6 +137,9 @@ internal sealed class ScriptedHttp(params ScriptedBody[] bodies) : IHttpClientFa
     private int _calls;
     public int Calls => _calls;
 
+    // The request bodies the runner sent, in order, so a test can read what the model was told.
+    public List<string> Requests { get; } = [];
+
     public HttpClient CreateClient(string name) => new(new Handler(this));
 
     private HttpResponseMessage Next()
@@ -149,8 +152,12 @@ internal sealed class ScriptedHttp(params ScriptedBody[] bodies) : IHttpClientFa
 
     private sealed class Handler(ScriptedHttp owner) : HttpMessageHandler
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
-            Task.FromResult(owner.Next());
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(ct);
+            lock (owner.Requests) owner.Requests.Add(body);
+            return owner.Next();
+        }
     }
 }
 

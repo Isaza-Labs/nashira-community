@@ -106,7 +106,7 @@ export const consoleScreens: DocSection[] = [
 					{ name: 'user_message / assistant_text', type: 'string', desc: 'What was asked and what came back.' },
 					{ name: 'tool_calls / tool_call_count', type: 'array / number', desc: 'Every tool call with its arguments and result.' },
 					{ name: 'tokens_in / tokens_out / iterations', type: 'number', desc: 'Usage, and how many model round-trips the turn took.' },
-					{ name: 'status', type: 'string', desc: '`completed`, `awaiting_confirmation`, `error`, `timeout` or `truncated`.' },
+					{ name: 'status', type: 'string', desc: '`completed`, `awaiting_confirmation`, `error`, `timeout`, `truncated` or `unrun_action` (the agent announced an action, was asked once to carry it out, and still called no tool).' },
 					{ name: 'error / started_at / elapsed_ms', type: 'various', desc: 'Why it failed, when it started and how long it took.' }
 				]
 			},

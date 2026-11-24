@@ -158,6 +158,11 @@ public sealed class AgentConversationRunner
         var errored = false;
         var awaitingConfirmation = false;
         var outputCutOff = false;
+        // Set when a round announced an action without calling a tool and the model was
+        // asked to act (the tool-call count at that moment); unrunAction when it still
+        // did not.
+        int? toolCallsAtNudge = null;
+        var unrunAction = false;
 
         // Forensic record of the turn. Collected as it happens because the interesting
         // case is the turn that ends badly, and by then the tool results are gone.
@@ -302,7 +307,29 @@ public sealed class AgentConversationRunner
                 }
 
                 if (pending.Count == 0)
+                {
+                    // A round that announces an action and calls nothing is not an
+                    // answer: asked once to act or say it did not, the model gets one
+                    // more round. If that round still calls nothing, the user is told.
+                    var said = content.ToString();
+                    if (toolCallsAtNudge is null && ActionAnnouncement.Unrun(said, toolCalls.Count > 0))
+                    {
+                        toolCallsAtNudge = toolCalls.Count;
+                        _logger.LogWarning(
+                            "ai.chat.unrun_action conversation={ConversationId} iteration={Iteration} tool_calls={ToolCalls}",
+                            conversationId, iterations, toolCalls.Count);
+                        messages.Add(new LlmMessage { Role = "assistant", Content = said });
+                        messages.Add(new LlmMessage { Role = "user", Content = ActionAnnouncement.Nudge });
+                        continue;
+                    }
+                    if (toolCallsAtNudge == toolCalls.Count)
+                    {
+                        unrunAction = true;
+                        finalText.Append(ActionAnnouncement.UnrunNotice);
+                        await sink.TextAsync(ActionAnnouncement.UnrunNotice, ct);
+                    }
                     break; // model answered with no tool calls -> final
+                }
 
                 messages.Add(new LlmMessage { Role = "assistant", Content = content.ToString(), ToolCalls = pending });
 
@@ -392,6 +419,8 @@ public sealed class AgentConversationRunner
                 turnStatus = AgentTurn.StatusTruncated;
             else if (turnStatus == AgentTurn.StatusCompleted && awaitingConfirmation)
                 turnStatus = AgentTurn.StatusAwaitingConfirmation;
+            else if (turnStatus == AgentTurn.StatusCompleted && unrunAction)
+                turnStatus = AgentTurn.StatusUnrunAction;
 
             var assistantText = errored && finalText.Length == 0 ? "[error]" : finalText.ToString();
             var newlyLoaded = _turnScope.LoadedSkillIntegrationIds.Count > previouslyLoaded.Count;
@@ -400,7 +429,7 @@ public sealed class AgentConversationRunner
                 newlyApproved ? approvals : null,
                 request.Attachments?.Select(a => a.Filename).Where(n => !string.IsNullOrWhiteSpace(n)).ToList(),
                 newlyLoaded ? _turnScope.LoadedSkillIntegrationIds : null,
-                resolved.ProviderId, model);
+                resolved.ProviderId, model, toolCalls);
             await RecordTurnAsync(new TurnRecord(
                 conversationId, model, request.Message, assistantText, toolCalls, totalIn, totalOut,
                 totalCacheRead, totalCacheWrite,
@@ -681,25 +710,9 @@ public sealed class AgentConversationRunner
         {
             var conv = await _db.AIConversations.AsNoTracking().FirstOrDefaultAsync(
                 c => c.AIConversationId == conversationId.Value && c.IsActive, ct);
-            var history = new List<LlmMessage>();
-            if (conv is not null)
-                foreach (var m in DeserializeMessages(conv.MessagesJson))
-                    if (m.Role != "system")
-                    {
-                        // Earlier turns' attachments persist per conversation, so the
-                        // note points at the tool instead of at the user. (Rows can be
-                        // evicted past the per-conversation cap; parse_file's error
-                        // then names what is still there.)
-                        var content = m.Attachments is { Count: > 0 }
-                            ? m.Content + "\n[files attached to this message: "
-                                + string.Join(", ", m.Attachments)
-                                + " — still readable via parse_file, e.g. {\"format\": \"xlsx\", \"attachment\": \""
-                                + m.Attachments[0] + "\"}]"
-                            : m.Content;
-                        history.Add(new LlmMessage { Role = m.Role, Content = content });
-                    }
+            List<StoredMessage> stored = conv is null ? [] : DeserializeMessages(conv.MessagesJson);
 
-            var (kept, omitted) = WindowHistory(history, _chat.HistoryCharBudget);
+            var (kept, omitted, trailingRecord) = ReplayHistory(stored, _chat.HistoryCharBudget);
             if (omitted > 0)
             {
                 _logger.LogInformation(
@@ -708,10 +721,65 @@ public sealed class AgentConversationRunner
                 earlier.Add(new LlmMessage { Role = "system", Content = HistoryOmittedNote(omitted) });
             }
             earlier.AddRange(kept);
+            // The last reply's record goes in front of this turn's message, like every
+            // earlier record goes in front of the message that followed its reply.
+            if (trailingRecord is not null) userMessage = trailingRecord + "\n\n" + userMessage;
         }
 
         return ArrangeMessages(
             systemPrompt, scopedPrompt, profileMessage, earlier, userMessage, scopedAfterUser);
+    }
+
+    // The stored conversation as it is sent to the model: windowed to `charBudget`, and
+    // with each assistant reply's tool record (ToolRunRecord) put in front of the user
+    // message that followed it. In front of the next user message, not in the reply:
+    // text inside the reply reads as the model's own words, which it would learn to
+    // imitate, and a system message is lifted out of the conversation by Gemini. The
+    // record of the newest reply has no user message behind it yet; it is returned as
+    // `TrailingRecord` for this turn's message.
+    //
+    // Records count against the budget like any other text. A kept message whose reply
+    // fell out of the window loses its record: it would describe a reply the model
+    // cannot see.
+    internal static (List<LlmMessage> Kept, int Omitted, string? TrailingRecord) ReplayHistory(
+        IReadOnlyList<StoredMessage> stored, int charBudget)
+    {
+        var history = new List<LlmMessage>();
+        var recordLengths = new List<int>();
+        string? pendingRecord = null;
+
+        foreach (var m in stored)
+        {
+            if (m.Role == "system") continue;
+
+            // Earlier turns' attachments persist per conversation, so the note points
+            // at the tool instead of at the user. (Rows can be evicted past the
+            // per-conversation cap; parse_file's error then names what is still there.)
+            var content = m.Attachments is { Count: > 0 }
+                ? m.Content + "\n[files attached to this message: "
+                    + string.Join(", ", m.Attachments)
+                    + " — still readable via parse_file, e.g. {\"format\": \"xlsx\", \"attachment\": \""
+                    + m.Attachments[0] + "\"}]"
+                : m.Content;
+
+            var recordLength = 0;
+            if (m.Role == "user" && pendingRecord is not null)
+            {
+                var prefix = pendingRecord + "\n\n";
+                content = prefix + content;
+                recordLength = prefix.Length;
+            }
+            pendingRecord = m.Role == "assistant" && m.Tools is { } tools ? ToolRunRecord.Render(tools) : null;
+
+            history.Add(new LlmMessage { Role = m.Role, Content = content });
+            recordLengths.Add(recordLength);
+        }
+
+        var (kept, omitted) = WindowHistory(history, charBudget);
+        if (omitted > 0 && kept.Count > 0 && recordLengths[omitted] > 0)
+            kept[0] = new LlmMessage { Role = kept[0].Role, Content = kept[0].Content![recordLengths[omitted]..] };
+
+        return (kept, omitted, pendingRecord);
     }
 
     // Whether the guidance message goes behind the user's message for this provider.
@@ -851,7 +919,8 @@ public sealed class AgentConversationRunner
         Guid conversationId, string userMessage, string assistantContent, int totalIn, int totalOut,
         IReadOnlyCollection<string>? approvedTools, List<string>? attachmentNames = null,
         IReadOnlyCollection<Guid>? loadedSkills = null,
-        Guid? providerId = null, string? model = null)
+        Guid? providerId = null, string? model = null,
+        IReadOnlyList<ToolTelemetryEntry>? toolCalls = null)
     {
         try
         {
@@ -859,7 +928,9 @@ public sealed class AgentConversationRunner
             var turn = new List<StoredMessage>
             {
                 new("user", userMessage, attachmentNames is { Count: > 0 } ? attachmentNames : null),
-                new("assistant", assistantContent),
+                // Always a list, empty when nothing ran: "ran no tools" is the record
+                // that matters most, and only rows written before this have none.
+                new("assistant", assistantContent, Tools: ToolRunRecord.FromTelemetry(toolCalls ?? [])),
             };
             var approvedJson = approvedTools is { Count: > 0 }
                 ? JsonSerializer.Serialize(approvedTools.ToList())
@@ -1025,12 +1096,18 @@ public sealed class AgentConversationRunner
     // `Attachments` carries filenames only (never content): enough for the UI to show
     // the paperclip chips after a reload and for the history note to name what was
     // attached. Null (absent in JSON) on assistant turns and on rows that predate it.
-    private sealed record StoredMessage(
+    //
+    // `Tools` is what the server saw run during an assistant turn (see ToolRunRecord).
+    // Null on user turns and on rows written before it existed; those get no record.
+    internal sealed record StoredMessage(
         [property: JsonPropertyName("role")] string Role,
         [property: JsonPropertyName("content")] string Content,
         [property: JsonPropertyName("attachments")]
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-        List<string>? Attachments = null);
+        List<string>? Attachments = null,
+        [property: JsonPropertyName("tools")]
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+        List<StoredToolCall>? Tools = null);
 }
 
 /// <summary>
