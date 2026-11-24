@@ -219,17 +219,21 @@ internal sealed class RejectRedirectHandler(IUrlGuard guard) : DelegatingHandler
         {
             if (response.Headers.Location is { } location)
             {
+                bool allowed;
                 try
                 {
                     var target = location.IsAbsoluteUri ? location : new Uri(request.RequestUri!, location);
-                    guard.EnsureSafe(target.AbsoluteUri);
+                    // Judged quietly: the target belongs to the remote server, and the guard's own
+                    // logging and error text would repeat its host.
+                    allowed = guard.IsAllowedQuietly(target.AbsoluteUri);
                 }
                 catch (Exception)
                 {
                     // Whatever the validator or the URI parser said can repeat the Location, so it is
                     // not kept; the refusal says only that the target was not acceptable.
-                    throw new RedirectRefusedException(status, RedirectRefusalReason.TargetNotAllowed);
+                    allowed = false;
                 }
+                if (!allowed) throw new RedirectRefusedException(status, RedirectRefusalReason.TargetNotAllowed);
             }
             throw new RedirectRefusedException(status);
         }

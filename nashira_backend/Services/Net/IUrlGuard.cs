@@ -6,4 +6,20 @@ namespace nashira_backend.Services.Net;
 public interface IUrlGuard
 {
     void EnsureSafe(string url, bool allowPrivate = false);
+
+    // The same decision for an address a remote server supplied (a redirect target): true when it
+    // would pass, with nothing logged and nothing thrown that repeats the address. An implementation
+    // that does not log can rely on this default.
+    bool IsAllowedQuietly(string url, bool allowPrivate = false)
+    {
+        try
+        {
+            EnsureSafe(url, allowPrivate);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
 }

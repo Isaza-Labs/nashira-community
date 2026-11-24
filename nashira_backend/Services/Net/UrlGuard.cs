@@ -27,7 +27,26 @@ public sealed class UrlGuard : IUrlGuard
         _resolve = resolve;
     }
 
-    public void EnsureSafe(string url, bool allowPrivate = false)
+    public void EnsureSafe(string url, bool allowPrivate = false) => Validate(url, allowPrivate, log: true);
+
+    // The address a remote server asked to be redirected to is data the remote server chose: its host,
+    // path and query can carry anything. It gets the same checks, in the same order, but is judged
+    // without logging and without an error that repeats it, so the only record of it is the caller's
+    // fixed refusal.
+    public bool IsAllowedQuietly(string url, bool allowPrivate = false)
+    {
+        try
+        {
+            Validate(url, allowPrivate, log: false);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private void Validate(string url, bool allowPrivate, bool log)
     {
         if (_allowInternal) return;
 
@@ -40,7 +59,7 @@ public sealed class UrlGuard : IUrlGuard
         if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             || host is "127.0.0.1" or "0.0.0.0" or "::1" or "169.254.169.254")
         {
-            _logger.LogWarning("net.url_guard.blocked host={Host} reason=blocked_hostname", host);
+            if (log) _logger.LogWarning("net.url_guard.blocked host={Host} reason=blocked_hostname", host);
             throw new InvalidOperationException($"SSRF blocked: requests to {host} are not allowed");
         }
 
@@ -48,7 +67,7 @@ public sealed class UrlGuard : IUrlGuard
         try { addresses = IPAddress.TryParse(host, out var literal) ? [literal] : _resolve(host); }
         catch (SocketException ex)
         {
-            _logger.LogWarning("net.url_guard.blocked host={Host} reason=dns_resolution_failed", host);
+            if (log) _logger.LogWarning("net.url_guard.blocked host={Host} reason=dns_resolution_failed", host);
             throw new InvalidOperationException($"SSRF blocked: cannot resolve host {host}", ex);
         }
 
@@ -73,7 +92,7 @@ public sealed class UrlGuard : IUrlGuard
 
                 if (isPrivate && !allowPrivate)
                 {
-                    _logger.LogWarning("net.url_guard.blocked host={Host} reason=private_address", host);
+                    if (log) _logger.LogWarning("net.url_guard.blocked host={Host} reason=private_address", host);
                     throw new InvalidOperationException($"SSRF blocked: {host} resolves to private address {ip}");
                 }
 
@@ -102,6 +121,6 @@ public sealed class UrlGuard : IUrlGuard
             }
         }
 
-        _logger.LogDebug("net.url_guard.ok host={Host}", host);
+        if (log) _logger.LogDebug("net.url_guard.ok host={Host}", host);
     }
 }

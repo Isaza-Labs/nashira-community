@@ -58,7 +58,8 @@ followed there either. An integration check answers `degraded`; the GitHub and N
 answer 400. When an MCP workflow step or agent call cannot classify a failure within the
 exception-search limits, it reports fixed text and `failure_unclassified` (final, not retried,
 and not a redirect code), without using the exception's text. The redirect target and the
-remote `Location` header are never included in the error. The URL guard also refuses IPv6
+remote `Location` header are never included in the error, and the URL guard does not log
+them when it checks where a redirect points. The URL guard also refuses IPv6
 site-local (`fec0::/10`) and IPv4-compatible (`::a.b.c.d`) addresses, in addition to
 unique-local and link-local ones, whatever the integration's private-network setting says (the deployment-wide
 `Security:AllowInternalUrls` development bypass still disables the guard). These checks are
