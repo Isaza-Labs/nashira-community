@@ -11,8 +11,11 @@ namespace nashira_backend.Tests;
 // back typed, a snippet exception is a script_error and not a harness crash, and
 // the import guard holds inside the interpreter.
 //
-// Every test no-ops when no Python is on PATH, so the suite still passes on a
-// build agent without one.
+// Test policy when no Python is on PATH: the optional tests here are marked
+// [RequiresPythonFact] and are reported as skipped, with the reason, instead of
+// passing without running. The secret-privacy acceptance tests (SecretAuthorizationTests,
+// SecretOutputPrivacyTests) assert that an interpreter is available and fail without
+// one, so a build agent must provide Python.
 public class PythonSandboxTests
 {
     internal static readonly string? Exe = FindPython();
