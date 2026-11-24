@@ -24,6 +24,10 @@ public class AgentTurn
     // finished. The text is persisted as it stands, with a notice appended; the
     // status is what lets /admin/sessions tell "answered" from "ran out of room".
     public const string StatusTruncated = "truncated";
+    // The model announced an action, was asked once to carry it out, and still called
+    // no tool. The answer is persisted with a notice saying so; the status is what lets
+    // /admin/sessions find turns that claimed work they did not do.
+    public const string StatusUnrunAction = "unrun_action";
 
     public Guid AgentTurnId { get; set; }
     public Guid ConversationId { get; set; }
