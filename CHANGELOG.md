@@ -48,10 +48,13 @@ directly are not covered by this. See `docs/workflow-output-privacy.md`.
 REST calls, integration calls and OAuth token requests, MCP connections, notifications and
 the GitHub and NetBox clients no longer follow an HTTP redirect, including from an
 integration whose OAuth settings are literal values or come from a linked credential. The
-request fails instead of being replayed, so configure the final endpoint. A workflow step or
-an agent tool call reports `redirect_refused`, also when the redirect came from an OAuth
-token endpoint. It is final and is not retried (a withheld step reports `output_redacted`);
-an integration check answers `degraded`; the GitHub and NetBox clients answer 400. The redirect target and the
+request fails instead of being replayed, so configure the final endpoint. A REST, integration
+or MCP workflow step, and the agent's REST, integration and MCP tool calls, report
+`redirect_refused`, also when the redirect came from an OAuth token endpoint. It is final and
+is not retried (a withheld step reports `output_redacted`). A `slack_message` step that posts
+through a notification webhook reports `delivery_failed`, also final; the redirect is not
+followed there either. An integration check answers `degraded`; the GitHub and NetBox clients
+answer 400. The redirect target and the
 remote `Location` header are never included in the error. The URL guard also refuses IPv6
 site-local (`fec0::/10`) and IPv4-compatible (`::a.b.c.d`) addresses, in addition to
 unique-local and link-local ones, whatever the integration's private-network setting says (the deployment-wide
