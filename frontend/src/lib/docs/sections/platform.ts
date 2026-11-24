@@ -338,7 +338,7 @@ export const platform: DocSection[] = [
 					{ value: 'read_heavy', desc: '300 per minute per user — list and detail reads.' },
 					{ value: 'write_normal', desc: '60 per minute per user — creates, updates and deletes.' },
 					{ value: 'ai_chat', desc: '30 per hour per user — every turn reaches a model.' },
-					{ value: 'workflow_run', desc: '20 per hour per user — every run does real work.' },
+					{ value: 'workflow_run', desc: '40 per minute per user — every run does real work.' },
 					{ value: 'webhooks', desc: 'Inbound trigger and git webhooks: 60 per minute per (IP, route). Messaging webhooks: 220 per minute per (IP, channel).' }
 				]
 			},

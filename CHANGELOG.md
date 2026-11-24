@@ -89,6 +89,12 @@ for `${secret:` in the OAuth settings of each integration that is used by non-Ad
 users. An integration check run by a non-Admin on such an integration now answers 403
 and no longer records the integration as unreachable.
 
+## 2026-11-19 — A run budget that ordinary use does not exhaust
+
+The `workflow_run` rate limit — starting a run or a workflow test — is now 40 per minute
+per user, up from 20 per hour. The hourly budget was exhausted by ordinary use, such as
+launching a workflow once per device. The rate-limit table in the in-app docs says the same.
+
 
 ## 2026-11-14 — A chat-channel reply that ended in an error says it may be incomplete
 

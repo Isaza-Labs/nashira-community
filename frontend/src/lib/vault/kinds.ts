@@ -19,6 +19,12 @@ export interface VaultKindInfo {
 	icon: typeof Lock;
 	/** The credential auth method behind it; absent for a secret value. */
 	authMethod?: AuthMethod;
+	/**
+	 * The tag a new credential of this kind starts with, shown in the form so the
+	 * admin sees what will be stored. The server tags an untagged credential "ssh",
+	 * which is right for a login or key and wrong for a token or an API key.
+	 */
+	defaultTag?: string;
 }
 
 export const VAULT_KINDS: VaultKindInfo[] = [
@@ -27,35 +33,40 @@ export const VAULT_KINDS: VaultKindInfo[] = [
 		label: 'Login',
 		desc: 'A username and password — devices over SSH, basic-auth APIs.',
 		icon: UserRound,
-		authMethod: 'password'
+		authMethod: 'password',
+		defaultTag: 'ssh'
 	},
 	{
 		kind: 'ssh_key',
 		label: 'SSH key',
 		desc: 'A username with a private key, and its passphrase if it has one.',
 		icon: FileKey,
-		authMethod: 'key'
+		authMethod: 'key',
+		defaultTag: 'ssh'
 	},
 	{
 		kind: 'token',
 		label: 'Access token',
 		desc: 'A bearer or personal access token — git hosts, token-auth APIs.',
 		icon: Fingerprint,
-		authMethod: 'token'
+		authMethod: 'token',
+		defaultTag: 'token'
 	},
 	{
 		kind: 'api_key',
 		label: 'API key',
 		desc: 'A key sent in a request header you name.',
 		icon: KeyRound,
-		authMethod: 'api_key'
+		authMethod: 'api_key',
+		defaultTag: 'api_key'
 	},
 	{
 		kind: 'oauth2',
 		label: 'OAuth2 client',
 		desc: 'Client ID, client secret and token URL (client credentials).',
 		icon: ShieldCheck,
-		authMethod: 'oauth2'
+		authMethod: 'oauth2',
+		defaultTag: 'oauth2'
 	},
 	{
 		kind: 'secret',
@@ -85,6 +96,16 @@ export function kindInfo(kind: VaultKind): VaultKindInfo {
 export function kindOfCredential(c: Pick<Credential, 'authMethod'>): VaultKind {
 	const method = (c.authMethod ?? '').trim().toLowerCase();
 	return BY_METHOD.get(method as AuthMethod) ?? 'login';
+}
+
+/**
+ * The kind's label as it reads mid-sentence ("New login", "New API key"): only a
+ * leading capital that starts an ordinary word is lowered, so the acronyms SSH,
+ * API and OAuth2 keep their capitals.
+ */
+export function kindNoun(kind: VaultKind): string {
+	const label = kindInfo(kind).label;
+	return /^[A-Z][a-z]/.test(label) ? label[0].toLowerCase() + label.slice(1) : label;
 }
 
 export function isVaultKind(value: string | null | undefined): value is VaultKind {
