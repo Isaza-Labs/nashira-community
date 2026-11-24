@@ -60,22 +60,50 @@ public sealed class RedirectRefusedException(int statusCode, RedirectRefusalReas
 
     public RedirectRefusalReason Reason { get; } = reason;
 
+    /// <summary>The deepest level of an exception graph that is searched (the failure itself is level 0).</summary>
+    internal const int MaxSearchDepth = 8;
+
+    /// <summary>The most exceptions examined in one search, however the graph is shaped.</summary>
+    internal const int MaxSearchNodes = 64;
+
     /// <summary>
     /// The refusal behind a failure, if there is one. A client library between the transport and the
-    /// caller (the MCP SDK, for one) may wrap what the handler threw, so the inner chain is searched,
-    /// to a fixed depth, instead of relying on the outermost type.
+    /// caller (the MCP SDK, for one) may wrap what the handler threw, so the graph of inner exceptions
+    /// (including every child of an <see cref="AggregateException"/>) is searched instead of relying on
+    /// the outermost type. One work list, one visited set and one node count cover the whole search, so
+    /// nesting, width, shared children and cycles all stay bounded. When the budget runs out the answer is
+    /// "not found", which leaves the caller on its generic failure handling.
     /// </summary>
     public static RedirectRefusedException? Find(Exception? error)
     {
-        for (var depth = 0; error is not null && depth < 8; depth++)
+        if (error is null) return null;
+
+        var pending = new Stack<(Exception Error, int Depth)>();
+        var seen = new HashSet<Exception>(ReferenceEqualityComparer.Instance);
+        pending.Push((error, 0));
+        var examined = 0;
+
+        while (pending.Count > 0)
         {
-            if (error is RedirectRefusedException refused) return refused;
-            if (error is AggregateException aggregate)
+            var (current, depth) = pending.Pop();
+            if (!seen.Add(current)) continue;
+            if (++examined > MaxSearchNodes) return null;
+            if (current is RedirectRefusedException refused) return refused;
+            if (depth + 1 >= MaxSearchDepth) continue;
+
+            // Pushed in reverse so the first child is searched first, as a plain inner-exception walk would.
+            // Only as many children as could still be examined are queued, so a very wide aggregate cannot
+            // grow the work list past the budget either.
+            if (current is AggregateException aggregate)
             {
-                foreach (var inner in aggregate.InnerExceptions)
-                    if (Find(inner) is { } found) return found;
+                var room = Math.Max(0, MaxSearchNodes + 1 - examined - pending.Count);
+                for (var i = Math.Min(aggregate.InnerExceptions.Count, room) - 1; i >= 0; i--)
+                    pending.Push((aggregate.InnerExceptions[i], depth + 1));
             }
-            error = error.InnerException;
+            else if (current.InnerException is { } inner)
+            {
+                pending.Push((inner, depth + 1));
+            }
         }
         return null;
     }
