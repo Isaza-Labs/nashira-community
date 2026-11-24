@@ -54,9 +54,9 @@ or MCP workflow step, and the agent's REST, integration and MCP tool calls, repo
 is not retried (a withheld step reports `output_redacted`). A `slack_message` step that posts
 through a notification webhook reports `delivery_failed`, also final; the redirect is not
 followed there either. An integration check answers `degraded`; the GitHub and NetBox clients
-answer 400. An MCP failure whose chain of wrapped errors is too large or too deep to be inspected
-in full is reported with fixed text and the code `failure_unclassified` (final, not retried, and
-not a redirect code), with no text taken from the error. The redirect target and the
+answer 400. When an MCP workflow step or agent call cannot classify a failure within the
+exception-search limits, it reports fixed text and `failure_unclassified` (final, not retried,
+and not a redirect code), without using the exception's text. The redirect target and the
 remote `Location` header are never included in the error. The URL guard also refuses IPv6
 site-local (`fec0::/10`) and IPv4-compatible (`::a.b.c.d`) addresses, in addition to
 unique-local and link-local ones, whatever the integration's private-network setting says (the deployment-wide
