@@ -50,7 +50,8 @@ the GitHub and NetBox clients no longer follow an HTTP redirect, including from 
 integration whose OAuth settings are literal values or come from a linked credential. The
 request fails instead of being replayed, so configure the final endpoint. A REST, integration
 or MCP workflow step, and the agent's REST, integration and MCP tool calls, report
-`redirect_refused`, also when the redirect came from an OAuth token endpoint. It is final and
+`redirect_refused`, also when the redirect came from an OAuth token endpoint (for an MCP
+server, its token or metadata endpoint too). It is final and
 is not retried (a withheld step reports `output_redacted`). A `slack_message` step that posts
 through a notification webhook reports `delivery_failed`, also final; the redirect is not
 followed there either. An integration check answers `degraded`; the GitHub and NetBox clients
