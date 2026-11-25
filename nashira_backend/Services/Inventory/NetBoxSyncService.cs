@@ -228,8 +228,14 @@ public sealed class NetBoxSyncService : INetBoxSyncService
             return resolved;
         }
 
-        // Bare value: prefer a stored secret of that name; fall back to treating it
-        // as a legacy literal token so pre-existing sources keep syncing.
+        // Bare value. A caller who may use stored secrets prefers a stored secret of that name and
+        // falls back to treating the value as a legacy literal token, so pre-existing sources keep
+        // syncing. Anyone else (an Operator may run a sync) gets the literal reading only: the
+        // secrets table is not consulted at all, so no lookup or decryption happens on their behalf
+        // and the lookup cannot be used to learn whether a name exists. A reference written as
+        // ${secret:...} is never read this way; the resolver denies it above.
+        if (!SecretAccessPolicy.MayResolveStored(_user)) return raw;
+
         var byName = await _secrets.SubstituteAsync($"${{secret:secret:{raw}:value}}", ct);
         return byName.Contains("${secret:", StringComparison.Ordinal) ? raw : byName;
     }
