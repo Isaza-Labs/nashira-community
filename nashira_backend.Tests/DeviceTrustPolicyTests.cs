@@ -761,6 +761,164 @@ public class DeviceTrustPolicyTests
         Assert.Null(AnsiblePlaybookSnippetHandler.SharedPassword([literal, device]));
     }
 
+    // ─── R5: an Ansible step hands the device password to the playbook ───
+
+    private static Credential Pw(string? username = "u", string auth = Credential.AuthMethodPassword) => new()
+    {
+        CredentialId = Guid.NewGuid(), Name = "c", IsActive = true, AuthMethod = auth, Username = username,
+    };
+
+    [Fact]
+    public void Playbook_credential_rule_applies_only_to_a_password_the_play_would_receive()
+    {
+        var password = Pw();
+        var assignable = Pw();
+        assignable.AllowedHosts = CredentialScope.Normalize("10.0.0.0/24");
+        assignable.OperatorAssignable = true;
+        var key = Pw(auth: Credential.AuthMethodKey);
+        var noUser = Pw(username: " ");
+        var inactive = Pw();
+        inactive.IsActive = false;
+
+        Assert.Contains("'box'", DeviceTrustPolicy.PlaybookCredentialRefusal(Operator, password, "box"));
+        // No delegation: assignable and scoped is still refused.
+        Assert.NotNull(DeviceTrustPolicy.PlaybookCredentialRefusal(Operator, assignable, "box"));
+        Assert.Null(DeviceTrustPolicy.PlaybookCredentialRefusal(Operator, null, "box"));
+        Assert.Null(DeviceTrustPolicy.PlaybookCredentialRefusal(Operator, key, "box"));
+        Assert.Null(DeviceTrustPolicy.PlaybookCredentialRefusal(Operator, noUser, "box"));
+        Assert.Null(DeviceTrustPolicy.PlaybookCredentialRefusal(Operator, inactive, "box"));
+        Assert.Null(DeviceTrustPolicy.PlaybookCredentialRefusal(Admin, password, "box"));
+        Assert.Null(DeviceTrustPolicy.PlaybookCredentialRefusal(Admin, assignable, "box"));
+    }
+
+    [Fact]
+    public async Task Ansible_refuses_an_operator_a_device_password_before_decrypting_it()
+    {
+        using var w = new World();
+
+        var (_, failure) = await w.Ansible(Operator).ResolveTargetsAsync(
+            Args("""{"hosts":["core-sw"]}"""), "draft", default);
+
+        Assert.NotNull(failure);
+        Assert.Equal(SecretResolver.AccessDeniedCode, failure!.ErrorCode);
+        Assert.Contains("core-sw", failure.Error);
+        Assert.DoesNotContain("device-default", failure.Error);
+        Assert.Equal(0, w.Protector.Decrypts);
+    }
+
+    [Fact]
+    public async Task Ansible_refuses_an_operator_even_an_assignable_scoped_credential()
+    {
+        using var w = new World();
+
+        // bare-box first, so the refusal comes after a target was already accepted.
+        var (_, failure) = await w.Ansible(Operator).ResolveTargetsAsync(
+            Args("""{"hosts":["bare-box","scoped-box"]}"""), "draft", default);
+
+        Assert.Equal(SecretResolver.AccessDeniedCode, failure!.ErrorCode);
+        Assert.Contains("scoped-box", failure.Error);
+        Assert.DoesNotContain("ops-ssh", failure.Error);
+        Assert.Equal(0, w.Protector.Decrypts);
+    }
+
+    [Fact]
+    public async Task Ansible_checks_admin_before_the_scope()
+    {
+        using var w = new World();
+
+        // moved-box is outside its credential's scope: an Operator is told only that it
+        // needs an Admin, an Admin that it is out of scope.
+        var (_, asOperator) = await w.Ansible(Operator).ResolveTargetsAsync(
+            Args("""{"hosts":["moved-box"]}"""), "draft", default);
+        var (_, asAdmin) = await w.Ansible(Admin).ResolveTargetsAsync(
+            Args("""{"hosts":["moved-box"]}"""), "draft", default);
+
+        Assert.Equal(SecretResolver.AccessDeniedCode, asOperator!.ErrorCode);
+        Assert.DoesNotContain("allowed", asOperator.Error, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ops-ssh", asOperator.Error);
+        Assert.Equal(CredentialScope.OutOfScopeCode, asAdmin!.ErrorCode);
+        Assert.Equal(0, w.Protector.Decrypts);
+    }
+
+    [Fact]
+    public async Task Ansible_lets_an_operator_target_devices_without_a_usable_credential_and_literal_hosts()
+    {
+        using var w = new World();
+        using (var db = w.Db())
+        {
+            var keyId = Guid.NewGuid();
+            var noUserId = Guid.NewGuid();
+            db.Credentials.AddRange(
+                new Credential
+                {
+                    CredentialId = keyId, Name = "key-cred", AuthMethod = Credential.AuthMethodKey,
+                    Username = "k", IsActive = true,
+                },
+                new Credential
+                {
+                    CredentialId = noUserId, Name = "no-user", AuthMethod = Credential.AuthMethodPassword,
+                    EncryptedPassword = w.Protector.Encrypt("nouser-pw"), IsActive = true,
+                });
+            db.Devices.AddRange(
+                new Device
+                {
+                    DeviceId = Guid.NewGuid(), DeviceName = "key-box", IpAddress = "10.0.0.60",
+                    CredentialId = keyId, AllowDraft = true, IsActive = true,
+                },
+                new Device
+                {
+                    DeviceId = Guid.NewGuid(), DeviceName = "nouser-box", IpAddress = "10.0.0.61",
+                    CredentialId = noUserId, AllowDraft = true, IsActive = true,
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var (targets, failure) = await w.Ansible(Operator).ResolveTargetsAsync(
+            Args("""{"hosts":["bare-box","key-box","nouser-box"],"host":"198.51.100.1"}"""), "draft", default);
+
+        Assert.Null(failure);
+        Assert.Equal(
+            new[] { "10.0.0.50", "10.0.0.60", "10.0.0.61", "198.51.100.1" },
+            targets.Select(t => t.Host).ToArray());
+        Assert.All(targets, t => Assert.Null(t.Password));
+        Assert.Equal(0, w.Protector.Decrypts);
+
+        var (literalOnly, literalFailure) = await w.Ansible(Operator).ResolveTargetsAsync(
+            Args("""{"host":"198.51.100.1"}"""), "draft", default);
+        Assert.Null(literalFailure);
+        Assert.Equal("198.51.100.1", Assert.Single(literalOnly).Host);
+    }
+
+    [Fact]
+    public async Task Ansible_hands_an_admin_the_device_password()
+    {
+        using var w = new World();
+
+        var (targets, failure) = await w.Ansible(Admin).ResolveTargetsAsync(
+            Args("""{"hosts":["core-sw","scoped-box"]}"""), "draft", default);
+
+        Assert.Null(failure);
+        Assert.Equal(new[] { "device-pw", "ops-pw" }, targets.Select(t => t.Password).ToArray());
+        Assert.Equal(2, w.Protector.Decrypts);
+    }
+
+    [Fact]
+    public void Ansible_redacts_every_password_of_the_run_from_its_output()
+    {
+        const string output = "ok: pw=device-pw other=ops-pw-long again device-pw short=abc";
+
+        Assert.Equal(
+            "ok: pw=[redacted] other=[redacted] again [redacted] short=abc",
+            AnsiblePlaybookSnippetHandler.RedactPasswords(
+                output, ["device-pw", "ops-pw-long", "device-pw", "abc", null, ""]));
+        // Longest first: a password that contains another is removed whole.
+        Assert.Equal("x [redacted] y",
+            AnsiblePlaybookSnippetHandler.RedactPasswords("x ops-pw-long y", ["ops-pw", "ops-pw-long"]));
+        Assert.Equal(output, AnsiblePlaybookSnippetHandler.RedactPasswords(output, []));
+        Assert.Equal(output, AnsiblePlaybookSnippetHandler.RedactPasswords(output, [null]));
+        Assert.Equal(string.Empty, AnsiblePlaybookSnippetHandler.RedactPasswords(null, ["device-pw"]));
+    }
+
     // ─── CredentialController: scope fields ──────────────────────────────
 
     [Fact]
@@ -1049,8 +1207,10 @@ public class DeviceTrustPolicyTests
             return (tool, runner);
         }
 
-        public AnsiblePlaybookSnippetHandler Ansible() =>
-            new(Db(), _protector, NullLogger<AnsiblePlaybookSnippetHandler>.Instance);
+        // Admin unless stated: the scope tests are about the scope, not R5.
+        public AnsiblePlaybookSnippetHandler Ansible(HardeningTestUser? user = null) =>
+            new(Db(), _protector, user ?? new HardeningTestUser("admin"),
+                NullLogger<AnsiblePlaybookSnippetHandler>.Instance);
 
         public CredentialController Credentials(CapturingAudit? audit = null) =>
             new(Db(), _protector, new HardeningTestUser("admin"), audit ?? new CapturingAudit());

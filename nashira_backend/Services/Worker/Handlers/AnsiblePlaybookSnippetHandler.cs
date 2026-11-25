@@ -5,6 +5,8 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
+using nashira_backend.Services.Ai.Secrets;
+using nashira_backend.Services.Identity;
 using nashira_backend.Services.Security;
 using nashira_backend.Services.Workflow;
 
@@ -21,8 +23,9 @@ namespace nashira_backend.Services.Worker.Handlers;
 //   targets (A) — same as `hosts`
 // Inventory devices get the run's environment gate (the same allow trio the ssh
 // snippet enforces) and their credential's password — refused outright when the
-// credential has a scope that does not cover the device's address; a literal `host`
-// gets neither.
+// run's user is not an Admin (the playbook can read the password it is handed;
+// DeviceTrustPolicy R5), and when the credential has a scope that does not cover the
+// device's address; a literal `host` gets neither.
 // `hosts: all` means the run's target devices, which this handler is not handed —
 // it fails with `not_supported` and says so rather than guessing.
 //
@@ -40,6 +43,7 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
 {
     private readonly AppDbContext _db;
     private readonly ISecretProtector _protector;
+    private readonly ICurrentUser _user;
     private readonly ILogger<AnsiblePlaybookSnippetHandler> _logger;
 
     /// <summary>
@@ -62,10 +66,12 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
         input.ValueKind == JsonValueKind.Object ? input.GetRawText() : "{}";
 
     public AnsiblePlaybookSnippetHandler(
-        AppDbContext db, ISecretProtector protector, ILogger<AnsiblePlaybookSnippetHandler> logger)
+        AppDbContext db, ISecretProtector protector, ICurrentUser user,
+        ILogger<AnsiblePlaybookSnippetHandler> logger)
     {
         _db = db;
         _protector = protector;
+        _user = user;
         _logger = logger;
     }
 
@@ -171,8 +177,10 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
                     retryable: true);
             }
 
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
+            // Everything the step reports is redacted before it is used: the recap
+            // parsed below, the output, the logs and the error all derive from these.
+            var stdout = RedactPasswords(await stdoutTask, passwords);
+            var stderr = RedactPasswords(await stderrTask, passwords);
             var success = proc.ExitCode == 0;
             var recaps = targets.ToDictionary(t => t.Host, t => ParsePlayRecap(stdout, t.Host));
             var firstHost = targets[0].Host;
@@ -253,6 +261,15 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
             {
                 var credential = await _db.Credentials.AsNoTracking()
                     .FirstOrDefaultAsync(c => c.IsActive && c.CredentialId == credId, ct);
+                // Admin first, before the scope: a non-Admin learns nothing about scopes.
+                // No OperatorAssignable delegation (unlike the ssh step): the playbook
+                // can read the password it is handed. See DeviceTrustPolicy R5.
+                if (DeviceTrustPolicy.PlaybookCredentialRefusal(_user, credential, device.DeviceName) is { } denied)
+                {
+                    _logger.LogWarning(
+                        "workflow.ansible.credential_access_denied device={Device}", device.DeviceName);
+                    return (targets, SnippetResult.Fail(denied, SecretResolver.AccessDeniedCode));
+                }
                 if (credential is not null && !CredentialScope.Permits(credential, device.IpAddress))
                 {
                     _logger.LogWarning(
@@ -262,11 +279,9 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
                         CredentialScope.OutOfScopeMessage(credential.Name, device.DeviceName),
                         CredentialScope.OutOfScopeCode));
                 }
-                if (credential is not null
-                    && credential.AuthMethod == Credential.AuthMethodPassword
-                    && !string.IsNullOrWhiteSpace(credential.Username))
+                if (DeviceTrustPolicy.HandsPasswordToPlaybook(credential))
                 {
-                    username = credential.Username;
+                    username = credential!.Username;
                     try
                     {
                         password = _protector.Decrypt(credential.EncryptedPassword);
@@ -306,6 +321,33 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
         var first = targets[0].Password;
         if (string.IsNullOrEmpty(first)) return null;
         return targets.All(t => t.Password == first) ? first : null;
+    }
+
+    public const string Redacted = "[redacted]";
+
+    /// <summary>
+    /// <paramref name="text"/> with every literal occurrence of each password replaced by
+    /// <c>[redacted]</c>; longest first, so a password containing another is not left
+    /// half-visible. Passwords shorter than 4 characters are skipped: replacing them would
+    /// shred the output.
+    /// </summary>
+    /// <remarks>
+    /// Defence in depth against accidental disclosure (a verbose module, a failed task
+    /// echoing its arguments). It does not stop a playbook that sets out to leak the
+    /// value: base64, splitting or reversing it gets through. That is what the Admin
+    /// requirement in <see cref="DeviceTrustPolicy.PlaybookCredentialRefusal"/> is for.
+    /// </remarks>
+    internal static string RedactPasswords(string? text, IEnumerable<string?> passwords)
+    {
+        if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
+        foreach (var secret in passwords
+                     .Where(p => p is { Length: >= 4 })
+                     .Distinct(StringComparer.Ordinal)
+                     .OrderByDescending(p => p!.Length))
+        {
+            text = text.Replace(secret!, Redacted, StringComparison.Ordinal);
+        }
+        return text;
     }
 
     // The inventory references the payload names, and whether it asked for `all`.

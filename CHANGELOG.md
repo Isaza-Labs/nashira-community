@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-25 — Ansible steps need an Admin to use a device's stored password
+
+An Ansible step hands the password of each target device's linked credential to the playbook
+(as `ansible_password` or `ANSIBLE_SSH_PASS`), and the playbook, which whoever edits the step
+wrote, can read and print it. Such a step now needs Admin authority, like resolving a stored
+secret: otherwise it fails with `secret_access_denied`, naming the device, before anything is
+decrypted. Unlike SSH steps there is no Operator delegation: a credential marked assignable by
+Operators is refused too, because a scope limits where a password is sent, not who can read it.
+The check comes before the `credential_out_of_scope` check, so a refused user learns nothing about
+scopes. Devices with no credential, with a credential the step does not hand over (key-based, or
+without a username), and literal `host` targets work for Operators as before.
+
+As a safeguard against accidental disclosure, every password handed to a run (four characters or
+longer) is now replaced with `[redacted]` in the step's output, logs and error. This does not stop
+a playbook that deliberately encodes the value.
+
+Upgrade impact: Ansible steps against devices with a linked password credential must run as an
+Admin. Because triggered runs take the role of whoever last edited what they run, a workflow or
+snippet last saved by an Operator that runs such a step fails under its triggers with
+`secret_access_denied` until an Admin saves it again. No migration is needed.
+
+
 ## 2026-11-25 — Credentials can be limited to the hosts they may be sent to
 
 An Admin can now give a credential **allowed hosts**: IP addresses, CIDR networks or exact

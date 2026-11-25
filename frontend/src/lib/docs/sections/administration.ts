@@ -180,7 +180,7 @@ export const administration: DocSection[] = [
 				kind: 'note',
 				tone: 'primary',
 				title: 'Limiting where a credential goes',
-				text: 'A credential with `allowed_hosts` is refused at send time — by SSH steps, `device_connect` and Ansible steps alike — for any device whose address is outside the list, with `credential_out_of_scope`, before anything is decrypted. Linking it to a device outside the list, or moving a linked device outside it, is refused for everyone, Admins included. Narrowing the list is not blocked by devices already linked; they start failing at send time instead. Unscoped credentials (every credential that existed before this field) behave as before, and only an Admin can link them.'
+				text: 'A credential with `allowed_hosts` is refused at send time — by SSH steps, `device_connect` and Ansible steps alike — for any device whose address is outside the list, with `credential_out_of_scope`, before anything is decrypted. Linking it to a device outside the list, or moving a linked device outside it, is refused for everyone, Admins included. Narrowing the list is not blocked by devices already linked; they start failing at send time instead. Unscoped credentials (every credential that existed before this field) behave as before, and only an Admin can link them. An Ansible step hands a device\'s linked password to the playbook, which can read it, so it needs an Admin whatever the scope or `operator_assignable` say; otherwise it fails with `secret_access_denied`.'
 			},
 			{
 				kind: 'note',

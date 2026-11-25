@@ -25,6 +25,10 @@ namespace nashira_backend.Services.Security;
 //       with a credential      scoped and covers the new address.
 //   R4  SSH step `credential`  Admin; or the named credential is assignable and
 //                              scoped (the send-time scope check then applies).
+//   R5  Ansible step against   Admin only, no delegation: the playbook itself can
+//       a device whose linked  read the password it is handed and print it.
+//       password is handed to
+//       the play
 //
 // Each check returns a refusal message, or null when the change is allowed. Sending
 // the value the row already holds is not a change: forms resend the whole object. A
@@ -44,6 +48,10 @@ public static class DeviceTrustPolicy
     public const string AddressMessage =
         "This device has a credential linked; only an Admin may change its IP address to one outside "
         + "that credential's allowed hosts";
+
+    public static string PlaybookCredentialMessage(string deviceName) =>
+        $"device '{deviceName}' has a stored credential linked, and an Ansible step hands that credential's "
+        + "password to the playbook, which can read it; only an Admin may run an Ansible step against it";
 
     public const string StepCredentialMessage =
         "Only an Admin may choose a stored credential by name in an SSH step (`credential`), unless an Admin "
@@ -98,6 +106,26 @@ public static class DeviceTrustPolicy
         if (string.IsNullOrWhiteSpace(credentialName)) return null;
         if (IsAdmin(user)) return null;
         return IsDelegable(namedRow) ? null : StepCredentialMessage;
+    }
+
+    // Whether the Ansible step decrypts this linked credential and hands it to the play:
+    // an active password credential with a username. Anything else (no credential, a
+    // key credential, no username) is not handed over, so it is not R5's business.
+    public static bool HandsPasswordToPlaybook(Credential? credential) =>
+        credential is { IsActive: true }
+        && credential.AuthMethod == Credential.AuthMethodPassword
+        && !string.IsNullOrWhiteSpace(credential.Username);
+
+    // R5. `credential` is the device's active linked credential, or null. No
+    // OperatorAssignable delegation here, unlike R1/R4: in an SSH step Nashira sends
+    // the password and the step author never sees it, but a playbook is code the step
+    // author wrote and it receives the password as a variable (`ansible_password`,
+    // ANSIBLE_SSH_PASS) it can print. A scope bounds where a secret is sent, not who
+    // can read it, so it cannot make this safe.
+    public static string? PlaybookCredentialRefusal(ICurrentUser user, Credential? credential, string deviceName)
+    {
+        if (!HandsPasswordToPlaybook(credential)) return null;
+        return IsAdmin(user) ? null : PlaybookCredentialMessage(deviceName);
     }
 
     // For everyone, Admins included: a device whose linked credential's scope does not
