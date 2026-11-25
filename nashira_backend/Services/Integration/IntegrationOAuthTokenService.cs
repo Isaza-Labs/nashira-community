@@ -134,7 +134,8 @@ public sealed class IntegrationOAuthTokenService : IIntegrationOAuthTokenService
 
     // The authorization decision is made on the entry itself, before its token is handed
     // out: anything but a positively literal entry needs a caller who may resolve stored
-    // secrets, so an entry of unknown origin fails closed.
+    // secrets, so an entry of unknown origin fails closed. No production path stores an entry of
+    // unknown origin; the check is there so a future one cannot be served by accident.
     private bool TryServeCached(
         IntegrationEntity integration, bool mayResolveStored, out (string Token, Provenance Provenance) served)
     {

@@ -23,10 +23,15 @@ A `${secret:...}` reference to a stored secret, credential or integration value 
 only for an authenticated Admin, in workflow steps, integration settings and agent tools
 alike (the OAuth case below is one instance of this). Anyone else, and any run with no
 authenticated caller, gets `secret_access_denied`, which is final and is not retried. A
-workflow that runs unattended and uses stored references needs an Admin identity bound to
-the run. References that use the caller's own session (`session`) are unchanged, and
-handlers that use a linked credential directly rather than through a reference keep their
-existing authorization.
+workflow that runs unattended and uses stored references needs an active Admin as the
+trigger's creator (a subflow runs as its parent's caller). An inventory sync stays open to
+Operators for a NetBox source whose token is a legacy literal or absent; a source whose
+`token_secret_ref` is a `${secret:...}` reference needs an Admin, and for anyone else a bare
+secret name is no longer looked up but used as the literal token. Agent tools that report
+these failures keep the code, so a learned correction does not retry them. References that
+use the caller's own session (`session`) are unchanged: they read nothing stored, so a step
+that only uses one is not withheld. Handlers that use a linked credential directly rather
+than through a reference keep their existing authorization.
 
 
 ## 2026-11-23 — Output of steps that used secrets is withheld; `redact_output` must be a boolean
@@ -51,7 +56,8 @@ integration whose OAuth settings are literal values or come from a linked creden
 request fails instead of being replayed, so configure the final endpoint. A REST, integration
 or MCP workflow step, and the agent's REST, integration and MCP tool calls, report
 `redirect_refused`, also when the redirect came from an OAuth token endpoint (for an MCP
-server, its token or metadata endpoint too). It is final and
+server, its token or metadata endpoint too). A redirect on an MCP OAuth discovery request
+ends discovery instead of trying the next one, so set the server's `token_url` by hand. It is final and
 is not retried (a withheld step reports `output_redacted`). A `slack_message` step that posts
 through a notification webhook reports `delivery_failed`, also final; the redirect is not
 followed there either. An integration check answers `degraded`; the GitHub and NetBox clients
@@ -91,7 +97,7 @@ resolving those secrets directly. An Operator or Viewer who uses such an integra
 from a workflow step, an integration check or an agent tool gets `secret_access_denied`,
 and a workflow step that used the token has its output withheld. The denial is final:
 the step is not retried. Integrations whose OAuth settings are literal values, or come
-from a linked credential, keep their authorization (their token requests no longer follow redirects, see above). To see which integrations are affected, look
+from a linked credential, keep their authorization (their token requests no longer follow redirects, see above); one whose settings are changed to use `${secret:...}` needs an Admin from its next use, even while a token obtained from literal settings is still cached. To see which integrations are affected, look
 for `${secret:` in the OAuth settings of each integration that is used by non-Admin
 users. An integration check run by a non-Admin on such an integration now answers 403
 and no longer records the integration as unreachable.

@@ -13,8 +13,10 @@ of them is retried. A code that a handler builds from a script exit, a remote re
 or a status line (`http_*`, `redirect_refused`, `script_error`, `timeout`) is always
 replaced, so a withheld step reports `output_redacted` for those failures.
 
-Successful resolution through `ISecretResolver` marks the current execution as
-sensitive, including credential usernames/client IDs stored in clear. Its entire
+Successful resolution of stored material through `ISecretResolver` marks the current
+execution as sensitive, including credential usernames/client IDs stored in clear. The
+caller's own session reference (`${secret:session:current:jwt}`, which the built-in `na_*`
+specs use) reads nothing stored and does not mark it. Its entire
 output is replaced by `[redacted]` before run persistence or downstream template
 resolution. The same applies to Python's direct handler path. Reverse/base64,
 split strings, numeric encodings, property names, printed text and exceptions do

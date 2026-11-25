@@ -406,7 +406,13 @@ public sealed class SnippetNodeExecutor : INodeExecutor
             // the author can act on — but the run still has to end, so it becomes a
             // failed step with the message attached.
             if (secrets.HasResolvedMaterial || redactOutput)
+            {
+                // The type only: the message and stack may carry what the step was told to withhold.
+                _logger.LogWarning(
+                    "workflow.node.handler_threw node={Node} type={Type} exception={ExceptionType} detail=withheld",
+                    node.Id, snippet.Type, ex.GetType().Name);
                 return StepOutputPrivacy.Withhold(SnippetResult.Fail("handler failed", "exception"));
+            }
             _logger.LogError(ex, "workflow.node.handler_threw node={Node} type={Type}", node.Id, snippet.Type);
             return SnippetResult.Fail(ex.Message, "exception");
         }
