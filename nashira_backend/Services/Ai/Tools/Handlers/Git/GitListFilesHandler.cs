@@ -30,7 +30,7 @@ public sealed class GitListFilesHandler : IToolHandler
         }
         catch (DomainException ex)
         {
-            return GitToolSupport.Err(ex.Message);
+            return GitToolSupport.Err(ex);
         }
     }
 }

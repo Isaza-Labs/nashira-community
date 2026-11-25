@@ -196,7 +196,14 @@ public sealed class ToolDispatcher
             // An authorization decision, not a malfunction: no stack trace, a stable code
             // the model and the UI can act on, and the fixed message only.
             _logger.LogWarning("ai.tool.execute.denied tool={Tool} code={Code}", handler.Name, ex.Code);
-            return (JsonSerializer.SerializeToElement(new { error = ex.Message, code = ex.Code }), ex.Message, true);
+            return (JsonSerializer.SerializeToElement(new { error = ex.Message, code = ex.Code, error_code = ex.Code }), ex.Message, true);
+        }
+        catch (RedirectRefusedException ex)
+        {
+            // A handler that lets the refusal escape gets the same answer as one that reports it: the
+            // endpoint has to be reconfigured, and running the call again would repeat the request.
+            _logger.LogWarning("ai.tool.execute.redirect_refused tool={Tool} status={Status}", handler.Name, ex.StatusCode);
+            return (JsonSerializer.SerializeToElement(new { error = ex.Message, error_code = RedirectRefusedException.Code }), ex.Message, true);
         }
         catch (Exception ex)
         {
@@ -205,12 +212,14 @@ public sealed class ToolDispatcher
         }
     }
 
-    // Host-defined failures that no change of arguments can fix: the endpoint has to be
-    // reconfigured. A handler returns them as `error_code`; the dispatcher must not try to
-    // correct and re-run the call, which would repeat the original request.
+    // Failures that no change of arguments can fix: the endpoint has to be reconfigured, or the
+    // caller is not allowed to use the secret. A handler returns them as `error_code` (see
+    // ToolFailure); the dispatcher must not try to correct and re-run the call, which would repeat
+    // the original request or the denied lookup.
     private static readonly HashSet<string> FinalErrorCodes = new(StringComparer.Ordinal)
     {
         RedirectRefusedException.Code,
+        SecretResolver.AccessDeniedCode,
         RedirectSearch.IncompleteCode,
     };
 

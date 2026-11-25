@@ -56,7 +56,7 @@ public sealed class GitListWebhooksHandler : IToolHandler
         }
         catch (DomainException ex)
         {
-            return GitToolSupport.Err(ex.Message);
+            return GitToolSupport.Err(ex);
         }
     }
 }
