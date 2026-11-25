@@ -41,6 +41,17 @@ public class Credential : BaseModel
     public byte[]? EncryptedClientSecret { get; set; }
     public string? TokenUrl { get; set; }
     public string? Scopes { get; set; } // space-separated, as in the OAuth2 wire format
+
+    // The hosts device SSH may send this credential to, set by an Admin. Null means
+    // unscoped (the pre-scope behaviour). Stored canonical, one entry per line: an IP
+    // address, a CIDR network, or an exact hostname. Enforced at send time by every
+    // path that sends a device credential; see Services/Security/CredentialScope.
+    public string? AllowedHosts { get; set; }
+
+    // Whether a non-Admin may link this credential to a device or name it in an SSH
+    // step. Only meaningful with a scope: an unscoped credential is never assignable
+    // (the controller refuses the combination, DeviceTrustPolicy re-checks it).
+    public bool OperatorAssignable { get; set; }
 }
 
 // Shared auth-method rules — the controller and the agent tools validate identically.

@@ -26,7 +26,9 @@ public sealed class CreateCredentialHandler : IToolHandler
           "client_id":{"type":"string","description":"oauth2 only"},
           "client_secret":{"type":"string","description":"oauth2 only"},
           "token_url":{"type":"string","description":"oauth2 only: token endpoint URL"},
-          "scopes":{"type":"string","description":"oauth2 only: space-separated scopes"}
+          "scopes":{"type":"string","description":"oauth2 only: space-separated scopes"},
+          "allowed_hosts":{"type":"string","description":"Hosts device SSH may send this credential to: IPs, CIDR networks (10.0.0.0/24) or exact hostnames, comma/newline separated. Blank = unrestricted."},
+          "operator_assignable":{"type":"boolean","description":"Let Operators link this credential to devices within allowed_hosts. Requires allowed_hosts."}
         },"required":["name"],"additionalProperties":false}
         """).RootElement.Clone();
 
@@ -72,11 +74,17 @@ public sealed class CreateCredentialHandler : IToolHandler
             EncryptedClientSecret = _crypto.Encrypt(Str(args, "client_secret")),
             TokenUrl = Trimmed(Str(args, "token_url")),
             Scopes = Trimmed(Str(args, "scopes")),
+            OperatorAssignable = Bool(args, "operator_assignable") ?? false,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,
         };
+        if (!CredentialScope.TryNormalize(Str(args, "allowed_hosts"), out var scope, out var scopeError))
+            return Err(scopeError!);
+        row.AllowedHosts = scope;
         if (CredentialRules.MissingMaterial(row) is { } missing) return Err(missing);
+        if (row.OperatorAssignable && !CredentialScope.IsScoped(row))
+            return Err("operator_assignable requires allowed_hosts");
 
         _db.Credentials.Add(row);
         await _db.SaveChangesAsync(ct);
@@ -89,6 +97,8 @@ public sealed class CreateCredentialHandler : IToolHandler
             has_private_key = row.EncryptedPrivateKey is { Length: > 0 },
             has_token = row.EncryptedToken is { Length: > 0 },
             has_client_secret = row.EncryptedClientSecret is { Length: > 0 },
+            allowed_hosts = row.AllowedHosts,
+            operator_assignable = row.OperatorAssignable,
         });
     }
 
@@ -97,6 +107,9 @@ public sealed class CreateCredentialHandler : IToolHandler
 
     private static string? Str(JsonElement a, string k) =>
         a.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static bool? Bool(JsonElement a, string k) =>
+        a.TryGetProperty(k, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null;
 
     private static JsonElement Err(string message) => JsonSerializer.SerializeToElement(new { error = message });
 }

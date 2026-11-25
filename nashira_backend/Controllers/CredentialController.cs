@@ -20,6 +20,11 @@ namespace nashira_backend.Controllers;
 // Per-method completeness is enforced by CredentialRules, shared with the agent
 // tools. Secret bytes are encrypted at rest and never returned — only has_* flags
 // plus the non-secret OAuth2 coordinates (client id / token URL / scopes).
+//
+// allowed_hosts / operator_assignable: an Admin may limit where device SSH sends a
+// credential and, once limited, let Operators link it (DeviceTrustPolicy). The one
+// endpoint an Operator reaches lives in AssignableCredentialController: action-level
+// [Authorize] cannot loosen this class-level Admin policy (they are ANDed).
 [ApiController]
 [Route("api/[controller]")]
 [Authorize(Policy = "Admin")]
@@ -88,11 +93,14 @@ public class CredentialController : ControllerBase
             EncryptedClientSecret = _crypto.Encrypt(dto.ClientSecret),
             TokenUrl = Trimmed(dto.TokenUrl),
             Scopes = Trimmed(dto.Scopes),
+            AllowedHosts = NormalizeScope(dto.AllowedHosts),
+            OperatorAssignable = dto.OperatorAssignable ?? false,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,
         };
         if (CredentialRules.MissingMaterial(row) is { } missing) throw new ValidationException(missing);
+        RequireScopeForDelegation(row);
 
         _db.Credentials.Add(row);
         await _db.SaveChangesAsync(ct);
@@ -125,10 +133,15 @@ public class CredentialController : ControllerBase
         if (dto.TokenUrl is not null) row.TokenUrl = Trimmed(dto.TokenUrl);
         if (dto.Scopes is not null) row.Scopes = Trimmed(dto.Scopes);
         if (dto.AuthMethod is not null) row.AuthMethod = CredentialRules.Normalize(dto.AuthMethod);
+        // Narrowing a scope so that already-linked devices fall outside it is allowed:
+        // those devices are refused at send time (CredentialScope), which is the point.
+        if (dto.AllowedHosts is not null) row.AllowedHosts = NormalizeScope(dto.AllowedHosts);
+        if (dto.OperatorAssignable is not null) row.OperatorAssignable = dto.OperatorAssignable.Value;
 
         // Validate the FINAL state — an update may switch auth_method, so the
         // stored material must satisfy whatever method the row ends up with.
         if (CredentialRules.MissingMaterial(row) is { } missing) throw new ValidationException(missing);
+        RequireScopeForDelegation(row);
 
         row.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -175,7 +188,30 @@ public class CredentialController : ControllerBase
         client_id = c.ClientId,
         token_url = c.TokenUrl,
         scopes = c.Scopes,
+        allowed_hosts = c.AllowedHosts,
+        operator_assignable = c.OperatorAssignable,
     };
+
+    // Blank → unscoped; anything else must parse entry by entry (CredentialScope).
+    internal static string? NormalizeScope(string? raw)
+    {
+        try
+        {
+            return CredentialScope.Normalize(raw);
+        }
+        catch (CredentialScope.ScopeFormatException ex)
+        {
+            throw new ValidationException(ex.Message);
+        }
+    }
+
+    // Delegation without a scope would let a non-Admin send the secret anywhere.
+    internal static void RequireScopeForDelegation(CredentialEntity row)
+    {
+        if (row.OperatorAssignable && !CredentialScope.IsScoped(row))
+            throw new ValidationException(
+                "operator_assignable requires allowed_hosts: a credential Operators may assign must be limited to the hosts it may be sent to");
+    }
 
     private static string? Trimmed(string? raw) =>
         string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
@@ -203,6 +239,8 @@ public class CredentialController : ControllerBase
         ClientId = c.ClientId,
         TokenUrl = c.TokenUrl,
         Scopes = c.Scopes,
+        AllowedHosts = c.AllowedHosts,
+        OperatorAssignable = c.OperatorAssignable,
         CreatedAt = c.CreatedAt,
         UpdatedAt = c.UpdatedAt,
     };

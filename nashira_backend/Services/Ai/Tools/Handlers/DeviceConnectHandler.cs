@@ -100,6 +100,18 @@ public sealed class DeviceConnectHandler : IToolHandler
             c => c.IsActive && c.CredentialId == device.CredentialId, ct);
         if (credential is null)
             return Err($"the credential for device '{device.DeviceName}' was not found or is inactive");
+        // The credential's scope, checked against the address it is about to be sent
+        // to, before anything is decrypted (CredentialScope).
+        if (!CredentialScope.Permits(credential, device.IpAddress))
+        {
+            _logger.LogWarning("ssh.credential.out_of_scope device={Device} credential={Cred}",
+                device.DeviceName, credential.Name);
+            return JsonSerializer.SerializeToElement(new
+            {
+                error = CredentialScope.OutOfScopeMessage(credential.Name, device.DeviceName),
+                error_kind = CredentialScope.OutOfScopeCode,
+            });
+        }
         // SSH understands password/key material only — a token/api_key/oauth2
         // credential can't open a device session, so fail with the reason instead
         // of a confusing decrypt/login error.

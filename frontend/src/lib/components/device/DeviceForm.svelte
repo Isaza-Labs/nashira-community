@@ -2,7 +2,9 @@
 	import { untrack } from 'svelte';
 	import { Input, Alert, Checkbox } from '$lib/components/ui';
 	import CredentialPicker from '$lib/components/credential/CredentialPicker.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Device, DevicePayload } from '$lib/api/devices.api';
+	import type { AssignableCredential } from '$lib/api/credentials.api';
 
 	// Create/edit form for a device. Submitted from the modal footer via
 	// form="device-form". Remounts per open, so `initial` seeds once. The credential
@@ -28,6 +30,23 @@
 	let allowProduction = $state(seed?.allowProduction ?? true);
 	let fingerprint = $state('');
 	let error = $state('');
+
+	// The host-key pin is Admin-only. The credential link and the address of a device
+	// with a credential linked are Admin-only too, except within what an Admin
+	// delegated: a non-Admin picks only from the credentials an Admin made assignable
+	// (each limited to its allowed hosts), and may change the address of a device whose
+	// linked credential is one of those. The API is the authority (403/400 with the
+	// reason, shown by the caller); this only keeps the form from offering the rest.
+	// Untouched fields are resent as seeded, which the API accepts as unchanged.
+	const isAdmin = $derived(authStore.session?.role === 'admin');
+	let assignable = $state<AssignableCredential[]>([]);
+	// The credential the device will have once saved: an empty choice is sent as
+	// "not sent", so the seeded link stays.
+	const seededCredential = seed?.credentialId ?? '';
+	const finalCredential = $derived(credentialId || seededCredential);
+	const finalAssignable = $derived(assignable.find((c) => c.id === finalCredential) ?? null);
+	const addressLocked = $derived(!isAdmin && !!finalCredential && !finalAssignable);
+	const chosenScope = $derived(isAdmin ? '' : (finalAssignable?.allowedHosts ?? ''));
 
 	// A device with all three off is parked — no run can reach it. That is a valid
 	// state (it is how you take a box out of rotation without deleting it), so warn
@@ -67,7 +86,17 @@
 	{#if error}<Alert tone="error">{error}</Alert>{/if}
 	<div class="grid gap-3 sm:grid-cols-2">
 		<Input label="Name" bind:value={name} required />
-		<Input label="IP address" bind:value={ipAddress} required />
+		<Input
+			label="IP address"
+			bind:value={ipAddress}
+			required
+			disabled={addressLocked}
+			hint={addressLocked
+				? 'Only an Admin can change the address of a device with this credential'
+				: chosenScope
+					? `Must be within the credential's allowed hosts: ${chosenScope.split('\n').join(', ')}`
+					: ''}
+		/>
 		<Input label="Platform" bind:value={platform} />
 		<Input label="Vendor" bind:value={vendor} />
 		<Input label="OS version" bind:value={osVersion} />
@@ -75,7 +104,17 @@
 		<Input label="Role" bind:value={role} />
 		<Input label="Status" bind:value={status} hint="e.g. active, maintenance" />
 	</div>
-	<CredentialPicker label="Credential" bind:value={credentialId} />
+	{#if isAdmin}
+		<CredentialPicker label="Credential" bind:value={credentialId} />
+	{:else}
+		<CredentialPicker
+			label="Credential"
+			source="assignable"
+			bind:value={credentialId}
+			bind:assignable
+			hint="Only credentials an Admin made assignable are listed; each works only for its allowed hosts."
+		/>
+	{/if}
 
 	<fieldset class="space-y-2 rounded-lg border border-surface-200-800 p-3">
 		<legend class="px-1 text-sm font-medium">Environments</legend>
@@ -102,9 +141,11 @@
 		</p>
 	{/if}
 
-	<Input
-		label="Expected SSH host-key fingerprint"
-		bind:value={fingerprint}
-		hint={initial ? 'Leave blank to keep the current value' : 'Optional; pins the device host key'}
-	/>
+	{#if isAdmin}
+		<Input
+			label="Expected SSH host-key fingerprint"
+			bind:value={fingerprint}
+			hint={initial ? 'Leave blank to keep the current value' : 'Optional; pins the device host key'}
+		/>
+	{/if}
 </form>

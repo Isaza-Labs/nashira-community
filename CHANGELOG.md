@@ -4,6 +4,64 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-25 — Credentials can be limited to the hosts they may be sent to
+
+An Admin can now give a credential **allowed hosts**: IP addresses, CIDR networks or exact
+hostnames (no wildcards, no DNS lookups; a `/0` network is refused). Device SSH refuses to send a
+scoped credential to any device whose address is outside that list, checked at the moment of
+sending and before anything is decrypted, in SSH steps, the agent's `device_connect` tool and
+Ansible steps alike; the step fails with `credential_out_of_scope`, naming the credential and the
+device. An Ansible step whose device credential is out of scope fails rather than running without
+it. Linking a scoped credential to a device outside its scope, or moving such a device out of it,
+is a validation error for everyone, Admins included. Narrowing a scope is never blocked by the
+devices already linked; they fail at send time instead.
+
+A scoped credential can also be marked **Operators may assign this credential**
+(`operator_assignable`, which requires allowed hosts). That hands back part of what the entry
+below takes away: an Operator may link such a credential to a device whose address is within its
+scope, may change the address of a device whose credential is scoped as long as the new address
+stays within it (through the API or `update_device`), and may name such a credential in an SSH
+step's `credential:`. A credential that does not exist and one that is not assignable get the same
+refusal, so the answer does not reveal which names or ids exist. The host-key pin stays Admin-only.
+Operators see the assignable credentials, with only their name, auth method and allowed hosts,
+through the new `GET /api/credential/assignable`; the rest of `/api/credential` stays Admin-only.
+The credential API and the agent's `create_credential` / `update_credential` tools accept
+`allowed_hosts` and `operator_assignable`, and the audit trail records both. In the web UI, the
+Vault's Login and SSH key forms gain both fields (and the list shows them), and the device form
+shows non-Admins a picker of assignable credentials and lets them edit the address of a device
+whose credential is one of those.
+
+Ansible steps also no longer hand a device's password to every host in the run: a password travels
+in the shared environment variable only when every target uses that same password, so a literal
+`host` without a credential never receives one.
+
+Existing credentials are unaffected: they stay unscoped and not assignable, and behave exactly as
+before, until an Admin scopes them. The migration `Phase20_CredentialScope` adds the two columns
+with no backfill.
+
+
+## 2026-11-25 — Only an Admin decides where a device's stored credential is sent
+
+Device SSH decrypts the credential linked to a device and sends it to the device's address, so
+the link, the address and the host-key pin now follow the same rule as stored secrets: only an
+Admin may change them. Operators can no longer link or change a device's credential, or set,
+change or clear its expected SSH host-key fingerprint, when creating or updating a device; the
+API answers 403 with `device_trust_admin_required`. They also cannot change the IP address of a
+device that has a credential linked, through the API or the agent's `update_device` tool. A
+device with no credential can still be re-addressed by an Operator, and sending back the values
+a device already has (as the edit form does) keeps working. Nothing changes for host keys pinned
+automatically on first connection. In the web UI, the credential picker and the fingerprint
+field are shown to Admins only, and the address field is read-only for others on a device with a
+credential.
+
+An SSH step that names a stored credential with `credential:` now needs Admin authority, like a
+`${secret:...}` reference; otherwise the step fails with `secret_access_denied`, whether or not
+the name exists. Steps that use the device's own linked credential work for Operators as before.
+Because triggered runs take the role of whoever last edited what they run, a workflow or
+snippet last saved by an Operator that uses `credential:` fails under its triggers until an Admin
+saves it again. No migration is needed.
+
+
 ## 2026-11-25 — Triggered runs take the role of whoever last edited what they run
 
 A run fired by a trigger still executes as the user who created the trigger, but it no longer

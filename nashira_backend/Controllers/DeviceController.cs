@@ -9,6 +9,7 @@ using nashira_backend.Exceptions;
 using nashira_backend.Services.Common;
 using nashira_backend.Services.Identity;
 using DeviceEntity = nashira_backend.Data.Models.Device;
+using CredentialEntity = nashira_backend.Data.Models.Credential;
 using Microsoft.AspNetCore.RateLimiting;
 using nashira_backend.Services.Security;
 
@@ -91,7 +92,16 @@ public class DeviceController : ControllerBase
     {
         if (string.IsNullOrWhiteSpace(dto.DeviceName)) throw new ValidationException("device_name is required");
         if (string.IsNullOrWhiteSpace(dto.IpAddress)) throw new ValidationException("ip_address is required");
-        await EnsureCredentialAsync(dto.CredentialId, ct);
+        // The trust checks come before any existence error, and a missing credential
+        // and one the caller may not link get the same 403, so a refused caller learns
+        // nothing about which credential ids exist.
+        var ip = dto.IpAddress.Trim();
+        var credential = await FindCredentialAsync(dto.CredentialId, ct);
+        RequireTrust(DeviceTrustPolicy.CredentialLinkRefusal(_user, null, dto.CredentialId, credential, ip));
+        RequireTrust(DeviceTrustPolicy.HostKeyPinRefusal(_user, null, dto.ExpectedSshHostKeyFingerprint));
+        if (dto.CredentialId is not null && credential is null)
+            throw new ValidationException("credential_id does not exist");
+        RequireScope(DeviceTrustPolicy.ScopeMismatch(credential, ip));
         await EnsureSourceAsync(dto.SourceId, ct);
 
         var now = DateTime.UtcNow;
@@ -99,7 +109,7 @@ public class DeviceController : ControllerBase
         {
             DeviceId = Guid.NewGuid(),
             DeviceName = dto.DeviceName.Trim(),
-            IpAddress = dto.IpAddress.Trim(),
+            IpAddress = ip,
             Platform = dto.Platform ?? string.Empty,
             Vendor = dto.Vendor ?? string.Empty,
             OsVersion = dto.OsVersion ?? string.Empty,
@@ -129,6 +139,26 @@ public class DeviceController : ControllerBase
     public async Task<ActionResult<DeviceResponse>> Update(Guid id, [FromBody] UpdateDevice dto, CancellationToken ct)
     {
         var row = await Find(id, ct);
+        // All trust checks run against the row as stored, before anything on it is
+        // touched, so a refused request changes nothing. They judge the device as this
+        // request would leave it: the final link and the final address.
+        var finalIp = dto.IpAddress?.Trim() ?? row.IpAddress;
+        var finalCredentialId = dto.CredentialId ?? row.CredentialId;
+        var finalCredential = await FindCredentialAsync(finalCredentialId, ct);
+        var linkChanges = dto.CredentialId is not null && dto.CredentialId != row.CredentialId;
+        var addressChanges = dto.IpAddress is not null
+            && !string.Equals(row.IpAddress?.Trim(), finalIp, StringComparison.Ordinal);
+        RequireTrust(DeviceTrustPolicy.CredentialLinkRefusal(
+            _user, row.CredentialId, dto.CredentialId, finalCredential, finalIp));
+        RequireTrust(DeviceTrustPolicy.HostKeyPinRefusal(_user, row.ExpectedSshHostKeyFingerprint, dto.ExpectedSshHostKeyFingerprint));
+        RequireTrust(DeviceTrustPolicy.AddressRefusal(
+            _user, finalCredentialId, finalCredential, row.IpAddress, dto.IpAddress));
+        if (linkChanges && finalCredential is null)
+            throw new ValidationException("credential_id does not exist");
+        if (linkChanges || addressChanges)
+            RequireScope(DeviceTrustPolicy.ScopeMismatch(finalCredential, finalIp));
+        if (dto.SourceId is not null) await EnsureSourceAsync(dto.SourceId, ct);
+
         if (dto.DeviceName is not null) row.DeviceName = dto.DeviceName.Trim();
         if (dto.IpAddress is not null) row.IpAddress = dto.IpAddress.Trim();
         if (dto.Platform is not null) row.Platform = dto.Platform;
@@ -137,16 +167,8 @@ public class DeviceController : ControllerBase
         if (dto.Site is not null) row.Site = dto.Site;
         if (dto.Role is not null) row.Role = dto.Role;
         if (dto.Status is not null) row.Status = dto.Status;
-        if (dto.CredentialId is not null)
-        {
-            await EnsureCredentialAsync(dto.CredentialId, ct);
-            row.CredentialId = dto.CredentialId;
-        }
-        if (dto.SourceId is not null)
-        {
-            await EnsureSourceAsync(dto.SourceId, ct);
-            row.SourceId = dto.SourceId;
-        }
+        if (dto.CredentialId is not null) row.CredentialId = dto.CredentialId;
+        if (dto.SourceId is not null) row.SourceId = dto.SourceId;
         if (dto.ExternalId is not null) row.ExternalId = Trimmed(dto.ExternalId);
         if (dto.Properties is not null) row.Properties = ReadProperties(dto.Properties);
         if (dto.AllowDraft is not null) row.AllowDraft = dto.AllowDraft.Value;
@@ -170,11 +192,27 @@ public class DeviceController : ControllerBase
         return ToResponse(row);
     }
 
-    private async Task EnsureCredentialAsync(Guid? credentialId, CancellationToken ct)
+    // Credential link, host-key pin and (with a credential linked) address decide
+    // where stored secret material is sent: see DeviceTrustPolicy.
+    private static void RequireTrust(string? refusal)
     {
-        if (credentialId is not { } cid) return;
-        var exists = await _db.Credentials.AnyAsync(c => c.CredentialId == cid && c.IsActive, ct);
-        if (!exists) throw new ValidationException("credential_id does not exist");
+        if (refusal is not null) throw new ForbiddenException(refusal, DeviceTrustPolicy.AdminRequiredCode);
+    }
+
+    // A scoped credential paired with an address outside its scope could never
+    // connect: refused for everyone, Admins included.
+    private static void RequireScope(string? mismatch)
+    {
+        if (mismatch is not null) throw new ValidationException(mismatch);
+    }
+
+    // The active credential with this id, or null (none asked for, or none exists).
+    // Read untracked: the device update must not drag the credential row into its save.
+    private async Task<CredentialEntity?> FindCredentialAsync(Guid? credentialId, CancellationToken ct)
+    {
+        if (credentialId is not { } cid) return null;
+        return await _db.Credentials.AsNoTracking()
+            .FirstOrDefaultAsync(c => c.CredentialId == cid && c.IsActive, ct);
     }
 
     private async Task EnsureSourceAsync(Guid? sourceId, CancellationToken ct)

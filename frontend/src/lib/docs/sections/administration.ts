@@ -171,8 +171,16 @@ export const administration: DocSection[] = [
 					{ name: 'auth_method', type: 'string', default: 'password', desc: 'One of the five above; decides which fields apply. A missing or unrecognised value is stored as `password`, without an error. Material is checked on the final state: `key` needs `private_key`, `token` and `api_key` need `token`, `oauth2` needs `client_id`, `client_secret` and `token_url`; `password` may be completed later.' },
 					{ name: 'username', type: 'string | null', desc: 'For password and some key setups.' },
 					{ name: 'password / private_key / key_passphrase / token / client_secret', type: 'string', desc: '**Write-only.** Responses expose `has_password`, `has_private_key`, `has_token`, `has_client_secret`.' },
-					{ name: 'api_key_header, client_id, token_url, scopes', type: 'string | null', desc: 'Non-secret companions, returned normally.' }
+					{ name: 'api_key_header, client_id, token_url, scopes', type: 'string | null', desc: 'Non-secret companions, returned normally.' },
+					{ name: 'allowed_hosts', type: 'string | null', desc: 'Where device SSH may send this credential: IP addresses, CIDR networks (`10.0.0.0/24`, `fd00::/8`) or exact hostnames, separated by commas or newlines and returned one per line. Hostnames match literally, case-insensitively, with no wildcards and no DNS lookup; a `/0` network is refused. Empty or absent means not restricted. On update, an empty string clears it and an absent field keeps it.' },
+					{ name: 'operator_assignable', type: 'boolean', default: 'false', desc: 'Lets Operators link this credential to devices, and name it in an SSH step, within `allowed_hosts`. Refused unless `allowed_hosts` is set.' }
 				]
+			},
+			{
+				kind: 'note',
+				tone: 'primary',
+				title: 'Limiting where a credential goes',
+				text: 'A credential with `allowed_hosts` is refused at send time — by SSH steps, `device_connect` and Ansible steps alike — for any device whose address is outside the list, with `credential_out_of_scope`, before anything is decrypted. Linking it to a device outside the list, or moving a linked device outside it, is refused for everyone, Admins included. Narrowing the list is not blocked by devices already linked; they start failing at send time instead. Unscoped credentials (every credential that existed before this field) behave as before, and only an Admin can link them.'
 			},
 			{
 				kind: 'note',
@@ -187,7 +195,8 @@ export const administration: DocSection[] = [
 					{ method: 'GET', path: '/api/credential/{id}', role: 'Admin', desc: 'One credential, metadata only.' },
 					{ method: 'POST', path: '/api/credential', role: 'Admin', desc: 'Create.' },
 					{ method: 'PUT', path: '/api/credential/{id}', role: 'Admin', desc: 'Update. Omitted secret fields keep their stored values.' },
-					{ method: 'DELETE', path: '/api/credential/{id}', role: 'Admin', desc: 'Soft delete.' }
+					{ method: 'DELETE', path: '/api/credential/{id}', role: 'Admin', desc: 'Soft delete.' },
+					{ method: 'GET', path: '/api/credential/assignable', role: 'Operator', desc: 'The device form\'s picker for non-Admins: active credentials that are `operator_assignable` and scoped, with only `credential_id`, `name`, `auth_method` and `allowed_hosts`.' }
 				]
 			}
 		]
