@@ -46,9 +46,24 @@ public sealed class MessagingIngestService : IMessagingIngestService
         _logger = logger;
     }
 
-    public Task<MessagingIngestOutcome> ReceiveAsync(
+    public async Task<MessagingIngestOutcome> ReceiveAsync(
         string provider, Guid channelId, MessagingHttpRequest request, CancellationToken ct)
-        => ReceiveCoreAsync(provider, channelId, request, verifySignature: true, ct);
+    {
+        if (!HttpMethods.IsGet(request.Method))
+            return await ReceiveCoreAsync(provider, channelId, request, verifySignature: true, ct);
+
+        // Only WhatsApp has a GET handshake. Reject probes before looking up a
+        // channel, so its existence, provider and enabled state are not disclosed.
+        if (!string.Equals(provider, MessagingChannel.ProviderWhatsApp, StringComparison.OrdinalIgnoreCase))
+            return new MessagingIngestOutcome(405, "method not allowed");
+
+        var outcome = await ReceiveCoreAsync(provider, channelId, request, verifySignature: true, ct);
+        // The provider echoes a challenge only after verifying its configured
+        // token. All unsuccessful handshakes have the same public response.
+        return outcome is { StatusCode: 200, Raw: true }
+            ? outcome
+            : new MessagingIngestOutcome(401, "unauthorized");
+    }
 
     public Task<MessagingIngestOutcome> ReceiveVerifiedAsync(
         string provider, Guid channelId, byte[] body, CancellationToken ct)

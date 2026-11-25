@@ -4,46 +4,81 @@ using System.Net.Sockets;
 namespace nashira_backend.Services.Net;
 
 // Blocks requests to localhost, private ranges, link-local and the cloud
-// metadata endpoint. Private ranges pass when allowPrivate=true (on-prem
-// integrations); loopback + 169.254 never do. Dev bypass: Security:AllowInternalUrls.
+// metadata endpoint. RFC-1918 ranges pass when allowPrivate=true (on-prem
+// integrations); IPv6 local ranges (unique-local, link-local, site-local),
+// loopback and IPv4-compatible addresses never do.
+// Dev bypass: Security:AllowInternalUrls.
 // Lifted from flow-weaver.
 public sealed class UrlGuard : IUrlGuard
 {
     private readonly bool _allowInternal;
     private readonly ILogger<UrlGuard> _logger;
+    private readonly Func<string, IPAddress[]> _resolve;
 
     public UrlGuard(IConfiguration configuration, ILogger<UrlGuard> logger)
+        : this(configuration, logger, Dns.GetHostAddresses)
+    {
+    }
+
+    internal UrlGuard(IConfiguration configuration, ILogger<UrlGuard> logger, Func<string, IPAddress[]> resolve)
     {
         _allowInternal = configuration.GetValue<bool>("Security:AllowInternalUrls");
         _logger = logger;
+        _resolve = resolve;
     }
 
-    public void EnsureSafe(string url, bool allowPrivate = false)
+    public void EnsureSafe(string url, bool allowPrivate = false) => Validate(url, allowPrivate, log: true);
+
+    // The address a remote server asked to be redirected to is data the remote server chose: its host,
+    // path and query can carry anything. It gets the same checks, in the same order, but is judged
+    // without logging and without an error that repeats it, so the only record of it is the caller's
+    // fixed refusal.
+    public bool IsAllowedQuietly(string url, bool allowPrivate = false)
+    {
+        try
+        {
+            Validate(url, allowPrivate, log: false);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private void Validate(string url, bool allowPrivate, bool log)
     {
         if (_allowInternal) return;
 
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
             throw new InvalidOperationException($"Invalid URL: {url}");
 
-        var host = uri.Host;
+        var host = uri.IdnHost;
 
         if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             || host is "127.0.0.1" or "0.0.0.0" or "::1" or "169.254.169.254")
         {
-            _logger.LogWarning("net.url_guard.blocked host={Host} reason=blocked_hostname", host);
+            if (log) _logger.LogWarning("net.url_guard.blocked host={Host} reason=blocked_hostname", host);
             throw new InvalidOperationException($"SSRF blocked: requests to {host} are not allowed");
         }
 
         IPAddress[] addresses;
-        try { addresses = Dns.GetHostAddresses(host); }
+        try { addresses = IPAddress.TryParse(host, out var literal) ? [literal] : _resolve(host); }
         catch (SocketException ex)
         {
-            _logger.LogWarning("net.url_guard.blocked host={Host} reason=dns_resolution_failed", host);
+            if (log) _logger.LogWarning("net.url_guard.blocked host={Host} reason=dns_resolution_failed", host);
             throw new InvalidOperationException($"SSRF blocked: cannot resolve host {host}", ex);
         }
 
-        foreach (var ip in addresses)
+        if (addresses.Length == 0)
+            throw new InvalidOperationException($"SSRF blocked: cannot resolve host {host}");
+
+        // Check every DNS answer as well as literals. Normalize IPv4-mapped IPv6
+        // before applying IPv4 rules so mapping cannot bypass metadata/private checks.
+        foreach (var address in addresses)
         {
+            var ip = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
             if (IPAddress.IsLoopback(ip))
                 throw new InvalidOperationException($"SSRF blocked: {host} resolves to loopback {ip}");
 
@@ -57,7 +92,7 @@ public sealed class UrlGuard : IUrlGuard
 
                 if (isPrivate && !allowPrivate)
                 {
-                    _logger.LogWarning("net.url_guard.blocked host={Host} reason=private_address", host);
+                    if (log) _logger.LogWarning("net.url_guard.blocked host={Host} reason=private_address", host);
                     throw new InvalidOperationException($"SSRF blocked: {host} resolves to private address {ip}");
                 }
 
@@ -67,12 +102,25 @@ public sealed class UrlGuard : IUrlGuard
                 if (b[0] == 0)
                     throw new InvalidOperationException($"SSRF blocked: {host} resolves to reserved address {ip}");
             }
-            else if (ip.AddressFamily == AddressFamily.InterNetworkV6 && ip.Equals(IPAddress.IPv6Loopback))
+            else if (ip.AddressFamily == AddressFamily.InterNetworkV6)
             {
-                throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 loopback {ip}");
+                var bytes = ip.GetAddressBytes();
+                if ((bytes[0] & 0xfe) == 0xfc)
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 unique-local address {ip}");
+                if (ip.IsIPv6LinkLocal)
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 link-local address {ip}");
+                // fec0::/10, deprecated but still routed on some networks. Never bypassed by allowPrivate.
+                if (ip.IsIPv6SiteLocal)
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 site-local address {ip}");
+                // IPv4-compatible (::a.b.c.d, the whole ::/96 block) is deprecated and reserved; it can spell any
+                // IPv4 target, so it is refused rather than mapped. Covers :: and ::1 as well.
+                if (bytes.AsSpan(0, 12).IndexOfAnyExcept((byte)0) < 0)
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv4-compatible IPv6 address {ip}");
+                if (ip.Equals(IPAddress.IPv6Any))
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 unspecified address {ip}");
             }
         }
 
-        _logger.LogDebug("net.url_guard.ok host={Host}", host);
+        if (log) _logger.LogDebug("net.url_guard.ok host={Host}", host);
     }
 }

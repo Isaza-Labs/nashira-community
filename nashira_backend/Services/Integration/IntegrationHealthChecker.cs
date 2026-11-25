@@ -1,4 +1,5 @@
 ﻿using System.Diagnostics;
+using nashira_backend.Exceptions;
 using nashira_backend.Services.Ai.Secrets;
 using nashira_backend.Services.Net;
 using IntegrationEntity = nashira_backend.Data.Models.Integration;
@@ -80,7 +81,20 @@ public sealed class IntegrationHealthChecker : IIntegrationHealthChecker
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.TryAddWithoutValidation("Accept", "application/json");
-            await _auth.ApplyAsync(request, integration, ct);
+            try
+            {
+                await _auth.ApplyAsync(request, integration, ct);
+            }
+            catch (RedirectRefusedException ex)
+            {
+                // The token endpoint redirected before the probe was sent, so nothing is known about
+                // the system itself; it is the authentication setting that needs the final URL.
+                sw.Stop();
+                return new IntegrationHealth(
+                    IntegrationEntity.StatusDegraded, null, (int)sw.ElapsedMilliseconds,
+                    $"authentication did not complete: the OAuth token endpoint answered HTTP {ex.StatusCode} " +
+                    "with a redirect; configure the final token URL");
+            }
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(Timeout);
@@ -120,6 +134,21 @@ public sealed class IntegrationHealthChecker : IIntegrationHealthChecker
             return new IntegrationHealth(
                 IntegrationEntity.StatusUnreachable, null, (int)sw.ElapsedMilliseconds,
                 $"timed out after {Timeout.TotalSeconds:0}s");
+        }
+        catch (RedirectRefusedException ex)
+        {
+            // The host answered, so it is not unreachable; the configured URL needs to point at
+            // the final endpoint. Degraded is the "answered, but something to fix" state.
+            sw.Stop();
+            return new IntegrationHealth(
+                IntegrationEntity.StatusDegraded, ex.StatusCode, (int)sw.ElapsedMilliseconds,
+                $"reachable, but the probe was redirected (HTTP {ex.StatusCode}); configure the final endpoint");
+        }
+        catch (ForbiddenException)
+        {
+            // An authorization denial says nothing about the system being probed. Turning
+            // it into "unreachable" would persist a false status; let it surface as a 403.
+            throw;
         }
         catch (Exception ex)
         {

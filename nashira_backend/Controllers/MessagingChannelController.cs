@@ -12,6 +12,7 @@ using nashira_backend.Services.Common;
 using nashira_backend.Services.Identity;
 using nashira_backend.Services.Messaging;
 using nashira_backend.Services.Security;
+using nashira_backend.Services.Audit;
 using ChannelEntity = nashira_backend.Data.Models.MessagingChannel;
 
 namespace nashira_backend.Controllers;
@@ -21,12 +22,15 @@ public class WriteMessagingChannel
     [JsonPropertyName("provider")] public string? Provider { get; set; }
     [JsonPropertyName("name")] public string? Name { get; set; }
 
-    // The three secrets are write-only with three-state semantics:
+    // Bot/app tokens are write-only with three-state semantics:
     //   absent/null → leave unchanged      ""  → clear      value → rotate
     // The API never returns them, so "absent means clear" would silently
     // unconfigure a channel on any unrelated edit.
     [JsonPropertyName("bot_token")] public string? BotToken { get; set; }
+    // Signing secrets: absent/null keeps; a validated value sets/rotates;
+    // clear_signing_secret=true clears explicitly. Empty strings are rejected.
     [JsonPropertyName("signing_secret")] public string? SigningSecret { get; set; }
+    [JsonPropertyName("clear_signing_secret")] public bool ClearSigningSecret { get; set; }
     [JsonPropertyName("app_token")] public string? AppToken { get; set; }
 
     [JsonPropertyName("external_config")] public Dictionary<string, string?>? ExternalConfig { get; set; }
@@ -120,14 +124,17 @@ public class MessagingChannelController : ControllerBase
     private readonly ICurrentUser _user;
     private readonly ISecretProtector _protector;
     private readonly MessagingOptions _options;
+    private readonly IAuditLogger _audit;
 
     public MessagingChannelController(
-        AppDbContext db, ICurrentUser user, ISecretProtector protector, IOptions<MessagingOptions> options)
+        AppDbContext db, ICurrentUser user, ISecretProtector protector, IOptions<MessagingOptions> options,
+        IAuditLogger audit)
     {
         _db = db;
         _user = user;
         _protector = protector;
         _options = options.Value;
+        _audit = audit;
     }
 
     [HttpGet]
@@ -153,6 +160,10 @@ public class MessagingChannelController : ControllerBase
     public async Task<ActionResult<MessagingChannelResponse>> Post(
         [FromBody] WriteMessagingChannel dto, CancellationToken ct)
     {
+        RequireAdmin();
+        ValidateSigningSecret(dto);
+        if (dto.ClearSigningSecret)
+            throw new ValidationException("clear_signing_secret only applies to an existing channel", "signing_secret_invalid");
         if (string.IsNullOrWhiteSpace(dto.Name)) throw new ValidationException("name is required");
         var provider = NormalizeProvider(dto.Provider);
         var maxRole = NormalizeMaxRole(dto.MaxRole);
@@ -189,6 +200,9 @@ public class MessagingChannelController : ControllerBase
             UpdatedAt = now,
         };
         _db.MessagingChannels.Add(row);
+        if (dto.SigningSecret is not null)
+            await _audit.LogRequiredAsync("messaging_channel", row.MessagingChannelId, "signing_secret.set",
+                new { has_signing_secret = true }, ct);
         await _db.SaveChangesAsync(ct);
         return new CreatedAtActionResult(
             nameof(GetById), "MessagingChannel", new { id = row.MessagingChannelId }, ToResponse(row));
@@ -199,7 +213,10 @@ public class MessagingChannelController : ControllerBase
     public async Task<ActionResult<MessagingChannelResponse>> Update(
         Guid id, [FromBody] WriteMessagingChannel dto, CancellationToken ct)
     {
+        RequireAdmin();
+        ValidateSigningSecret(dto);
         var row = await Find(id, ct);
+        var hadSigningSecret = row.SigningSecretEncrypted is { Length: > 0 };
 
         if (dto.Name is not null && dto.Name.Trim().Length > 0)
         {
@@ -225,6 +242,7 @@ public class MessagingChannelController : ControllerBase
 
         if (dto.BotToken is not null) row.BotTokenEncrypted = Protect(dto.BotToken);
         if (dto.SigningSecret is not null) row.SigningSecretEncrypted = Protect(dto.SigningSecret);
+        if (dto.ClearSigningSecret) row.SigningSecretEncrypted = null;
         if (dto.AppToken is not null) row.AppTokenEncrypted = Protect(dto.AppToken);
 
         // Validated against the MERGED row, not the request: switching an existing
@@ -233,6 +251,10 @@ public class MessagingChannelController : ControllerBase
         RequireProviderConfig(row.Provider, MessagingChannelConfig.External(row));
 
         row.UpdatedAt = DateTime.UtcNow;
+        if (dto.SigningSecret is not null || dto.ClearSigningSecret)
+            await _audit.LogRequiredAsync("messaging_channel", id,
+                dto.ClearSigningSecret ? "signing_secret.clear" : hadSigningSecret ? "signing_secret.rotate" : "signing_secret.set",
+                new { has_signing_secret = !dto.ClearSigningSecret }, ct);
         await _db.SaveChangesAsync(ct);
         return ToResponse(row);
     }
@@ -383,6 +405,24 @@ public class MessagingChannelController : ControllerBase
     {
         if (provider != ChannelEntity.ProviderTeams) return;
         TeamsRelayConnectionString.Validate(appToken);
+    }
+
+    private void RequireAdmin()
+    {
+        if (!_user.IsAuthenticated || !_user.Roles.Contains("admin", StringComparer.Ordinal))
+            throw new ForbiddenException("Admin role is required to manage messaging channels", "admin_required");
+    }
+
+    private static void ValidateSigningSecret(WriteMessagingChannel dto)
+    {
+        if (dto.ClearSigningSecret && dto.SigningSecret is not null)
+            throw new ValidationException("Supply signing_secret or clear_signing_secret, not both", "signing_secret_invalid");
+        if (dto.SigningSecret is not { } value) return;
+        // Provider-issued keys and randomly generated webhook tokens. This checks
+        // obvious weakness, not entropy: operators must generate random secrets.
+        if (value.Length is < 32 or > 4096 || value.Any(char.IsWhiteSpace) ||
+            value.Any(char.IsControl) || value.Distinct().Count() < 8)
+            throw new ValidationException("signing_secret must be 32–4096 non-whitespace characters with at least 8 distinct characters; use clear_signing_secret to clear", "signing_secret_invalid");
     }
 
     private async Task<ChannelEntity> Find(Guid id, CancellationToken ct)

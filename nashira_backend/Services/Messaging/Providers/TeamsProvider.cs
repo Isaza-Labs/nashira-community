@@ -77,9 +77,7 @@ public sealed partial class TeamsProvider : IMessagingProvider
 
         var auth = request.Header("Authorization");
         if (string.IsNullOrEmpty(auth) || !auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
-            return channel.AllowUnsigned
-                ? WebhookVerifyResult.Verified()
-                : WebhookVerifyResult.Rejected(401, "missing bearer token");
+            return WebhookVerifyResult.Rejected(401, "missing bearer token");
 
         var appId = ConfigStr(channel, "app_id");
         if (string.IsNullOrEmpty(appId))

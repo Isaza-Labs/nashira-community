@@ -66,7 +66,7 @@ public sealed class SyncNetBoxInventoryHandler : IToolHandler
         }
         catch (DomainException ex)
         {
-            return Err(ex.Message);
+            return ToolFailure.From(ex);
         }
     }
 

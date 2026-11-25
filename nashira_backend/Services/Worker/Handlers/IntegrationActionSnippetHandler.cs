@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
+using nashira_backend.Exceptions;
 using nashira_backend.Services.Ai.Secrets;
 using nashira_backend.Services.Integration;
 using nashira_backend.Services.Net;
@@ -122,6 +123,20 @@ public sealed class IntegrationActionSnippetHandler : ISnippetHandler
         {
             await _auth.ApplyAsync(message, integration, ct);
         }
+        catch (ForbiddenException)
+        {
+            // A denied secret lookup is an authorization decision, not a broken grant:
+            // it must reach the executor as secret_access_denied, which does not retry.
+            throw;
+        }
+        catch (RedirectRefusedException ex)
+        {
+            // The token endpoint redirected. Repeating the grant cannot change that, and the API
+            // has not been called.
+            return SnippetResult.Fail(
+                $"authentication did not complete: the OAuth token endpoint answered HTTP {ex.StatusCode} " +
+                "with a redirect; configure the final token URL", RedirectRefusedException.Code);
+        }
         catch (Exception ex)
         {
             // A broken grant is a credentials problem, and saying so beats letting
@@ -175,6 +190,11 @@ public sealed class IntegrationActionSnippetHandler : ISnippetHandler
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             return SnippetResult.Fail($"timed out after {request.TimeoutSeconds}s", "timeout", retryable: true);
+        }
+        catch (RedirectRefusedException ex)
+        {
+            return SnippetResult.Fail(
+                $"{ex.Message} (the server answered HTTP {ex.StatusCode})", RedirectRefusedException.Code);
         }
         catch (HttpRequestException ex)
         {

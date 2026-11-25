@@ -40,18 +40,21 @@ public sealed class ExecuteOperationHandler : IToolHandler
 
         var result = await _executor.ExecuteAsync(operationId, pathParams, queryParams, body, ct);
 
-        return JsonSerializer.SerializeToElement(new
+        var output = new Dictionary<string, object?>
         {
-            status_code = result.StatusCode,
-            success = result.Success,
-            error = result.Error,
-            // Present only when the refusal is explainable. Named `diagnosis` rather
-            // than folded into `error` so it cannot be mistaken for what the upstream
-            // itself said.
-            diagnosis = result.Diagnosis,
-            body = result.Body,
-            headers = result.Headers,
-        });
+            ["status_code"] = result.StatusCode,
+            ["success"] = result.Success,
+            ["error"] = result.Error,
+        };
+        // Only when the failure has a stable code, so ordinary results keep their shape.
+        if (result.ErrorCode is not null) output["error_code"] = result.ErrorCode;
+        // Present only when the refusal is explainable. Named `diagnosis` rather
+        // than folded into `error` so it cannot be mistaken for what the upstream
+        // itself said.
+        output["diagnosis"] = result.Diagnosis;
+        output["body"] = result.Body;
+        output["headers"] = result.Headers;
+        return JsonSerializer.SerializeToElement(output);
     }
 
     private static JsonElement GetOrEmptyObject(JsonElement args, string key)

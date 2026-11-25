@@ -175,7 +175,8 @@
 	let fMaxRole = $state('');
 	let fAllowedIds = $state('');
 	let fRequireLinked = $state(true);
-	let fAllowUnsigned = $state(false);
+	// Stored by an older version and ignored by the server; only used to say so.
+	let legacyUnsignedFlag = $state(false);
 	let fEnabled = $state(true);
 
 	const spec = $derived(PROVIDER_SPECS[fProvider] ?? PROVIDER_SPECS.telegram);
@@ -282,7 +283,7 @@
 		fMaxRole = '';
 		fAllowedIds = '';
 		fRequireLinked = true;
-		fAllowUnsigned = false;
+		legacyUnsignedFlag = false;
 		fEnabled = true;
 		modalOpen = true;
 	}
@@ -301,7 +302,7 @@
 		fMaxRole = c.maxRole ?? '';
 		fAllowedIds = c.allowedExternalIds.join(', ');
 		fRequireLinked = c.requireLinkedUser;
-		fAllowUnsigned = c.allowUnsigned;
+		legacyUnsignedFlag = c.allowUnsigned;
 		fEnabled = c.enabled;
 		modalOpen = true;
 	}
@@ -335,7 +336,6 @@
 			maxRole: fMaxRole || null,
 			requireLinkedUser: fRequireLinked,
 			allowedExternalIds: ids,
-			allowUnsigned: fAllowUnsigned,
 			enabled: fEnabled
 		};
 	}
@@ -485,7 +485,6 @@
 						<div class="flex flex-wrap items-center gap-1.5">
 							<Badge tone={statusTone(row)}>{row.enabled ? 'enabled' : 'disabled'}</Badge>
 							{#if !row.hasBotToken}<Badge tone="warning">no bot token</Badge>{/if}
-							{#if row.allowUnsigned}<Badge tone="error">unsigned allowed</Badge>{/if}
 							{#if !row.requireLinkedUser}<Badge tone="warning">unlinked ok</Badge>{/if}
 						</div>
 					{:else if col.key === 'lastDeliveryAt'}
@@ -631,7 +630,7 @@
 					{editing ? `${spec.signingSecret.label} (leave blank to keep)` : spec.signingSecret.label}
 					<FieldHint
 						label="Signing secret"
-						help="Verifies that inbound webhooks really came from the platform. Without it, anyone who learns the webhook URL can impersonate the provider."
+						help="Verifies that inbound webhooks really came from the platform. Until it is set, every delivery to this channel is rejected."
 						detail="Teams does not use it: Bot Framework signs every activity with a JWT that is validated against Microsoft's public keys, so the field is hidden for that provider."
 					/>
 				</label>
@@ -717,20 +716,12 @@
 					detail="This is what makes the permission model work over a chat channel: with it off, there is no user to check permissions against. Leave it on."
 				/>
 			</span>
-			<span class="inline-flex items-center gap-1">
-				<Checkbox bind:checked={fAllowUnsigned} label="Allow unsigned deliveries" disabled={saving} />
-				<FieldHint
-					label="Allow unsigned deliveries"
-					help="Accepts inbound webhooks that carry no signature."
-					detail="The signature is what proves the delivery came from the platform. Without it, anyone who learns the URL can post as the provider — testing only."
-				/>
-			</span>
 		</div>
 
-		{#if fAllowUnsigned}
-			<Alert tone="warning">
-				Unsigned deliveries are accepted on this channel. Anyone who learns the webhook URL can post
-				as the provider — turn this off outside of testing.
+		{#if legacyUnsignedFlag}
+			<Alert tone="neutral">
+				This channel still has the old "allow unsigned deliveries" setting stored. It is ignored:
+				every delivery must pass the provider's signature or token verification.
 			</Alert>
 		{/if}
 		{#if !fRequireLinked}

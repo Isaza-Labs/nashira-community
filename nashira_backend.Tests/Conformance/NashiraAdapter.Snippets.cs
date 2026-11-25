@@ -255,7 +255,12 @@ public sealed partial class NashiraAdapter
         };
 
         var config = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { ["Python:Executable"] = exe })
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Python:Executable"] = exe,
+                // The probe checks the contract's output conventions, not isolation.
+                ["Python:AllowUnsandboxed"] = "true",
+            })
             .Build();
 
         using var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>()
@@ -275,7 +280,7 @@ public sealed partial class NashiraAdapter
 
         var handler = new PythonSnippetHandler(
             db,
-            new PythonSandbox(config, NullLogger<PythonSandbox>.Instance),
+            new PythonSandbox(config, NullLogger<PythonSandbox>.Instance, new HardeningTestUser()),
             // Throws rather than no-ops: a vector carrying a ${secret:…} reference would be
             // describing a credential this harness never set up, and handing the script the
             // literal marker instead is not what either side of the contract means.

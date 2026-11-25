@@ -242,6 +242,12 @@ public sealed class McpOAuthService : IMcpOAuthService
             using var doc = JsonDocument.Parse(body);
             return doc.RootElement.Clone();
         }
+        catch (RedirectRefusedException)
+        {
+            // A probe that is redirected is not "no metadata here": the endpoint has to be configured at
+            // its final address (or token_url set by hand), so the refusal reaches the caller.
+            throw;
+        }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
             _logger.LogDebug("mcp.oauth.discovery_probe_failed url={Url} err={Err}", url, ex.Message);

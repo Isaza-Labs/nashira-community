@@ -1,8 +1,10 @@
 ﻿using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
+using nashira_backend.Exceptions;
 using nashira_backend.Services.Engine;
 using nashira_backend.Services.Worker;
+using nashira_backend.Services.Ai.Secrets;
 
 namespace nashira_backend.Services.Workflow;
 
@@ -358,6 +360,9 @@ public sealed class SnippetNodeExecutor : INodeExecutor
         WorkflowNode node, Data.Models.Snippet snippet, ISnippetHandler handler,
         JsonElement input, CancellationToken ct)
     {
+        if (!StepOutputPrivacy.TryRead(input, out var redactOutput))
+            return SnippetResult.Fail("redact_output must be a boolean", "invalid_redact_output");
+        using var secrets = new SecretResolutionScope();
         // The one place the canonical-vs-alias question is answered
         // (snippets/SPEC.md rule 1, bundle/SPEC.md §4). Handlers still read both keys —
         // they are called directly by tests and by nothing else — but a node that
@@ -385,13 +390,29 @@ public sealed class SnippetNodeExecutor : INodeExecutor
 
         try
         {
-            return await handler.ExecuteAsync(request, ct);
+            var result = await handler.ExecuteAsync(request, ct);
+            return redactOutput || secrets.HasResolvedMaterial ? StepOutputPrivacy.Withhold(result) : result;
+        }
+        catch (ForbiddenException ex)
+        {
+            // Permission failures stop the step and are not retryable. Preserve
+            // the resolver's code rather than reporting an unexpected handler bug.
+            var result = SnippetResult.Fail(ex.Message, ex.Code);
+            return redactOutput || secrets.HasResolvedMaterial ? StepOutputPrivacy.Withhold(result) : result;
         }
         catch (Exception ex)
         {
             // A handler that throws is a bug in the handler, not a workflow failure
             // the author can act on — but the run still has to end, so it becomes a
             // failed step with the message attached.
+            if (secrets.HasResolvedMaterial || redactOutput)
+            {
+                // The type only: the message and stack may carry what the step was told to withhold.
+                _logger.LogWarning(
+                    "workflow.node.handler_threw node={Node} type={Type} exception={ExceptionType} detail=withheld",
+                    node.Id, snippet.Type, ex.GetType().Name);
+                return StepOutputPrivacy.Withhold(SnippetResult.Fail("handler failed", "exception"));
+            }
             _logger.LogError(ex, "workflow.node.handler_threw node={Node} type={Type}", node.Id, snippet.Type);
             return SnippetResult.Fail(ex.Message, "exception");
         }
@@ -531,6 +552,12 @@ public sealed class SnippetNodeExecutor : INodeExecutor
         var chain = Subflow ?? SubflowInvocation.Root(
             _scope.WorkflowId ?? Guid.Empty, _scope.Environment ?? string.Empty);
 
+        // The same flag, checked the same way, as on a snippet step — and before anything
+        // runs, so a malformed value cannot start a child whose output would then be
+        // recorded without the protection the author asked for.
+        if (!StepOutputPrivacy.TryRead(node.ConfigOverrides, out var redactOutput))
+            return Failed(node, "invalid_redact_output", "redact_output must be a boolean");
+
         // The child is named by `config_overrides.subflow_workflow_id` and by nothing
         // else. A node without it is not "a subflow with no input" — there is no
         // workflow to run — so it fails rather than being skipped: a skipped node stops
@@ -587,7 +614,13 @@ public sealed class SnippetNodeExecutor : INodeExecutor
             chain.Descend(_scope.WorkflowRunId, childId), ct);
         var finishedAt = DateTime.UtcNow;
 
-        var payload = SubflowOutput(outcome);
+        // redact_output withholds what the child's steps produced and the child's error
+        // text, both of which can carry data from steps this node never saw. The run id,
+        // verdict and error code stay: they are host-controlled status.
+        var payload = redactOutput
+            ? JsonSerializer.SerializeToElement(StepOutputPrivacy.Redacted)
+            : SubflowOutput(outcome);
+        var error = redactOutput && outcome.Error is not null ? StepOutputPrivacy.Redacted : outcome.Error;
         _completed[node.Id] = new StepResult(payload);
 
         // The strictest tier among the child's executed nodes becomes this step's tier,
@@ -599,7 +632,7 @@ public sealed class SnippetNodeExecutor : INodeExecutor
 
         if (outcome.Failed)
         {
-            RunContext?.MarkFailed(node.Id, outcome.Error);
+            RunContext?.MarkFailed(node.Id, error);
             _logger.LogWarning(
                 "workflow.node.subflow_failed node={Node} child={Child} run={Run}",
                 node.Id, childId, outcome.RunId);
@@ -611,7 +644,7 @@ public sealed class SnippetNodeExecutor : INodeExecutor
             {
                 Tier = tier,
                 ChildRunId = outcome.RunId,
-                Error = outcome.Error,
+                Error = error,
                 Input = InputSnapshot(input),
                 StartedAt = startedAt,
                 FinishedAt = finishedAt,

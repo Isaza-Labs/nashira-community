@@ -53,11 +53,9 @@ public sealed class WhatsAppProvider : IMessagingProvider
         }
 
         // POST event signature.
-        if (string.IsNullOrEmpty(appSecret))
+        if (string.IsNullOrWhiteSpace(appSecret))
         {
-            return channel.AllowUnsigned
-                ? WebhookVerifyResult.Verified()
-                : WebhookVerifyResult.Rejected(401, "no app secret configured; set one or enable allow_unsigned");
+            return WebhookVerifyResult.Rejected(401, "no app secret configured");
         }
 
         var sig = request.Header("X-Hub-Signature-256");

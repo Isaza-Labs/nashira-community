@@ -4,6 +4,7 @@ using nashira_backend.Data.Db;
 using nashira_backend.Exceptions;
 using nashira_backend.Services.Identity;
 using nashira_backend.Services.Mcp;
+using nashira_backend.Services.Net;
 
 namespace nashira_backend.Services.Ai.Tools.Handlers;
 
@@ -85,6 +86,33 @@ public sealed class McpCallHandler : IToolHandler
         }
         catch (Exception ex)
         {
+            var search = RedirectRefusedException.Search(ex);
+            if (search.Refusal is { } refused)
+            {
+                // Configuration fault, not a transient one: the code lets the dispatcher treat it as final
+                // instead of offering a correction that would call the server again. Only the fixed text
+                // and the status are reported; the Location header is never carried.
+                _logger.LogWarning(
+                    "mcp.call.redirect_refused server={Server} tool={Tool} status={Status} reason={Reason}",
+                    serverName, toolName, refused.StatusCode, refused.Reason);
+                return JsonSerializer.SerializeToElement(new
+                {
+                    error = $"MCP call failed: {refused.Message} (the server answered HTTP {refused.StatusCode})",
+                    error_code = RedirectRefusedException.Code,
+                });
+            }
+            if (search.IsIncomplete)
+            {
+                // The graph could not be inspected in full: no message from it, no exception object in the log
+                // (formatting one walks the whole graph), and a final code so nothing runs the call again.
+                _logger.LogWarning(
+                    "mcp.call.failed server={Server} tool={Tool} detail=withheld", serverName, toolName);
+                return JsonSerializer.SerializeToElement(new
+                {
+                    error = RedirectSearch.IncompleteMessage,
+                    error_code = RedirectSearch.IncompleteCode,
+                });
+            }
             _logger.LogWarning(ex, "mcp.call.failed server={Server} tool={Tool}", serverName, toolName);
             return Err($"MCP call failed: {ex.Message}");
         }

@@ -19,6 +19,12 @@ public sealed class RestExecutionResult
     public string? Error { get; init; }
 
     /// <summary>
+    /// Set when the failure has a stable code a caller can act on (today only `redirect_refused`).
+    /// Null for the general errors, which callers still treat as transient.
+    /// </summary>
+    public string? ErrorCode { get; init; }
+
+    /// <summary>
     /// The HTTP verb the operation used. Carried so a caller can tell a read from a write
     /// without re-opening the spec — `rest_call` needs it to report whether the step changed
     /// anything, and the executor is the only party that already knows.
@@ -212,7 +218,21 @@ public sealed class RestOperationExecutor : IRestOperationExecutor
                     "rest.executor.spec_auth_empty api={Api} auth_type={AuthType} integration={Integration} " +
                     "— the spec declares an auth type but carries no material; falling back to the integration",
                     op.Api, spec.AuthType, integration.Name);
-            await _integrationAuth.ApplyAsync(msg, integration, cts.Token);
+            try
+            {
+                await _integrationAuth.ApplyAsync(msg, integration, cts.Token);
+            }
+            catch (RedirectRefusedException ex)
+            {
+                // The token endpoint redirected, before the API was called at all. Same final
+                // refusal as for the API itself, worded for the setting that has to change.
+                _logger.LogWarning(
+                    "rest.executor.auth_redirect_refused operation_id={OperationId} status={Status} reason={Reason}",
+                    operationId, ex.StatusCode, ex.Reason);
+                return Fail(
+                    $"authentication did not complete: the OAuth token endpoint answered HTTP {ex.StatusCode} " +
+                    "with a redirect; configure the final token URL", RedirectRefusedException.Code);
+            }
         }
         else if (!applied && specDeclaresAuth)
         {
@@ -275,6 +295,14 @@ public sealed class RestOperationExecutor : IRestOperationExecutor
         catch (OperationCanceledException) when (cts.IsCancellationRequested && !ct.IsCancellationRequested)
         {
             return Fail($"request timed out after {RequestTimeout.TotalSeconds:n0}s");
+        }
+        catch (RedirectRefusedException ex)
+        {
+            // A redirect will not go away on a retry; say what to change instead.
+            _logger.LogWarning(
+                "rest.executor.redirect_refused operation_id={OperationId} host={Host} status={Status} reason={Reason}",
+                operationId, host, ex.StatusCode, ex.Reason);
+            return Fail($"{ex.Message} (the server answered HTTP {ex.StatusCode})", RedirectRefusedException.Code);
         }
         catch (HttpRequestException ex)
         {
@@ -441,10 +469,11 @@ public sealed class RestOperationExecutor : IRestOperationExecutor
         catch { return JsonSerializer.SerializeToElement(new { raw }); }
     }
 
-    private static RestExecutionResult Fail(string error) => new()
+    private static RestExecutionResult Fail(string error, string? code = null) => new()
     {
         StatusCode = 0,
         Body = JsonDocument.Parse("null").RootElement.Clone(),
         Error = error,
+        ErrorCode = code,
     };
 }

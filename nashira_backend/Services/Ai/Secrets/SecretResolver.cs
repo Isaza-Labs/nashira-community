@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
+using nashira_backend.Exceptions;
 using nashira_backend.Services.Auth;
 using nashira_backend.Services.Identity;
 using nashira_backend.Services.Security;
@@ -66,6 +67,8 @@ public sealed partial class SecretResolver : ISecretResolver
     // The reference the built-in na_* specs carry as their bearer.
     public const string SessionJwtRef = "${secret:session:current:jwt}";
 
+    public const string AccessDeniedCode = "secret_access_denied";
+
     private readonly AppDbContext _db;
     private readonly ISecretProtector _crypto;
     private readonly ICurrentUser _user;
@@ -103,6 +106,18 @@ public sealed partial class SecretResolver : ISecretResolver
         var src = source.Trim().ToLowerInvariant();
         var key = idOrName.Trim();
         var fld = field.Trim();
+
+        // A marker is not a grant to use the referenced credential. Check the
+        // effective caller before any lookup, including cleartext credential fields
+        // and nested integration references. Match the application's Admin policy.
+        // The session source is different: it lends only the caller's own identity
+        // to explicitly opted-in self-API calls, under the rules below.
+        if (src != SessionSource && !SecretAccessPolicy.MayResolveStored(_user))
+        {
+            _trace.Event(TraceEvent.CategorySystem, "secret.access",
+                new { secret_source = src, id_or_name = key, field = fld }, error: AccessDeniedCode);
+            throw new ForbiddenException(SecretAccessPolicy.DeniedMessage, AccessDeniedCode);
+        }
 
         Guid.TryParse(key, out var id);
         var isGuid = id != Guid.Empty;
@@ -167,7 +182,17 @@ public sealed partial class SecretResolver : ISecretResolver
                     "secret.resolve.hit source={Source} id_or_name={IdOrName} field={Field} value_bytes={ValueBytes}",
                     src, key, fld, value.Length);
             }
+            // Stored material taints the execution. The session reference does not: it lends the caller's
+            // own bearer to this backend and reads nothing from the secrets tables, so a step that only
+            // uses it (the built-in na_* specs) keeps the output rules it had before.
+            if (value is not null && src != SessionSource) SecretResolutionScope.MarkResolved();
             return value;
+        }
+        catch (ForbiddenException)
+        {
+            // A nested substitution can deny access too. Never turn that denial
+            // into null: SubstituteAsync would leave the marker and keep executing.
+            throw;
         }
         catch (Exception ex)
         {

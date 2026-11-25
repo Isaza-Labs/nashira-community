@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
@@ -49,6 +50,9 @@ public sealed class PythonSnippetHandler : ISnippetHandler
 
     public async Task<SnippetResult> ExecuteAsync(SnippetRequest request, CancellationToken ct)
     {
+        if (!StepOutputPrivacy.TryRead(request.Input, out var redactOutput))
+            return SnippetResult.Fail("redact_output must be a boolean", "invalid_redact_output");
+        using var secrets = new SecretResolutionScope();
         if (string.IsNullOrWhiteSpace(request.Code))
             return SnippetResult.Fail("this python_snippet has no code", "bad_snippet");
 
@@ -124,18 +128,38 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             return SnippetResult.Fail($"module(s) {string.Join("; ", parts)}", "module_denied");
         }
 
-        var result = await _sandbox.RunAsync(
-            new PythonRunRequest(
-                Code: request.Code!,
-                Input: await ResolveSecretsAsync(request.Input, ct),
-                TimeoutSeconds: request.TimeoutSeconds,
-                NetworkEnabled: networkEnabled,
-                AllowedModules: allowed,
-                // Null unless something is actually installed there, so a deployment
-                // that never approved a pip package runs the identical harness it did
-                // before this existed.
-                PackagesDir: PythonPackagesLayout.ResolveSiteDirIfPopulated(_config)),
-            ct);
+        // The script needs plaintext to act, but its output cannot be trusted to
+        // distinguish public data from encoded secrets. Track resolution, not just matches.
+        var (scriptInput, secretValues) = await ResolveSecretsAsync(request.Input, ct);
+
+        PythonRunResult result;
+        try
+        {
+            result = await _sandbox.RunAsync(
+                new PythonRunRequest(
+                    Code: request.Code!,
+                    Input: scriptInput,
+                    TimeoutSeconds: request.TimeoutSeconds,
+                    NetworkEnabled: networkEnabled,
+                    AllowedModules: allowed,
+                    PackagesDir: PythonPackagesLayout.ResolveSiteDirIfPopulated(_config)),
+                ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException &&
+            (secrets.HasResolvedMaterial || secretValues.Count > 0 || redactOutput))
+        {
+            return StepOutputPrivacy.Withhold(SnippetResult.Fail("script failed", "script_error"));
+        }
+
+        if (secrets.HasResolvedMaterial || secretValues.Count > 0 || redactOutput)
+            return StepOutputPrivacy.Withhold(new SnippetResult
+            {
+                Success = result.Ok, Change = StepChange.AuthorDecides,
+                // Only host-decided sandbox codes survive Withhold; script_error, timeout
+                // and the rest still become output_redacted.
+                ErrorCode = result.Ok ? null : result.ErrorKind,
+                Retryable = result.ErrorKind == "timeout",
+            });
 
         if (!result.Ok)
         {
@@ -149,18 +173,20 @@ public sealed class PythonSnippetHandler : ISnippetHandler
                 // The script failed; whether it had already mutated something before it did
                 // is exactly what this handler cannot know, so the author still decides.
                 Change = StepChange.AuthorDecides,
-                Output = JsonSerializer.SerializeToElement(new
+                Output = SecretRedactor.Redact(JsonSerializer.SerializeToElement(new
                 {
                     error = result.Stderr,
                     stdout = result.Stdout,
                     error_kind = result.ErrorKind,
-                }),
-                Error = string.IsNullOrWhiteSpace(result.Stderr) ? "the script failed" : result.Stderr,
+                }), secretValues),
+                Error = SecretRedactor.Redact(
+                    string.IsNullOrWhiteSpace(result.Stderr) ? "the script failed" : result.Stderr,
+                    secretValues) ?? string.Empty,
                 ErrorCode = result.ErrorKind ?? "script_error",
                 // What the script printed before it failed is the first thing anyone reads
                 // when diagnosing it, and it belongs in the same place as on the success
                 // path rather than only inside the output object.
-                Logs = result.Stdout,
+                Logs = SecretRedactor.Redact(result.Stdout, secretValues),
                 // A timeout may be a slow dependency; a syntax or import error will
                 // fail identically forever.
                 Retryable = result.ErrorKind == "timeout",
@@ -181,10 +207,12 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             // `{result, stdout}` this used to build was a second wrap around an
             // already-separated pair — and it put the script's object one level deeper than
             // any workflow written against the contract addresses it.
-            Output = PortableOutput(result),
+            // Masked on the way out: this is stored on the run and read by people who may not
+            // be allowed to read the secrets the script was given.
+            Output = SecretRedactor.Redact(PortableOutput(result), secretValues),
             // Where the printed text belongs: the step already carries logs, the run detail
             // already shows them, and nothing downstream addresses them by field.
-            Logs = result.Stdout,
+            Logs = SecretRedactor.Redact(result.Stdout, secretValues),
 
         };
     }
@@ -206,23 +234,55 @@ public sealed class PythonSnippetHandler : ISnippetHandler
     /// plaintext lives only inside this call and the child process it feeds. An unresolvable
     /// reference is left literal by the resolver, so a typo reaches the script as the marker
     /// the author typed instead of as a silent empty string.
+    ///
+    /// Any successful resolution withholds the entire script result. Value masking alone
+    /// cannot stop encoded output from entering a stored run readable by other roles.
     /// </remarks>
-    private async Task<JsonElement> ResolveSecretsAsync(JsonElement input, CancellationToken ct)
+    private async Task<(JsonElement Input, IReadOnlyCollection<string> Secrets)> ResolveSecretsAsync(
+        JsonElement input, CancellationToken ct)
     {
-        if (input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return input;
+        if (input.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null) return (input, []);
 
+        var secrets = new HashSet<string>(StringComparer.Ordinal);
         using var buffer = new MemoryStream();
         await using (var writer = new Utf8JsonWriter(buffer))
         {
-            await WriteWithSecretsAsync(writer, input, ct);
+            await WriteWithSecretsAsync(writer, input, secrets, ct);
         }
         using var doc = JsonDocument.Parse(buffer.ToArray());
-        return doc.RootElement.Clone();
+        return (doc.RootElement.Clone(), secrets);
+    }
+
+    // Substitutes marker by marker rather than the whole string at once, which is what lets
+    // this know which plaintext values it inserted. An unresolved marker stays literal, as it
+    // always did, and is not a value to mask.
+    private async Task<string> SubstituteTrackedAsync(string raw, ISet<string> secrets, CancellationToken ct)
+    {
+        var references = SecretResolver.References(raw);
+        if (references.Count == 0) return raw;
+
+        var sb = new StringBuilder(raw.Length);
+        var cursor = 0;
+        foreach (var reference in references)
+        {
+            var at = raw.IndexOf(reference.Raw, cursor, StringComparison.Ordinal);
+            sb.Append(raw, cursor, at - cursor);
+
+            var value = await _secrets.SubstituteAsync(reference.Raw, ct);
+            sb.Append(value);
+            if (!string.Equals(value, reference.Raw, StringComparison.Ordinal))
+                secrets.Add(value);
+
+            cursor = at + reference.Raw.Length;
+        }
+        sb.Append(raw, cursor, raw.Length - cursor);
+        return sb.ToString();
     }
 
     // Walks the whole payload, not just its top level: a credential is as likely to sit in
     // `{"steps": [{"send": "${secret:…}"}]}` as directly on the object.
-    private async Task WriteWithSecretsAsync(Utf8JsonWriter writer, JsonElement el, CancellationToken ct)
+    private async Task WriteWithSecretsAsync(
+        Utf8JsonWriter writer, JsonElement el, ISet<string> secrets, CancellationToken ct)
     {
         switch (el.ValueKind)
         {
@@ -230,7 +290,7 @@ public sealed class PythonSnippetHandler : ISnippetHandler
                 var raw = el.GetString() ?? string.Empty;
                 writer.WriteStringValue(
                     raw.Contains("${secret:", StringComparison.Ordinal)
-                        ? await _secrets.SubstituteAsync(raw, ct)
+                        ? await SubstituteTrackedAsync(raw, secrets, ct)
                         : raw);
                 break;
 
@@ -239,7 +299,7 @@ public sealed class PythonSnippetHandler : ISnippetHandler
                 foreach (var prop in el.EnumerateObject())
                 {
                     writer.WritePropertyName(prop.Name);
-                    await WriteWithSecretsAsync(writer, prop.Value, ct);
+                    await WriteWithSecretsAsync(writer, prop.Value, secrets, ct);
                 }
                 writer.WriteEndObject();
                 break;
@@ -247,7 +307,7 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             case JsonValueKind.Array:
                 writer.WriteStartArray();
                 foreach (var item in el.EnumerateArray())
-                    await WriteWithSecretsAsync(writer, item, ct);
+                    await WriteWithSecretsAsync(writer, item, secrets, ct);
                 writer.WriteEndArray();
                 break;
 

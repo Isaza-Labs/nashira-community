@@ -20,4 +20,7 @@ internal static class GitToolSupport
     public static JsonElement Ok(object value) => JsonSerializer.SerializeToElement(value);
 
     public static JsonElement Err(string message) => JsonSerializer.SerializeToElement(new { error = message });
+
+    // Keeps the code of a failure no correction can fix (see ToolFailure).
+    public static JsonElement Err(DomainException error) => ToolFailure.From(error);
 }

@@ -1,7 +1,10 @@
 ﻿using System.Text.Json;
 using System.Text.Json.Nodes;
 using nashira_backend.Data.Models;
+using nashira_backend.Exceptions;
+using nashira_backend.Services.Net;
 using nashira_backend.Services.Ai.Permissions;
+using nashira_backend.Services.Ai.Secrets;
 using nashira_backend.Services.Ai.SelfCorrection;
 using nashira_backend.Services.Audit;
 using nashira_backend.Services.Identity;
@@ -140,7 +143,7 @@ public sealed class ToolDispatcher
         // agent does, this row is the only record that the call happened at all.
         using var trace = _trace.Begin(TraceEvent.CategoryTool, $"tool.{toolName}",
             new { tool = toolName, mutating = counts });
-        var (result, error) = await RunAsync(handler, args, ct);
+        var (result, error, denied) = await RunAsync(handler, args, ct);
         if (error is null) trace.Complete(new { tool = toolName, mutating = counts });
         else trace.Fail(error, new { tool = toolName, mutating = counts });
 
@@ -158,7 +161,9 @@ public sealed class ToolDispatcher
         // hint, but the reported Success must reflect the ACTUAL outcome — only a clean run
         // or a successful retry is a success. `result` still carries the error text either
         // way so the model (and the SSE tool_result frame) can react to it.
-        if (!IsCorrectable(toolName)) return new ToolCallOutput { Success = false, Result = result };
+        // A denied lookup or a refused redirect is final: correcting the arguments cannot change
+        // who is asking or where the endpoint lives.
+        if (denied || !IsCorrectable(toolName)) return new ToolCallOutput { Success = false, Result = result };
 
         var correction = await _selfCorrection.SuggestCorrectionAsync(toolName, args, error, ct);
         if (correction is null) return new ToolCallOutput { Success = false, Result = result };
@@ -166,7 +171,7 @@ public sealed class ToolDispatcher
         if (correction.Strategy == SelfCorrectionEngine.StrategyParameterAdjust && correction.CorrectedArgs is { } corrected)
         {
             _logger.LogInformation("ai.tool.selfcorrect.retry tool={Tool} source={Source}", toolName, correction.Source);
-            var (retryResult, retryError) = await RunAsync(handler, corrected, ct);
+            var (retryResult, retryError, _) = await RunAsync(handler, corrected, ct);
             if (counts) await AuditAsync(toolName, corrected, retryError is null, retryError, ct);
             await _selfCorrection.RecordOutcomeAsync(new CorrectionAttempt(toolName, args, error, correction, retryError is null), ct);
             return new ToolCallOutput { Success = retryError is null, Result = retryResult };
@@ -178,19 +183,50 @@ public sealed class ToolDispatcher
         return new ToolCallOutput { Success = false, Result = result };
     }
 
-    private async Task<(JsonElement Result, string? Error)> RunAsync(IToolHandler handler, JsonElement args, CancellationToken ct)
+    private async Task<(JsonElement Result, string? Error, bool Denied)> RunAsync(
+        IToolHandler handler, JsonElement args, CancellationToken ct)
     {
         try
         {
             var r = await handler.ExecuteAsync(args, ct);
-            return (r, ExtractError(r));
+            return (r, ExtractError(r), IsFinalRefusal(r));
+        }
+        catch (ForbiddenException ex) when (ex.Code == SecretResolver.AccessDeniedCode)
+        {
+            // An authorization decision, not a malfunction: no stack trace, a stable code
+            // the model and the UI can act on, and the fixed message only.
+            _logger.LogWarning("ai.tool.execute.denied tool={Tool} code={Code}", handler.Name, ex.Code);
+            return (JsonSerializer.SerializeToElement(new { error = ex.Message, code = ex.Code, error_code = ex.Code }), ex.Message, true);
+        }
+        catch (RedirectRefusedException ex)
+        {
+            // A handler that lets the refusal escape gets the same answer as one that reports it: the
+            // endpoint has to be reconfigured, and running the call again would repeat the request.
+            _logger.LogWarning("ai.tool.execute.redirect_refused tool={Tool} status={Status}", handler.Name, ex.StatusCode);
+            return (JsonSerializer.SerializeToElement(new { error = ex.Message, error_code = RedirectRefusedException.Code }), ex.Message, true);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "ai.tool.execute.error tool={Tool}", handler.Name);
-            return (JsonSerializer.SerializeToElement(new { error = ex.Message }), ex.Message);
+            return (JsonSerializer.SerializeToElement(new { error = ex.Message }), ex.Message, false);
         }
     }
+
+    // Failures that no change of arguments can fix: the endpoint has to be reconfigured, or the
+    // caller is not allowed to use the secret. A handler returns them as `error_code` (see
+    // ToolFailure); the dispatcher must not try to correct and re-run the call, which would repeat
+    // the original request or the denied lookup.
+    private static readonly HashSet<string> FinalErrorCodes = new(StringComparer.Ordinal)
+    {
+        RedirectRefusedException.Code,
+        SecretResolver.AccessDeniedCode,
+        RedirectSearch.IncompleteCode,
+    };
+
+    private static bool IsFinalRefusal(JsonElement result) =>
+        result.ValueKind == JsonValueKind.Object
+        && result.TryGetProperty("error_code", out var code) && code.ValueKind == JsonValueKind.String
+        && code.GetString() is { } c && FinalErrorCodes.Contains(c);
 
     private static readonly string[] SkipCorrectionSubstrings = ["csv", "html", "bulk", "export"];
 

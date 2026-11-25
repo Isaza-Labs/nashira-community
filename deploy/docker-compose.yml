@@ -76,6 +76,15 @@ services:
       # Set false to refuse pip installs entirely; the allowlist then only ever
       # grants stdlib modules.
       Python__PackageProvisioningEnabled: ${PYTHON_PACKAGE_PROVISIONING:-true}
+      # python_snippet needs an OS sandbox in front of the interpreter, or it is refused:
+      # snippet code would otherwise run with this container's filesystem, including the
+      # Data Protection keyring. PYTHON_SANDBOX_COMMAND is the wrapper (`;`-separated
+      # command line); PYTHON_ALLOW_UNSANDBOXED=true runs snippets without one, for a
+      # host where whoever can write a snippet is already trusted with a shell. The stock
+      # image ships no wrapper, so with neither set python_snippet steps fail with
+      # `sandbox_not_configured`.
+      Python__SandboxCommand: ${PYTHON_SANDBOX_COMMAND:-}
+      Python__AllowUnsandboxed: ${PYTHON_ALLOW_UNSANDBOXED:-false}
       # Where the backend reaches itself, so the AI agent can drive Nashira's own API
       # (the built-in na_* specs). Empty is correct here: the code falls back to
       # http://localhost:8080, which is exactly the address the healthcheck below

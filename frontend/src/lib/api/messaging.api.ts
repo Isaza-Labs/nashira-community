@@ -29,6 +29,7 @@ export type MessagingChannel = {
 	maxRole: string | null;
 	requireLinkedUser: boolean;
 	allowedExternalIds: string[];
+	/** Legacy value stored by older versions. The server ignores it: every delivery must be verified. */
 	allowUnsigned: boolean;
 	enabled: boolean;
 	hasBotToken: boolean;
@@ -53,7 +54,8 @@ export interface ChannelPayload {
 	maxRole: string | null;
 	requireLinkedUser: boolean;
 	allowedExternalIds: string[];
-	allowUnsigned: boolean;
+	/** Not sent by the console any more; the server ignores it. */
+	allowUnsigned?: boolean;
 	enabled: boolean;
 }
 
@@ -249,13 +251,14 @@ function toBody(p: ChannelPayload): Record<string, unknown> {
 		max_role: p.maxRole,
 		require_linked_user: p.requireLinkedUser,
 		allowed_external_ids: p.allowedExternalIds,
-		allow_unsigned: p.allowUnsigned,
 		enabled: p.enabled
 	};
+	if (p.allowUnsigned !== undefined) body.allow_unsigned = p.allowUnsigned;
 	// Only the secrets the caller actually decided about. An omitted key keeps the
 	// stored credential; sending '' would clear it.
 	if (p.botToken !== undefined) body.bot_token = p.botToken;
-	if (p.signingSecret !== undefined) body.signing_secret = p.signingSecret;
+	if (p.signingSecret === '') body.clear_signing_secret = true;
+	else if (p.signingSecret !== undefined) body.signing_secret = p.signingSecret;
 	if (p.appToken !== undefined) body.app_token = p.appToken;
 	return body;
 }

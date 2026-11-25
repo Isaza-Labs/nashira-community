@@ -143,7 +143,18 @@ public sealed class GitHubService : IGitHubService
         // GitHub rejects requests without a User-Agent.
         request.Headers.UserAgent.ParseAdd("nashira");
 
-        using var response = await client.SendAsync(request, ct);
+        HttpResponseMessage response;
+        try
+        {
+            response = await client.SendAsync(request, ct);
+        }
+        catch (RedirectRefusedException ex)
+        {
+            throw new ValidationException(
+                $"GitHub API answered with a redirect (HTTP {ex.StatusCode}); set the final API base URL",
+                RedirectRefusedException.Code);
+        }
+        using var responseLease = response;
         var payload = await response.Content.ReadAsStringAsync(ct);
 
         if (!response.IsSuccessStatusCode)

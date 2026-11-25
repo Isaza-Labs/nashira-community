@@ -135,6 +135,18 @@ public sealed class McpTokenService : IMcpTokenService
             _logger.LogWarning("mcp.oauth.token_refresh_timeout server={Server}", server.McpServerId);
             return null;
         }
+        catch (RedirectRefusedException ex)
+        {
+            // The token or metadata endpoint answered with a redirect. That is a fault in how the
+            // endpoint is configured, not an expired grant: re-running Authorize would meet the same
+            // redirect, so the status is left alone. Returning null here would send the MCP request
+            // without a bearer, so the refusal goes to the caller, which reports it as final. Only the
+            // fixed fields are logged; the redirect's target is not carried by the exception.
+            _logger.LogWarning(
+                "mcp.oauth.token_redirect_refused server={Server} status={Status} reason={Reason}",
+                server.McpServerId, ex.StatusCode, ex.Reason);
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "mcp.oauth.token_resolve_failed server={Server}", server.McpServerId);

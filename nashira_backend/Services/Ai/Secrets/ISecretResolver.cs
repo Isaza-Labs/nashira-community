@@ -4,6 +4,10 @@ namespace nashira_backend.Services.Ai.Secrets;
 // from the encrypted store. Callers only pass the template; the resolver owns the
 // lookups and the decryption. Used by the REST executor and the integration layer
 // right before hitting the wire, so plaintext only lives inside one request.
+// Stored sources require an authenticated admin, including fields stored in the
+// clear. A denied lookup throws ForbiddenException (secret_access_denied); callers
+// must stop the action, not treat denial as an unresolved reference or retry it.
+// This applies to direct lookups, substitutions and nested references alike.
 //
 // Supported source shapes:
 //   ${secret:secret:<name|id>:value}                → Secret.EncryptedValue
@@ -31,8 +35,8 @@ public interface ISecretResolver
     Task<string?> ResolveAsync(string source, string idOrName, string field, CancellationToken ct);
 
     // Substitutes every ${secret:...} occurrence in `template`. Unresolved references
-    // are left literal so the operator sees the original marker in debug output
-    // instead of a silent empty string.
+    // are left literal for authorized callers so the original marker is visible
+    // instead of a silent empty string. Authorization denials always throw.
     Task<string> SubstituteAsync(string template, CancellationToken ct);
 
     // Same substitution, but with the session source (${secret:session:current:jwt})
