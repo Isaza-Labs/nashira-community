@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using nashira_backend.Exceptions;
@@ -22,6 +23,10 @@ public interface IIntegrationOAuthTokenService
     // behavior it always had for every authenticated or background caller.
     Task<string> GetAccessTokenAsync(
         IntegrationEntity integration, IntegrationAuthConfig auth, ICurrentUser caller, CancellationToken ct);
+
+    // Drops the cached token of one integration, so the next call obtains a fresh one.
+    // Called after an integration is updated or deleted.
+    void Invalidate(Guid integrationId);
 }
 
 // Obtains and caches OAuth2 client-credentials access tokens, one entry per
@@ -43,7 +48,9 @@ public sealed class IntegrationOAuthTokenService : IIntegrationOAuthTokenService
     // an entry whose origin is not positively known is treated as secret-derived.
     private enum Provenance { Unknown = 0, Literal = 1, SecretDerived = 2 }
 
-    private sealed record CacheEntry(string Token, DateTime ExpiresAtUtc, Provenance Provenance);
+    // Fingerprint identifies the settings the token was granted under (see
+    // SettingsFingerprint); an entry is only ever served for those same settings.
+    private sealed record CacheEntry(string Token, DateTime ExpiresAtUtc, Provenance Provenance, string Fingerprint);
 
     private readonly ConcurrentDictionary<Guid, CacheEntry> _cache = new();
     // One grant in flight per integration: a burst of calls on a cold cache would
@@ -103,14 +110,15 @@ public sealed class IntegrationOAuthTokenService : IIntegrationOAuthTokenService
         IntegrationEntity integration, IntegrationAuthConfig auth, ICurrentUser caller,
         bool mayResolveStored, CancellationToken ct)
     {
-        if (TryServeCached(integration, mayResolveStored, out var cached)) return cached;
+        var fingerprint = SettingsFingerprint(integration, auth);
+        if (TryServeCached(integration, fingerprint, mayResolveStored, out var cached)) return cached;
 
         var gate = _gates.GetOrAdd(integration.IntegrationId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct);
         try
         {
             // Re-check: another caller may have obtained one while we waited.
-            if (TryServeCached(integration, mayResolveStored, out cached)) return cached;
+            if (TryServeCached(integration, fingerprint, mayResolveStored, out cached)) return cached;
 
             var (token, lifetime, provenance) = await GrantAsync(integration, auth, caller, ct);
 
@@ -119,7 +127,8 @@ public sealed class IntegrationOAuthTokenService : IIntegrationOAuthTokenService
             // cached or returned for a caller who may not resolve them.
             if (provenance != Provenance.Literal && !mayResolveStored) throw Denied(integration);
 
-            _cache[integration.IntegrationId] = new CacheEntry(token, DateTime.UtcNow.Add(lifetime), provenance);
+            _cache[integration.IntegrationId] = new CacheEntry(
+                token, DateTime.UtcNow.Add(lifetime), provenance, fingerprint);
             return (token, provenance);
         }
         finally
@@ -128,20 +137,63 @@ public sealed class IntegrationOAuthTokenService : IIntegrationOAuthTokenService
         }
     }
 
-    // Drops a cached token, so rotating an integration's credentials takes effect on
-    // the next call instead of whenever the old token happens to expire.
+    // Drops a cached token. The integration update and delete paths call this after
+    // they save, so a settings change or a deletion takes effect on the next call instead
+    // of whenever the old token happens to expire. The settings fingerprint already makes
+    // a changed entry a miss; this also covers what the fingerprint does not see, such as
+    // verify_ssl, allow_private_network or the integration being deleted.
     public void Invalidate(Guid integrationId) => _cache.TryRemove(integrationId, out _);
 
-    // The authorization decision is made on the entry itself, before its token is handed
-    // out: anything but a positively literal entry needs a caller who may resolve stored
-    // secrets, so an entry of unknown origin fails closed. No production path stores an entry of
-    // unknown origin; the check is there so a future one cannot be served by accident.
+    // Identifies the settings a token was granted under: the base URL the bearer is sent
+    // to and the raw token_url, client_id, client_secret and scope. A token obtained under
+    // other settings must not be served, or a rotated client secret would keep working
+    // until the old token expired and a changed base URL would receive a bearer granted
+    // for the old host. Each field is length-prefixed (null distinct from empty), so text
+    // moving across a field boundary cannot produce the same input. Only the hash is kept,
+    // and only in memory.
+    //
+    // Known limitation: a field that is a ${secret:...} reference is hashed as the
+    // reference text, not the value it resolves to, so rotating the value of that stored
+    // secret does not change the fingerprint. Such a token is served until it expires or
+    // Invalidate is called. Credential-linked settings arrive here already merged, so a
+    // rotated linked credential does change the fingerprint.
+    internal static string SettingsFingerprint(IntegrationEntity integration, IntegrationAuthConfig auth)
+    {
+        var input = new StringBuilder();
+        foreach (var field in new[] { integration.BaseUrl, auth.TokenUrl, auth.ClientId, auth.ClientSecret, auth.Scope })
+        {
+            if (field is null) input.Append("-1;");
+            else input.Append(field.Length).Append(':').Append(field).Append(';');
+        }
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(input.ToString())));
+    }
+
+    // An entry granted under other settings is a miss, whoever the caller is: it is
+    // dropped and the call falls through to a fresh grant, which the pre-check in
+    // GetAccessTokenAsync and the resolver authorize against the CURRENT settings. That
+    // holds for a non-admin too: a stale entry is never served and never decides the
+    // outcome, so a stale secret-derived entry does not deny a caller whose current
+    // settings are literal.
+    //
+    // For an entry that does match, the authorization decision is made on the entry
+    // itself, before its token is handed out: anything but a positively literal entry
+    // needs a caller who may resolve stored secrets, so an entry of unknown origin fails
+    // closed. No production path stores an entry of unknown origin; the check is there so
+    // a future one cannot be served by accident.
     private bool TryServeCached(
-        IntegrationEntity integration, bool mayResolveStored, out (string Token, Provenance Provenance) served)
+        IntegrationEntity integration, string fingerprint, bool mayResolveStored,
+        out (string Token, Provenance Provenance) served)
     {
         served = default;
         if (!_cache.TryGetValue(integration.IntegrationId, out var entry)) return false;
         if (entry.ExpiresAtUtc <= DateTime.UtcNow) return false;
+        if (!string.Equals(entry.Fingerprint, fingerprint, StringComparison.Ordinal))
+        {
+            // Removes only this entry: one stored meanwhile by a concurrent grant under
+            // the current settings is left alone.
+            _cache.TryRemove(KeyValuePair.Create(integration.IntegrationId, entry));
+            return false;
+        }
         if (entry.Provenance != Provenance.Literal && !mayResolveStored) throw Denied(integration);
         served = (entry.Token, entry.Provenance);
         return true;

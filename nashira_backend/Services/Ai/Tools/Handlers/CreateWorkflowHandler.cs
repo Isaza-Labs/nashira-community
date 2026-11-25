@@ -97,6 +97,7 @@ public sealed class CreateWorkflowHandler : IToolHandler
             SchemaHash = hash,
             ChangeSummary = Str(args, "change_summary") ?? string.Empty,
             CreatedByUserId = _user.IsAuthenticated ? _user.UserId : (Guid?)null,
+            UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : (Guid?)null,
             // The chat turn this workflow was authored in, so the row points back at
             // the conversation that produced it.
             ConversationId = _turn.ConversationId,

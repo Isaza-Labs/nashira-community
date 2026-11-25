@@ -208,6 +208,10 @@ public class SnippetController : ControllerBase
         if (dto.Verified is not null) row.Verified = dto.Verified.Value;
         if (dto.IsActive is not null) row.IsActive = dto.IsActive.Value;
         row.UpdatedAt = DateTime.UtcNow;
+        // Whoever saves becomes the author a triggered run reaching this snippet is
+        // capped to (see RunAuthority): the code here runs inside other people's
+        // workflows, so an Operator's edit must not run with an Admin's role.
+        row.UpdatedBy = _user.IsAuthenticated ? _user.UserId : null;
 
         await _db.SaveChangesAsync(ct);
         return ToResponse(row);
@@ -233,6 +237,7 @@ public class SnippetController : ControllerBase
 
         row.IsActive = false;
         row.UpdatedAt = DateTime.UtcNow;
+        row.UpdatedBy = _user.IsAuthenticated ? _user.UserId : null;
         await _db.SaveChangesAsync(ct);
         return ToResponse(row);
     }

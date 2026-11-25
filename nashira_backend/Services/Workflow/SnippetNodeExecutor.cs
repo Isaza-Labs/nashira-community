@@ -63,6 +63,7 @@ public sealed class SnippetNodeExecutor : INodeExecutor
     private readonly IVariableResolver _resolver;
     private readonly WorkflowExecutionScope _scope;
     private readonly ISubflowRunner? _subflows;
+    private readonly RunAuthority? _authority;
     private readonly ILogger<SnippetNodeExecutor> _logger;
 
     // Outputs of the nodes completed so far in this run, keyed by node id. Scoped
@@ -72,7 +73,7 @@ public sealed class SnippetNodeExecutor : INodeExecutor
     public SnippetNodeExecutor(
         AppDbContext db, ISnippetHandlerRegistry registry, IServiceProvider sp,
         IVariableResolver resolver, WorkflowExecutionScope scope, ILogger<SnippetNodeExecutor> logger,
-        ISubflowRunner? subflows = null)
+        ISubflowRunner? subflows = null, RunAuthority? authority = null)
     {
         _db = db;
         _registry = registry;
@@ -81,6 +82,7 @@ public sealed class SnippetNodeExecutor : INodeExecutor
         _scope = scope;
         _logger = logger;
         _subflows = subflows;
+        _authority = authority;
     }
 
     // The run's trigger payload, for `{{ input.* }}`. Set by WorkflowRunService.
@@ -141,6 +143,12 @@ public sealed class SnippetNodeExecutor : INodeExecutor
             .FirstOrDefaultAsync(s => s.SnippetId == snippetId && s.IsActive, ct);
         if (snippet is null)
             return Failed(node, "unknown_snippet", $"node '{node.Id}' references a snippet that does not exist");
+
+        // Before anything of this snippet's runs or resolves a secret: a triggered run
+        // must not execute code an Operator saved with the role of the Admin who created
+        // the trigger. A no-op outside trigger-fired runs.
+        if (_authority is not null)
+            await _authority.ApplyAuthorAsync(RunAuthority.AuthorOf(snippet), $"snippet:{snippet.SnippetId}", ct);
 
         var handler = _registry.Resolve(snippet.Type, _sp);
         if (handler is null)

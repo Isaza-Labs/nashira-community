@@ -4,9 +4,12 @@ using System.Net.Sockets;
 namespace nashira_backend.Services.Net;
 
 // Blocks requests to localhost, private ranges, link-local and the cloud
-// metadata endpoint. RFC-1918 ranges pass when allowPrivate=true (on-prem
-// integrations); IPv6 local ranges (unique-local, link-local, site-local),
-// loopback and IPv4-compatible addresses never do.
+// metadata endpoint. RFC-1918 ranges and carrier-grade NAT (100.64.0.0/10) pass
+// when allowPrivate=true (on-prem integrations); IPv6 local ranges (unique-local,
+// link-local, site-local), loopback, IPv4-compatible addresses and the 6to4
+// (2002::/16) and Teredo (2001::/32) tunnelling forms never do. IPv4-mapped
+// (::ffff:a.b.c.d) and NAT64 well-known-prefix (64:ff9b::a.b.c.d) addresses are
+// judged by the IPv4 address they embed.
 // Dev bypass: Security:AllowInternalUrls.
 // Lifted from flow-weaver.
 public sealed class UrlGuard : IUrlGuard
@@ -76,9 +79,15 @@ public sealed class UrlGuard : IUrlGuard
 
         // Check every DNS answer as well as literals. Normalize IPv4-mapped IPv6
         // before applying IPv4 rules so mapping cannot bypass metadata/private checks.
+        // NAT64 addresses are normalized the same way: on an IPv6-only network with
+        // DNS64 every IPv4-only public host resolves into 64:ff9b::/96, so the prefix
+        // itself cannot be refused, but the IPv4 address it carries is what the NAT64
+        // gateway will connect to and gets exactly the IPv4 rules.
         foreach (var address in addresses)
         {
-            var ip = address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address;
+            var ip = address.IsIPv4MappedToIPv6 ? address.MapToIPv4()
+                : IsNat64WellKnownPrefix(address) ? new IPAddress(address.GetAddressBytes().AsSpan(12, 4))
+                : address;
             if (IPAddress.IsLoopback(ip))
                 throw new InvalidOperationException($"SSRF blocked: {host} resolves to loopback {ip}");
 
@@ -88,7 +97,10 @@ public sealed class UrlGuard : IUrlGuard
                 var isPrivate =
                     b[0] == 10
                     || (b[0] == 172 && b[1] is >= 16 and <= 31)
-                    || (b[0] == 192 && b[1] == 168);
+                    || (b[0] == 192 && b[1] == 168)
+                    // 100.64.0.0/10, carrier-grade NAT (RFC 6598): shared address space
+                    // inside a provider's network, not a public destination.
+                    || (b[0] == 100 && b[1] is >= 64 and <= 127);
 
                 if (isPrivate && !allowPrivate)
                 {
@@ -118,9 +130,25 @@ public sealed class UrlGuard : IUrlGuard
                     throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv4-compatible IPv6 address {ip}");
                 if (ip.Equals(IPAddress.IPv6Any))
                     throw new InvalidOperationException($"SSRF blocked: {host} resolves to IPv6 unspecified address {ip}");
+                // 6to4 (2002::/16) and Teredo (2001::/32) are deprecated tunnelling forms; both carry an
+                // IPv4 address that a relay connects to, so like IPv4-compatible they can spell any IPv4
+                // target. Refused rather than mapped, whatever allowPrivate says.
+                if (bytes[0] == 0x20 && bytes[1] == 0x02)
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to 6to4 IPv6 address {ip}");
+                if (bytes[0] == 0x20 && bytes[1] == 0x01 && bytes[2] == 0 && bytes[3] == 0)
+                    throw new InvalidOperationException($"SSRF blocked: {host} resolves to Teredo IPv6 address {ip}");
             }
         }
 
         if (log) _logger.LogDebug("net.url_guard.ok host={Host}", host);
+    }
+
+    // 64:ff9b::/96 (RFC 6052), the NAT64 well-known prefix: the last four bytes are an IPv4 address.
+    private static bool IsNat64WellKnownPrefix(IPAddress address)
+    {
+        if (address.AddressFamily != AddressFamily.InterNetworkV6) return false;
+        var bytes = address.GetAddressBytes();
+        return bytes[0] == 0x00 && bytes[1] == 0x64 && bytes[2] == 0xff && bytes[3] == 0x9b
+            && bytes.AsSpan(4, 8).IndexOfAnyExcept((byte)0) < 0;
     }
 }

@@ -213,20 +213,13 @@ public sealed class ToolDispatcher
     }
 
     // Failures that no change of arguments can fix: the endpoint has to be reconfigured, or the
-    // caller is not allowed to use the secret. A handler returns them as `error_code` (see
-    // ToolFailure); the dispatcher must not try to correct and re-run the call, which would repeat
-    // the original request or the denied lookup.
-    private static readonly HashSet<string> FinalErrorCodes = new(StringComparer.Ordinal)
-    {
-        RedirectRefusedException.Code,
-        SecretResolver.AccessDeniedCode,
-        RedirectSearch.IncompleteCode,
-    };
-
+    // caller is not allowed to use the secret. A handler returns them as `error_code`; the
+    // dispatcher must not try to correct and re-run the call, which would repeat the original
+    // request or the denied lookup. Which codes are final is decided in one place, ToolFailure.
     private static bool IsFinalRefusal(JsonElement result) =>
         result.ValueKind == JsonValueKind.Object
         && result.TryGetProperty("error_code", out var code) && code.ValueKind == JsonValueKind.String
-        && code.GetString() is { } c && FinalErrorCodes.Contains(c);
+        && ToolFailure.IsFinalCode(code.GetString());
 
     private static readonly string[] SkipCorrectionSubstrings = ["csv", "html", "bulk", "export"];
 

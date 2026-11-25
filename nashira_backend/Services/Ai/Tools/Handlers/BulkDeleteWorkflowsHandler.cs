@@ -111,6 +111,7 @@ public sealed class BulkDeleteWorkflowsHandler : IToolHandler
             {
                 w.IsActive = false;
                 w.UpdatedAt = now;
+                w.UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : null;
             }
             await _db.SaveChangesAsync(ct);
 

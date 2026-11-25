@@ -4,6 +4,50 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-25 — Triggered runs take the role of whoever last edited what they run
+
+A run fired by a trigger still executes as the user who created the trigger, but it no longer
+keeps that user's role when someone with a lower role has changed what it runs. Workflows,
+snippets and triggers now record who last saved them (a new nullable column on each; the
+migration adds it and changes nothing else). Before each of those rows takes effect in a
+triggered run, the run's role is lowered to that person's current role: the trigger and the
+workflow at the start, each snippet before its step runs, and a subflow's workflow before the
+child starts. The role only goes down. A workflow, snippet or trigger last saved by an
+Operator therefore makes the run execute as Operator, and its stored-secret steps fail with
+`secret_access_denied` until an Admin saves that item again. Promoting, importing or restoring
+a workflow counts as saving it, by the person who did it. Only draft workflows can be edited,
+so for a QA or production workflow promoted by an Operator the fix is for an Admin to promote
+it again, not to save it. A last editor whose account is
+deactivated or deleted lowers the run to Viewer. Rows saved before the upgrade have no last
+editor recorded and are attributed to their creator; system snippets with no recorded author
+lower nothing. Each lowering is logged as a warning (`workflow.run_authority.lowered`), naming
+the item that caused it. Manual runs are not affected: they run as the person who started them,
+as before.
+
+Only an Admin or the trigger's creator can now rotate a webhook trigger's secret (the response
+carries the new secret) or change `allow_unsigned` or `allow_target_override` on it. Anyone
+else gets `trigger_owner_required`. Operators can still edit the rest of a trigger, and saving
+the form with those two values unchanged keeps working. A trigger with no recorded creator can
+have these changed only by an Admin.
+
+
+## 2026-11-25 — More address forms refused by the URL guard; OAuth settings changes apply at once
+
+The outbound URL guard now treats carrier-grade NAT addresses (`100.64.0.0/10`) as private:
+they are refused unless the integration sets `allow_private_network`. 6to4 (`2002::/16`) and
+Teredo (`2001::/32`) IPv6 addresses are refused always, like the IPv4-compatible form, because
+they can carry any IPv4 target. NAT64 addresses (`64:ff9b::/96`) still work, so IPv6-only
+networks with DNS64 keep reaching IPv4-only hosts, but the IPv4 address they embed now gets the
+same checks as a plain IPv4 address (loopback, private, link-local and reserved ranges).
+
+A cached OAuth client-credentials token is now dropped as soon as the integration is updated or
+deleted, and is never served under settings other than the ones it was granted with (base URL,
+`token_url`, `client_id`, `client_secret`, `scope`). Rotating a client secret or moving an
+integration to another base URL takes effect on the next call instead of when the old token
+expires. Rotating only the value of a stored secret that the settings name by `${secret:...}`
+is not detected on its own; saving the integration, or a restart, clears the cached token.
+
+
 ## 2026-11-23 — Python snippets are off until an OS sandbox is configured
 
 `python_snippet` steps are refused (`sandbox_not_configured`) unless the deployment sets

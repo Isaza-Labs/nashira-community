@@ -90,6 +90,9 @@ public sealed class UpdateWorkflowHandler : IToolHandler
         if (args.TryGetProperty("metadata", out var md) && md.ValueKind == JsonValueKind.Object) row.MetadataJson = md.GetRawText();
         if (args.TryGetProperty("change_summary", out var cs) && cs.ValueKind == JsonValueKind.String) row.ChangeSummary = cs.GetString()!;
         row.UpdatedAt = DateTime.UtcNow;
+        // Same rule as the controller: whoever saves becomes the author a triggered run
+        // is capped to (see RunAuthority).
+        row.UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : null;
 
         await _db.SaveChangesAsync(ct);
         return JsonSerializer.SerializeToElement(new

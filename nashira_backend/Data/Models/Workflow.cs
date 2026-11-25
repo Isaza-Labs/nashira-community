@@ -27,6 +27,12 @@ public class Workflow : BaseModel
     public DateTime? PromotedAt { get; set; }
     public Guid? CreatedByUserId { get; set; }
 
+    // Who last saved this row's executable content. A triggered run never executes
+    // with a higher role than this user holds (see RunAuthority), so an Operator's
+    // edit cannot borrow the Admin role of whoever created the trigger. Null on rows
+    // saved before the column existed; the creator then stands in.
+    public Guid? UpdatedByUserId { get; set; }
+
     // The AIConversation this workflow was authored in, when the agent built it
     // (create_workflow reads it off the ambient turn context). Null for workflows
     // created through the API/UI. Carried across promotion so a production workflow

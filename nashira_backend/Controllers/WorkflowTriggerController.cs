@@ -122,6 +122,7 @@ public class WorkflowTriggerController : ControllerBase
             AllowTargetOverride = dto.AllowTargetOverride ?? false,
             Enabled = dto.Enabled ?? true,
             CreatedBy = _user.IsAuthenticated ? _user.UserId : null,
+            UpdatedBy = _user.IsAuthenticated ? _user.UserId : null,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,
@@ -160,6 +161,14 @@ public class WorkflowTriggerController : ControllerBase
     {
         var row = await Find(workflowId, id, ct);
         var now = DateTime.UtcNow;
+
+        // allow_unsigned and allow_target_override decide who can fire this trigger and
+        // at what, and a fired run executes as the trigger's creator. Only that creator
+        // or an Admin may change them. Sending the value the row already has is fine:
+        // the console serialises the whole form on every save.
+        if ((dto.AllowUnsigned is { } unsigned && unsigned != row.AllowUnsigned)
+            || (dto.AllowTargetOverride is { } overrideTargets && overrideTargets != row.AllowTargetOverride))
+            RequireOwnerOrAdmin(row, "change allow_unsigned or allow_target_override");
 
         if (dto.Name is not null && dto.Name.Trim().Length > 0) row.Name = dto.Name.Trim();
         if (dto.Description is not null) row.Description = dto.Description;
@@ -215,6 +224,9 @@ public class WorkflowTriggerController : ControllerBase
         }
 
         row.UpdatedAt = now;
+        // Whoever changes the trigger becomes the author a run it fires is capped to
+        // (see RunAuthority): input defaults and targets shape what that run does.
+        row.UpdatedBy = _user.IsAuthenticated ? _user.UserId : null;
         await _db.SaveChangesAsync(ct);
         return ToResponse(row);
     }
@@ -229,6 +241,7 @@ public class WorkflowTriggerController : ControllerBase
         row.IsActive = false;
         row.Enabled = false;
         row.UpdatedAt = DateTime.UtcNow;
+        row.UpdatedBy = _user.IsAuthenticated ? _user.UserId : null;
         await _db.SaveChangesAsync(ct);
         return ToResponse(row);
     }
@@ -244,13 +257,32 @@ public class WorkflowTriggerController : ControllerBase
         var row = await Find(workflowId, id, ct);
         if (row.Type != TriggerEntity.TypeWebhook)
             throw new ValidationException("only webhook triggers have a secret");
+        // The response carries the new secret, and whoever holds it can fire a run that
+        // executes as the trigger's creator. Only that creator or an Admin may take it.
+        RequireOwnerOrAdmin(row, "rotate its secret");
 
         var secret = WorkflowTriggerSecrets.NewSecret();
         row.EncryptedSecret = _protector.Encrypt(secret);
         row.UpdatedAt = DateTime.UtcNow;
+        row.UpdatedBy = _user.IsAuthenticated ? _user.UserId : null;
         await _db.SaveChangesAsync(ct);
         return ToResponse(row, secret);
     }
+
+    public const string OwnerRequiredCode = "trigger_owner_required";
+
+    // A null CreatedBy (imported or legacy row) has no creator to match, so only an
+    // Admin passes.
+    private void RequireOwnerOrAdmin(TriggerEntity row, string action)
+    {
+        if (!_user.IsAuthenticated) throw new ForbiddenException(OwnerMessage(action), OwnerRequiredCode);
+        if (_user.Roles.Contains("admin", StringComparer.Ordinal)) return;
+        if (row.CreatedBy is { } creator && creator == _user.UserId) return;
+        throw new ForbiddenException(OwnerMessage(action), OwnerRequiredCode);
+    }
+
+    private static string OwnerMessage(string action) =>
+        $"Only an Admin or the trigger's creator can {action}";
 
     private static void ValidateCron(string? expression, string? timezone)
     {

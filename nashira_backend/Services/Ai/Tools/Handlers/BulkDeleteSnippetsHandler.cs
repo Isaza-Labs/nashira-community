@@ -133,6 +133,7 @@ public sealed class BulkDeleteSnippetsHandler : IToolHandler
             {
                 s.IsActive = false;
                 s.UpdatedAt = now;
+                s.UpdatedBy = _user.IsAuthenticated ? _user.UserId : null;
             }
             await _db.SaveChangesAsync(ct);
 
