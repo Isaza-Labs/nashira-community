@@ -182,7 +182,10 @@ public sealed partial class SecretResolver : ISecretResolver
                     "secret.resolve.hit source={Source} id_or_name={IdOrName} field={Field} value_bytes={ValueBytes}",
                     src, key, fld, value.Length);
             }
-            if (value is not null) SecretResolutionScope.MarkResolved();
+            // Stored material taints the execution. The session reference does not: it lends the caller's
+            // own bearer to this backend and reads nothing from the secrets tables, so a step that only
+            // uses it (the built-in na_* specs) keeps the output rules it had before.
+            if (value is not null && src != SessionSource) SecretResolutionScope.MarkResolved();
             return value;
         }
         catch (ForbiddenException)
