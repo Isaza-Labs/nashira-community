@@ -37,7 +37,8 @@ than through a reference keep their existing authorization.
 ## 2026-11-23 — Output of steps that used secrets is withheld; `redact_output` must be a boolean
 
 A workflow step that received resolved secret material (a stored reference, a
-secret-derived OAuth token, or a secret substituted into Python input) has its whole
+secret-derived OAuth token, or a secret substituted into Python input; not the caller's own
+session reference, which reads nothing stored) has its whole
 output, logs and error text replaced by `[redacted]` before the run is stored, so a later
 step cannot read data from it. Put anything that must stay visible in a separate step that
 never receives the secret. `config_overrides.redact_output` now accepts only `true` or
