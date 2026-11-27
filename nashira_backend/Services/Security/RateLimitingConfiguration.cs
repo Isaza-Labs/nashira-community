@@ -5,25 +5,30 @@ using nashira_backend.Services.Observability;
 
 namespace nashira_backend.Services.Security;
 
-// Centralized rate-limiter policy registration. Eight buckets cover the
-// expected traffic profiles of the API:
+// Centralized rate-limiter policy registration. Ten buckets cover the
+// expected traffic profiles of the API: the seven below, plus the three
+// anonymous webhook-ingress buckets documented next to their policies:
 //
 //   Policy          Partition   Limit          Motivation
 //   ─────────────── ─────────── ────────────── ───────────────────────────
-//   auth_login      per IP      5 / minute     Anti brute-force on /login,
-//                                              /refresh and /bootstrap.
+//   auth_login      per IP      30 / minute    Anti brute-force on /login
+//                                              and /bootstrap.
 //                                              Complements the per-user
 //                                              lockout (AuthOptions) — IP
 //                                              covers attackers rotating
 //                                              usernames, lockout covers
 //                                              attackers rotating IPs.
+//   auth_refresh    per IP      120 / minute   /refresh. Separate from
+//                                              auth_login so renewing a
+//                                              session never fails because
+//                                              of sign-in traffic.
 //   auth_generic    per user    100 / minute   /logout, /change-password,
 //                                              /me — generous so a normal
 //                                              session never hits it.
 //   read_heavy      per user    300 / minute   List + detail GETs of CRUDs.
 //                                              Dashboards refresh freely.
 //   write_normal    per user    60 / minute    Create/update/delete.
-//   ai_chat         per user    30 / hour      Costly — every request
+//   ai_chat         per user    30 / minute    Costly — every request
 //                                              hits an external LLM.
 //   workflow_run    per user    40 / minute    Costly — schedules
 //                                              actual work on devices.
@@ -34,6 +39,7 @@ namespace nashira_backend.Services.Security;
 public static class RateLimitingConfiguration
 {
     public const string AuthLogin = "auth_login";
+    public const string AuthRefresh = "auth_refresh";
     public const string AuthGeneric = "auth_generic";
     public const string ReadHeavy = "read_heavy";
     public const string WriteNormal = "write_normal";
@@ -72,16 +78,34 @@ public static class RateLimitingConfiguration
             //
             // It has to be the RESOLVED address (ClientIp), not the immediate
             // peer: with the frontend proxying /api, the raw peer is the same
-            // container for everyone, so this budget of 5/minute would be
-            // shared by the whole platform — six people mistyping a password
-            // at once would lock each other out, while anyone reaching :8080
+            // container for everyone, so this budget would be
+            // shared by the whole platform — a handful of people mistyping a
+            // password at once would lock each other out, while anyone reaching :8080
             // directly would get a private partition and no limit at all.
             options.AddPolicy(AuthLogin, httpContext =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     ClientIp.ResolveOrUnknown(httpContext),
                     _ => new FixedWindowRateLimiterOptions
                     {
-                        PermitLimit = 15,
+                        PermitLimit = 30,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        QueueLimit = 0,
+                    }));
+
+            // Per-IP: token refresh. Kept apart from auth_login so a session
+            // renewing its access token never competes with sign-in attempts.
+            // A refresh token is a high-entropy random value, so there is
+            // nothing to brute-force here; the limit only bounds a client
+            // stuck in a refresh loop. Several tabs, users behind one NAT
+            // and recording scripts all refresh from the same address, so
+            // the budget is generous.
+            options.AddPolicy(AuthRefresh, httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    ClientIp.ResolveOrUnknown(httpContext),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 120,
                         Window = TimeSpan.FromMinutes(1),
                         QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
                         QueueLimit = 0,
@@ -95,8 +119,8 @@ public static class RateLimitingConfiguration
 
             // Git webhook ingest: anonymous endpoint hit by external
             // providers. Partitioning by (IP, hook route) gives backpressure
-            // per source without coupling unrelated webhooks. 30/min/origin
-            // matches GitHub's normal push cadence + retry headroom.
+            // per source without coupling unrelated webhooks. 60/min/origin
+            // covers GitHub's normal push cadence + retry headroom.
             options.AddPolicy(GitWebhookIngest, ctx =>
             {
                 var ip = ClientIp.ResolveOrUnknown(ctx);
@@ -114,9 +138,9 @@ public static class RateLimitingConfiguration
 
             // Workflow-trigger webhook ingest: anonymous, partitioned by
             // (IP, trigger route). Each accepted hit fires a real workflow
-            // run, so this is tighter than the Git surface — 20/min/origin
-            // caps a burst while leaving room for a legitimately chatty
-            // integration + retries.
+            // run. 60/min/origin, the same as the Git surface, caps a burst
+            // while leaving room for a legitimately chatty integration +
+            // retries.
             options.AddPolicy(WorkflowWebhookIngest, ctx =>
             {
                 var ip = ClientIp.ResolveOrUnknown(ctx);
@@ -134,7 +158,7 @@ public static class RateLimitingConfiguration
 
             // Messaging webhook ingest: anonymous, hit by Slack/Telegram/WhatsApp/
             // Teams. Partitioned by (IP, channel id) so one noisy workspace cannot
-            // starve another. 120/min is well above a human conversation's cadence
+            // starve another. 220/min is well above a human conversation's cadence
             // but still bounds a provider stuck in a re-delivery loop.
             options.AddPolicy(MessagingWebhookIngest, ctx =>
             {

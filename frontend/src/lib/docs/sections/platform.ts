@@ -333,11 +333,12 @@ export const platform: DocSection[] = [
 			{
 				kind: 'values',
 				rows: [
-					{ value: 'auth_login', desc: '15 per minute per client IP — login, refresh and bootstrap. Complements the per-account lockout.' },
+					{ value: 'auth_login', desc: '30 per minute per client IP — login and bootstrap. Complements the per-account lockout.' },
+					{ value: 'auth_refresh', desc: '120 per minute per client IP — token refresh, separate from login so renewing a session never fails because of sign-in traffic.' },
 					{ value: 'auth_generic', desc: '100 per minute per user — logout, change-password, me.' },
 					{ value: 'read_heavy', desc: '300 per minute per user — list and detail reads.' },
 					{ value: 'write_normal', desc: '60 per minute per user — creates, updates and deletes.' },
-					{ value: 'ai_chat', desc: '30 per hour per user — every turn reaches a model.' },
+					{ value: 'ai_chat', desc: '30 per minute per user — every turn reaches a model.' },
 					{ value: 'workflow_run', desc: '40 per minute per user — every run does real work.' },
 					{ value: 'webhooks', desc: 'Inbound trigger and git webhooks: 60 per minute per (IP, route). Messaging webhooks: 220 per minute per (IP, channel).' }
 				]

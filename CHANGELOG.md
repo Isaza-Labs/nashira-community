@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-26 — Sessions that are not signed out by sign-in traffic
+
+The access token now lives 60 minutes (was 15) and the refresh token 30 days (was 7):
+the defaults of `Jwt:AccessTokenMinutes` and `Jwt:RefreshTokenDays`, and of
+`JWT_ACCESS_MINUTES` and `JWT_REFRESH_DAYS` in `deploy/docker-compose.yml` and
+`deploy/.env.example`. A deployment whose `.env` sets the old values keeps them until it
+is edited.
+
+Token refresh has its own `auth_refresh` rate limit, 120 per minute per client IP. It
+used to share the 15-per-minute `auth_login` budget, so several tabs or users behind one
+address refreshing at once got 429 and were sent back to the login page. `auth_login`
+(login and bootstrap) is now 30 per minute per client IP; the per-account lockout
+(5 failed attempts) is unchanged. The rate-limit table in the in-app docs says the same.
+
+## 2026-11-25 — Rate-limit docs that match the enforced limits
+
+The rate-limit table in the in-app docs said `ai_chat` allowed 30 requests per hour; the
+enforced limit is 30 per minute per user. The comments in `RateLimitingConfiguration.cs`
+were also out of date and now state the enforced values: `auth_login` 15 per minute per
+IP, `ai_chat` 30 per minute, Git and trigger webhooks 60 per minute, messaging webhooks
+220 per minute. No limit changed.
+
 ## 2026-11-25 — Ansible steps need an Admin to use a device's stored password
 
 An Ansible step hands the password of each target device's linked credential to the playbook

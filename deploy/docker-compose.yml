@@ -52,8 +52,8 @@ services:
       Jwt__Key: "${JWT_KEY:?JWT_KEY env var is required - generate with openssl rand -base64 48}"
       Jwt__Issuer: ${JWT_ISSUER:-nashira}
       Jwt__Audience: ${JWT_AUDIENCE:-nashira-api}
-      Jwt__AccessTokenMinutes: ${JWT_ACCESS_MINUTES:-15}
-      Jwt__RefreshTokenDays: ${JWT_REFRESH_DAYS:-7}
+      Jwt__AccessTokenMinutes: ${JWT_ACCESS_MINUTES:-60}
+      Jwt__RefreshTokenDays: ${JWT_REFRESH_DAYS:-30}
       # Email (SMTP) — optional; enable + fill host/from to turn on the email tool.
       Smtp__Enabled: ${SMTP_ENABLED:-false}
       Smtp__Host: ${SMTP_HOST:-}
