@@ -54,6 +54,9 @@ public class HostedServiceCatalogTests
         Assert.Equal(
             [
                 nameof(AppSettingsRefreshHostedService),
+                // Registered, and idle: it checks per sweep that fleet or automation is
+                // enabled before building anything, as retention checks what it prunes.
+                nameof(PythonEnvironmentBuilderHostedService),
                 nameof(RetentionHostedService),
                 nameof(SloBreachWatcherService),
                 nameof(TraceWriterHostedService),

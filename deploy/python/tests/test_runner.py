@@ -47,3 +47,43 @@ def test_runner_rejects_malformed_input():
     )
     assert proc.returncode == 1
     assert "input parse error" in proc.stderr
+
+
+# --- private-key classes across paramiko versions ----------------------
+
+class _FakeKey:
+    pass
+
+
+class _Ed25519Key(_FakeKey):
+    pass
+
+
+class _RSAKey(_FakeKey):
+    pass
+
+
+def test_key_classes_skip_dsskey_removed_in_paramiko_4():
+    """paramiko 4.0 removed DSSKey. Naming it directly raised AttributeError
+    before any key was parsed, so every key-based credential failed — even
+    Ed25519 and RSA keys paramiko still supports."""
+    from types import SimpleNamespace
+
+    from nashira_ssh_runner import _key_classes
+
+    paramiko_4 = SimpleNamespace(Ed25519Key=_Ed25519Key, ECDSAKey=None, RSAKey=_RSAKey)
+    assert _key_classes(paramiko_4) == (_Ed25519Key, _RSAKey)
+
+
+def test_key_classes_keep_dsskey_when_present():
+    from types import SimpleNamespace
+
+    from nashira_ssh_runner import _key_classes
+
+    class _DSSKey(_FakeKey):
+        pass
+
+    paramiko_3 = SimpleNamespace(
+        Ed25519Key=_Ed25519Key, ECDSAKey=None, RSAKey=_RSAKey, DSSKey=_DSSKey,
+    )
+    assert _key_classes(paramiko_3)[-1] is _DSSKey

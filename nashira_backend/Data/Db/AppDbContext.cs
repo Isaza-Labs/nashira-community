@@ -42,6 +42,7 @@ public class AppDbContext : DbContext
     public DbSet<WorkflowTrigger> WorkflowTriggers => Set<WorkflowTrigger>();
     public DbSet<Policy> Policies => Set<Policy>();
     public DbSet<AllowedPythonModule> AllowedPythonModules => Set<AllowedPythonModule>();
+    public DbSet<PythonEnvironment> PythonEnvironments => Set<PythonEnvironment>();
     public DbSet<AuthEvent> AuthEvents => Set<AuthEvent>();
     public DbSet<SloTarget> SloTargets => Set<SloTarget>();
     public DbSet<TraceEvent> TraceEvents => Set<TraceEvent>();
@@ -501,6 +502,21 @@ public class AppDbContext : DbContext
             // One row per module: two would make "is this allowed" depend on which
             // the query happened to return.
             e.HasIndex(x => x.Module).IsUnique().HasFilter("\"IsActive\"");
+        });
+
+        modelBuilder.Entity<PythonEnvironment>(e =>
+        {
+            e.ToTable("python_environments");
+            e.HasKey(x => x.PythonEnvironmentId);
+            // The name is the directory the build lands in, so two live rows sharing one
+            // would build over each other. Unique among ACTIVE rows only: a deleted
+            // environment's name is free to be defined again.
+            e.HasIndex(x => x.Name).IsUnique().HasFilter("\"IsActive\"");
+            // The builder's sweep: claimable rows by status.
+            e.HasIndex(x => new { x.IsActive, x.Status });
+            e.Property(x => x.Requirements).HasColumnType("text");
+            e.Property(x => x.ResolvedPackages).HasColumnType("text");
+            e.Property(x => x.LastError).HasColumnType("text");
         });
 
         modelBuilder.Entity<Policy>(e =>

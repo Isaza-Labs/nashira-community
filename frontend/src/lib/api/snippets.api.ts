@@ -29,6 +29,9 @@ export type Snippet = {
 	// Admin-only to enable: it widens which allowlist modules a python_snippet
 	// may import.
 	networkEnabled: boolean;
+	// python_snippet / ansible_playbook: the Python environment (Admin → Python
+	// environments) the code runs under. Null is the system Python.
+	pythonEnvironmentId: string | null;
 	verified: boolean;
 	isActive: boolean;
 	createdAt: string;
@@ -53,6 +56,9 @@ export interface SnippetPayload {
 	// fields a request actually sets), so the form's payloads are unaffected.
 	scriptLanguage?: string | null;
 	changesState?: boolean | null;
+	// Undefined leaves the stored environment alone; null means "System default" and
+	// is sent as an explicit clear on update; a string selects that environment.
+	pythonEnvironmentId?: string | null;
 }
 
 export const TARGET_MODES = ['once', 'per_device'] as const;
@@ -75,6 +81,7 @@ interface SnippetShape {
 	changes_state: boolean | null;
 	logic_diagram_mermaid: string | null;
 	network_enabled: boolean;
+	python_environment_id: string | null;
 	verified: boolean;
 	is_active: boolean;
 	created_at: string;
@@ -99,6 +106,7 @@ function toSnippet(s: SnippetShape): Snippet {
 		changesState: s.changes_state,
 		logicDiagramMermaid: s.logic_diagram_mermaid,
 		networkEnabled: s.network_enabled,
+		pythonEnvironmentId: s.python_environment_id ?? null,
 		verified: s.verified,
 		isActive: s.is_active,
 		createdAt: s.created_at,
@@ -106,8 +114,19 @@ function toSnippet(s: SnippetShape): Snippet {
 	};
 }
 
-function toBody(p: SnippetPayload) {
+function toBody(p: SnippetPayload, update = false) {
+	// The API treats a null python_environment_id as "unchanged" (like every field of an
+	// update), so going back to the system Python is its own flag.
+	const environment =
+		p.pythonEnvironmentId === undefined
+			? {}
+			: p.pythonEnvironmentId === null
+				? update
+					? { clear_python_environment: true }
+					: {}
+				: { python_environment_id: p.pythonEnvironmentId };
 	return {
+		...environment,
 		name: p.name,
 		type: p.type,
 		description: p.description || null,
@@ -158,7 +177,8 @@ export async function duplicateSnippet(
 		idempotency: source.idempotency ?? '',
 		changesState: source.changesState,
 		logicDiagramMermaid: source.logicDiagramMermaid ?? '',
-		networkEnabled: networkEnabled ?? source.networkEnabled
+		networkEnabled: networkEnabled ?? source.networkEnabled,
+		pythonEnvironmentId: source.pythonEnvironmentId
 	});
 }
 
@@ -185,7 +205,7 @@ export async function createSnippet(p: SnippetPayload): Promise<Snippet> {
 
 export async function updateSnippet(id: string, p: SnippetPayload): Promise<Snippet> {
 	return toSnippet(
-		await api<SnippetShape>(`/snippets/${id}`, { method: 'PUT', body: JSON.stringify(toBody(p)) })
+		await api<SnippetShape>(`/snippets/${id}`, { method: 'PUT', body: JSON.stringify(toBody(p, true)) })
 	);
 }
 

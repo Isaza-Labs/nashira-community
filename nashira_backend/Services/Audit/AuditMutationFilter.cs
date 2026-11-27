@@ -83,6 +83,7 @@ public sealed class AuditMutationFilter : IAsyncActionFilter
         ["Snippet"] = "snippet",
         ["VendorCommand"] = "vendor_command",
         ["AllowedPythonModule"] = "allowed_python_module",
+        ["PythonEnvironment"] = "python_environment",
         ["EmailChannel"] = "email_channel",
         ["NotificationChannel"] = "notification_channel",
         ["NotificationChannel"] = "notification_channel",

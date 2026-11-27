@@ -21,6 +21,12 @@ public sealed class SshRunRequest
     public bool PreserveAnsi { get; init; }
     public bool? DirectExec { get; init; }
     public string? ExpectedFingerprint { get; init; }
+
+    // The Python environment to run the runner under (Device.PythonEnvironmentId); null
+    // is the image's python3. Not part of the runner's stdin contract — it decides which
+    // interpreter is spawned, so it is never serialized.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid? PythonEnvironmentId { get; init; }
 }
 
 // One command's result inside SshRunResult.Results (runner snake_case output).
@@ -64,4 +70,28 @@ public sealed class SshRunOutcome
 
     public static SshRunOutcome Fail(string kind, string error, int exitCode = -1) =>
         new() { Ok = false, ErrorKind = kind, Error = error, ExitCode = exitCode };
+
+    // Which Python ran the runner: an environment's name, or "system" for the image's
+    // python3. Reported on every outcome so a reader of the step or chat answer can tell
+    // which paramiko spoke to the device.
+    public string PythonEnvironment { get; private init; } = Data.Models.PythonEnvironment.SystemName;
+
+    // True when the first attempt failed with paramiko's incompatible-host-key error and
+    // this outcome is the retry under the SSH fallback environment.
+    public bool SshEnvFallback { get; private init; }
+
+    // The first attempt's error, when SshEnvFallback is true.
+    public string? SshEnvFallbackError { get; private init; }
+
+    public SshRunOutcome WithEnvironment(string environment, string? fallbackFrom = null) => new()
+    {
+        Ok = Ok,
+        ExitCode = ExitCode,
+        ErrorKind = ErrorKind,
+        Error = Error,
+        Result = Result,
+        PythonEnvironment = environment,
+        SshEnvFallback = fallbackFrom is not null,
+        SshEnvFallbackError = fallbackFrom,
+    };
 }

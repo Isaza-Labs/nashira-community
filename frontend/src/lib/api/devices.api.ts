@@ -28,6 +28,9 @@ export type Device = {
 	allowQa: boolean;
 	allowProduction: boolean;
 	hasHostKeyFingerprint: boolean;
+	// The Python environment (Admin → Python environments) the SSH runner uses for
+	// this device. Null is the system Python.
+	pythonEnvironmentId: string | null;
 	createdAt: string;
 	updatedAt: string;
 };
@@ -49,6 +52,8 @@ export interface DevicePayload {
 	allowQa: boolean;
 	allowProduction: boolean;
 	fingerprint: string;
+	// Empty string is "System default".
+	pythonEnvironmentId: string;
 }
 
 interface DeviceShape {
@@ -70,6 +75,7 @@ interface DeviceShape {
 	allow_qa: boolean;
 	allow_production: boolean;
 	has_host_key_fingerprint: boolean;
+	python_environment_id: string | null;
 	created_at: string;
 	updated_at: string;
 }
@@ -94,13 +100,20 @@ function toDevice(d: DeviceShape): Device {
 		allowQa: d.allow_qa,
 		allowProduction: d.allow_production,
 		hasHostKeyFingerprint: d.has_host_key_fingerprint,
+		pythonEnvironmentId: d.python_environment_id ?? null,
 		createdAt: d.created_at,
 		updatedAt: d.updated_at
 	};
 }
 
-function toBody(p: DevicePayload) {
+function toBody(p: DevicePayload, update = false) {
 	return {
+		// A null id is "unchanged" on update, so "System default" is an explicit clear.
+		...(p.pythonEnvironmentId
+			? { python_environment_id: p.pythonEnvironmentId }
+			: update
+				? { clear_python_environment: true }
+				: {}),
 		device_name: p.name,
 		ip_address: p.ipAddress,
 		platform: p.platform,
@@ -139,7 +152,9 @@ export async function createDevice(p: DevicePayload): Promise<Device> {
 }
 
 export async function updateDevice(id: string, p: DevicePayload): Promise<Device> {
-	return toDevice(await api<DeviceShape>(`/device/${id}`, { method: 'PUT', body: JSON.stringify(toBody(p)) }));
+	return toDevice(
+		await api<DeviceShape>(`/device/${id}`, { method: 'PUT', body: JSON.stringify(toBody(p, true)) })
+	);
 }
 
 export async function deleteDevice(id: string): Promise<void> {

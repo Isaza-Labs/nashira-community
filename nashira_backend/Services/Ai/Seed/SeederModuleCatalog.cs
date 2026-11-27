@@ -92,6 +92,17 @@ public static class SeederModuleCatalog
                     services.GetRequiredService<IServiceScopeFactory>(), logger, ct)),
 
             // ── fleet ─────────────────────────────────────────────────────────
+            // The `ssh-legacy` Python environment (paramiko < 5, which still speaks
+            // `ssh-rsa`), flagged as the SSH fallback. It exists for devices, so it is
+            // fleet's: a deployment without devices has no SSH session to rescue. Only
+            // on a database with no environment rows at all, so an admin who deleted it
+            // is not overruled.
+            new(
+                typeof(PythonEnvironmentSeeder),
+                [ModuleId.Fleet],
+                DevelopmentOnly: false,
+                (services, logger, ct) => PythonEnvironmentSeeder.SeedAsync(
+                    services.GetRequiredService<IServiceScopeFactory>(), logger, ct)),
             // Vendor command catalogues (Skills/vendors/*.yaml) -> vendor_commands, so
             // /api/vendor-commands/resolve answers on a fresh install instead of 404ing
             // every intent. Idempotent per (intent, platform), soft-deleted rows

@@ -55,4 +55,12 @@ public class Device : BaseModel
     // SSH host-key pinning ("SHA256:<base64>"). When set, the SSH runner refuses
     // to connect on mismatch (MITM defense); null = soft-TOFU on first connect.
     public string? ExpectedSshHostKeyFingerprint { get; set; }
+
+    // The Python environment the SSH runner runs under for this device. Null means the
+    // image's python3, which is what every device used before environments existed.
+    // Set it for a device whose SSH server needs a different paramiko — an EXOS switch
+    // that offers only `ssh-rsa` cannot be reached by paramiko 5. Independent of the
+    // automatic fallback (PythonEnvironment.IsSshFallback), which retries ANY device
+    // that fails that way.
+    public Guid? PythonEnvironmentId { get; set; }
 }

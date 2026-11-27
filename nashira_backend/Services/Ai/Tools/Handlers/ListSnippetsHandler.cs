@@ -131,6 +131,7 @@ public sealed class ListSnippetsHandler : IToolHandler
                     target_mode = s.TargetMode,
                     effective_idempotency = Idempotency.ToWire(Idempotency.Effective(s, floor)),
                     network_enabled = s.NetworkEnabled,
+                    python_environment_id = s.PythonEnvironmentId,
                     verified = s.Verified,
                     proven = proven.Contains(s.SnippetId),
                 };

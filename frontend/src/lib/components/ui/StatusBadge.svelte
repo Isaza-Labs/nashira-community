@@ -24,6 +24,7 @@
 		warning: 'warning',
 		stale: 'warning',
 		installing: 'warning',
+		building: 'warning',
 		draft: 'neutral',
 		disabled: 'neutral',
 		failed: 'error',
@@ -34,7 +35,7 @@
 	};
 
 	// Statuses that mean "work is in flight right now".
-	const IN_FLIGHT = new Set(['running', 'queued', 'in_progress', 'pending', 'syncing', 'installing']);
+	const IN_FLIGHT = new Set(['running', 'queued', 'in_progress', 'pending', 'syncing', 'installing', 'building']);
 
 	const key = $derived((status ?? '').toLowerCase());
 	const tone = $derived<Tone>(map[key] ?? 'neutral');

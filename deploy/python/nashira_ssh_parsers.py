@@ -57,6 +57,7 @@ VENDOR_FAMILY: dict[str, str] = {
     "nokia_srl": "nokia",
     "fortinet": "fortinet",
     "mikrotik_routeros": "mikrotik",
+    "extreme_exos": "extreme",
     "linux": "linux",
     "risecom_ros": "risecom",
     "generic": "generic",
@@ -111,6 +112,13 @@ VENDOR_ALIASES: dict[str, str] = {
     # MikroTik
     "mikrotik": "mikrotik_routeros",
     "routeros": "mikrotik_routeros",
+    # Extreme Networks (EXOS / Switch Engine). A device saved as `exos` used to
+    # pass through unchanged, fail Netmiko's device_type lookup and fall back to
+    # `generic` — losing the EXOS prompt and paging handling.
+    "exos": "extreme_exos",
+    "extremexos": "extreme_exos",
+    "extreme-exos": "extreme_exos",
+    "extreme exos": "extreme_exos",
     # Risecom (no upstream Netmiko driver — connects via `generic` but
     # the alias is preserved so the parser dispatch can find local
     # templates under `risecom_ros_*.textfsm`).
@@ -129,6 +137,7 @@ VENDOR_LABELS: dict[str, str] = {
     "nokia": "Nokia",
     "fortinet": "Fortinet",
     "mikrotik": "MikroTik",
+    "extreme": "Extreme Networks",
     "risecom": "Risecom",
     "linux": "Linux",
     "hpe": "HPE Comware",
@@ -153,6 +162,7 @@ DEVICE_TYPE_LABELS: dict[str, str] = {
     "nokia_srl": "Nokia SR Linux",
     "fortinet": "Fortinet FortiGate",
     "mikrotik_routeros": "MikroTik RouterOS",
+    "extreme_exos": "Extreme EXOS",
     "risecom_ros": "Risecom ROS",
     "linux": "Linux shell",
     "generic": "Generic SSH",

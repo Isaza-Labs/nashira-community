@@ -37,6 +37,10 @@ def _load_parsed(name: str):
     ("sros", "nokia_sros", "sros"),
     ("vrp", "huawei", "vrp"),
     ("risecom", "risecom_ros", "risecom"),
+    ("exos", "extreme_exos", "exos"),
+    ("EXOS", "extreme_exos", "EXOS"),
+    ("extremexos", "extreme_exos", "extremexos"),
+    ("extreme_exos", "extreme_exos", None),
     (None, "generic", None),
     ("", "generic", None),
     ("   ", "generic", None),
@@ -55,6 +59,7 @@ def test_vendor_for_known_and_unknown():
     assert vendor_for("nokia_srl") == "nokia"
     assert vendor_for("nokia_sros") == "nokia"
     assert vendor_for("risecom_ros") == "risecom"
+    assert vendor_for("extreme_exos") == "extreme"
     assert vendor_for("totally_made_up_driver") == "generic"
 
 

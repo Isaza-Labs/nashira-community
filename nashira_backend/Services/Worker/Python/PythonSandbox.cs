@@ -14,7 +14,11 @@ public sealed record PythonRunRequest(
     // Where the admin-approved pip packages are installed, or null when none are.
     // Made importable inside the harness rather than through PYTHONPATH, which `-I`
     // ignores by design.
-    string? PackagesDir = null);
+    string? PackagesDir = null,
+    // The interpreter to start instead of Python:Executable — a uv-built environment's
+    // `bin/python`, resolved server-side by IPythonEnvironmentResolver from the snippet's
+    // PythonEnvironmentId. Null is the image's python3. Never taken from workflow input.
+    string? Interpreter = null);
 
 public sealed record PythonRunResult(
     bool Ok, JsonElement Output, string Stdout, string Stderr, string? ErrorKind, int ExitCode);
@@ -161,15 +165,22 @@ public sealed class PythonSandbox : IPythonSandbox
             WorkingDirectory = workDir,
         };
 
+        // A Python environment changes WHICH interpreter starts and nothing else: the
+        // wrapper still goes in front of it, and every flag, the scrubbed environment, the
+        // harness and its import guard, the deadline and the output caps below are applied
+        // to it exactly as to the image's python3. The path is absolute, built by the
+        // resolver from a validated slug under the packages volume.
+        var executable = string.IsNullOrWhiteSpace(request.Interpreter) ? _executable : request.Interpreter;
+
         if (wrapper.Count > 0)
         {
             psi.FileName = wrapper[0];
             foreach (var arg in wrapper.Skip(1)) psi.ArgumentList.Add(arg);
-            psi.ArgumentList.Add(_executable);
+            psi.ArgumentList.Add(executable);
         }
         else
         {
-            psi.FileName = _executable;
+            psi.FileName = executable;
             if (!_warnedNoIsolation)
             {
                 _warnedNoIsolation = true;
@@ -180,7 +191,10 @@ public sealed class PythonSandbox : IPythonSandbox
         }
 
         // -I isolated: ignores PYTHONPATH and the user site directory, so a snippet
-        // cannot pick up whatever is installed in the invoking user's home.
+        // cannot pick up whatever is installed in the invoking user's home. It does NOT
+        // drop a venv's own site-packages — those belong to the interpreter's prefix, not
+        // to the user — which is exactly what makes an environment's packages importable,
+        // and only through the allowlist guard in the harness.
         // -B: no bytecode written next to anything.
         // -: read the program from stdin, so it never touches disk.
         psi.ArgumentList.Add("-I");

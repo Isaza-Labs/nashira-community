@@ -28,9 +28,16 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 python3-pip iputils-ping fonts-dejavu-core \
  && rm -rf /var/lib/apt/lists/*
 
-# netmiko/paramiko back the SSH runner. Pinned to netmiko 4.x.
+# netmiko/paramiko back the SSH runner. Pinned to netmiko 4.x. This is the "system"
+# Python environment — what every execution uses unless an admin points it at another.
 RUN pip3 install --no-cache-dir --break-system-packages --ignore-installed \
       "netmiko>=4,<5" "paramiko>=3" "textfsm>=1.1" "ntc-templates>=4"
+
+# uv builds the Python environments admins define under Admin → Python environments
+# (each with its own pinned packages, e.g. `ssh-legacy` with paramiko < 5 for devices
+# that only offer the ssh-rsa host key paramiko 5 removed). Static binaries copied
+# from the official image, pinned to an exact release.
+COPY --from=ghcr.io/astral-sh/uv:0.13.8 /uv /uvx /usr/local/bin/
 
 # SSH runner + helpers (nashira_ssh_runner.py + parsers/clean + ntc_templates_extra),
 # lifted from flow-weaver. Imported as sibling modules via PYTHONPATH.
@@ -44,17 +51,21 @@ ENV PYTHONPATH=/usr/local/lib/nashira_python
 #
 #   /app/keyring    data-protection keys
 #   /app/pyenv/site pip packages the provisioner installs
+#   /app/pyenv/envs Python environments the uv builder builds (+ uv-cache, python)
 #   /app/data/git   repository checkouts (Git:Root = ./data/git, relative to /app)
 #
 # This was written for pyenv and git was left out of it, so every clone failed with a
 # permission error and the git screen had never worked.
-RUN mkdir -p /app/keyring /app/pyenv/site /app/data/git && chown -R app:app /app
+RUN mkdir -p /app/keyring /app/pyenv/site /app/pyenv/envs /app/pyenv/uv-cache /app/pyenv/python \
+      /app/data/git && chown -R app:app /app
 COPY --from=build --chown=app:app /app/publish ./
 
 ENV ASPNETCORE_URLS=http://+:8080 \
     ASPNETCORE_ENVIRONMENT=Production \
     DataProtection__KeyRingPath=/app/keyring \
     Python__PackagesDir=/app/pyenv \
+    UV_CACHE_DIR=/app/pyenv/uv-cache \
+    UV_PYTHON_INSTALL_DIR=/app/pyenv/python \
     DOTNET_RUNNING_IN_CONTAINER=true
 
 USER app

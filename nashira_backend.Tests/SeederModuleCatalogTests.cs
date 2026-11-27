@@ -72,6 +72,7 @@ public class SeederModuleCatalogTests
     [InlineData("automation", nameof(PythonModuleSeeder))]
     [InlineData("automation", nameof(DefaultSnippetSeeder))]
     [InlineData("fleet", nameof(VendorCommandSeeder))]
+    [InlineData("fleet", nameof(PythonEnvironmentSeeder))]
     public void A_seeder_runs_exactly_where_its_capability_is_enabled(
         string configuredModules, string seeder)
     {

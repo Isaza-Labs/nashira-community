@@ -12,6 +12,7 @@ using DeviceEntity = nashira_backend.Data.Models.Device;
 using CredentialEntity = nashira_backend.Data.Models.Credential;
 using Microsoft.AspNetCore.RateLimiting;
 using nashira_backend.Services.Security;
+using nashira_backend.Services.Worker.Python;
 
 namespace nashira_backend.Controllers;
 
@@ -103,6 +104,7 @@ public class DeviceController : ControllerBase
             throw new ValidationException("credential_id does not exist");
         RequireScope(DeviceTrustPolicy.ScopeMismatch(credential, ip));
         await EnsureSourceAsync(dto.SourceId, ct);
+        await PythonEnvironmentService.RequireExistingAsync(_db, dto.PythonEnvironmentId, ct);
 
         var now = DateTime.UtcNow;
         var row = new DeviceEntity
@@ -124,6 +126,7 @@ public class DeviceController : ControllerBase
             AllowQa = dto.AllowQa ?? false,
             AllowProduction = dto.AllowProduction ?? true,
             ExpectedSshHostKeyFingerprint = dto.ExpectedSshHostKeyFingerprint,
+            PythonEnvironmentId = dto.PythonEnvironmentId,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,
@@ -158,6 +161,11 @@ public class DeviceController : ControllerBase
         if (linkChanges || addressChanges)
             RequireScope(DeviceTrustPolicy.ScopeMismatch(finalCredential, finalIp));
         if (dto.SourceId is not null) await EnsureSourceAsync(dto.SourceId, ct);
+        if (dto.ClearPythonEnvironment == true && dto.PythonEnvironmentId is not null)
+            throw new ValidationException(
+                "send python_environment_id or clear_python_environment, not both", "python_env_conflicting");
+        if (dto.PythonEnvironmentId is not null)
+            await PythonEnvironmentService.RequireExistingAsync(_db, dto.PythonEnvironmentId, ct);
 
         if (dto.DeviceName is not null) row.DeviceName = dto.DeviceName.Trim();
         if (dto.IpAddress is not null) row.IpAddress = dto.IpAddress.Trim();
@@ -175,6 +183,8 @@ public class DeviceController : ControllerBase
         if (dto.AllowQa is not null) row.AllowQa = dto.AllowQa.Value;
         if (dto.AllowProduction is not null) row.AllowProduction = dto.AllowProduction.Value;
         if (dto.ExpectedSshHostKeyFingerprint is not null) row.ExpectedSshHostKeyFingerprint = dto.ExpectedSshHostKeyFingerprint;
+        if (dto.ClearPythonEnvironment == true) row.PythonEnvironmentId = null;
+        else if (dto.PythonEnvironmentId is not null) row.PythonEnvironmentId = dto.PythonEnvironmentId;
         row.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
         return ToResponse(row);
@@ -264,6 +274,7 @@ public class DeviceController : ControllerBase
         AllowQa = d.AllowQa,
         AllowProduction = d.AllowProduction,
         HasHostKeyFingerprint = !string.IsNullOrEmpty(d.ExpectedSshHostKeyFingerprint),
+        PythonEnvironmentId = d.PythonEnvironmentId,
         CreatedAt = d.CreatedAt,
         UpdatedAt = d.UpdatedAt,
     };

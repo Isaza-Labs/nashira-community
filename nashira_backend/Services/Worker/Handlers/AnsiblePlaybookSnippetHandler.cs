@@ -8,6 +8,7 @@ using nashira_backend.Data.Models;
 using nashira_backend.Services.Ai.Secrets;
 using nashira_backend.Services.Identity;
 using nashira_backend.Services.Security;
+using nashira_backend.Services.Worker.Python;
 using nashira_backend.Services.Workflow;
 
 namespace nashira_backend.Services.Worker.Handlers;
@@ -45,6 +46,7 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
     private readonly ISecretProtector _protector;
     private readonly ICurrentUser _user;
     private readonly ILogger<AnsiblePlaybookSnippetHandler> _logger;
+    private readonly IPythonEnvironmentResolver? _environments;
 
     /// <summary>
     /// What the play receives as <c>--extra-vars</c>: the whole resolved payload, so a
@@ -67,12 +69,13 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
 
     public AnsiblePlaybookSnippetHandler(
         AppDbContext db, ISecretProtector protector, ICurrentUser user,
-        ILogger<AnsiblePlaybookSnippetHandler> logger)
+        ILogger<AnsiblePlaybookSnippetHandler> logger, IPythonEnvironmentResolver? environments = null)
     {
         _db = db;
         _protector = protector;
         _user = user;
         _logger = logger;
+        _environments = environments;
     }
 
     public string Type => Data.Models.Snippet.TypeAnsiblePlaybook;
@@ -99,6 +102,31 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
                 "the snippet has no playbook — put the YAML in the snippet's `code`", "bad_input");
 
         var timeoutSec = Math.Clamp(request.TimeoutSeconds <= 0 ? 600 : request.TimeoutSeconds, 10, 3600);
+
+        // The snippet's Python environment, when it names one: ansible-playbook is then
+        // the environment's own (ansible-core installed into it), so a playbook can pin
+        // the Ansible and collection dependencies it was written against. Resolved before
+        // any credential is decrypted.
+        ResolvedPythonEnvironment? environment = null;
+        if (request.PythonEnvironmentId is { } environmentId)
+        {
+            if (_environments is null)
+                return SnippetResult.Fail("Python environments are not available in this process",
+                    PythonEnvironmentUnavailableException.Code);
+            try
+            {
+                environment = await _environments.ResolveAsync(environmentId, ct);
+            }
+            catch (PythonEnvironmentUnavailableException ex)
+            {
+                return SnippetResult.Fail(ex.Message, PythonEnvironmentUnavailableException.Code);
+            }
+            if (!File.Exists(Path.Combine(environment.BinDir, "ansible-playbook")))
+                return SnippetResult.Fail(
+                    $"Python environment '{environment.Name}' has no ansible-playbook — add ansible-core "
+                    + "to its requirements, or clear the snippet's environment to use the image's",
+                    PythonEnvironmentUnavailableException.Code);
+        }
 
         var (targets, failure) = await ResolveTargetsAsync(input, request.Environment, ct);
         if (failure is not null) return failure;
@@ -138,7 +166,9 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
 
             var psi = new ProcessStartInfo
             {
-                FileName = "ansible-playbook",
+                FileName = environment is null
+                    ? "ansible-playbook"
+                    : Path.Combine(environment.BinDir, "ansible-playbook"),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -153,6 +183,14 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
             psi.ArgumentList.Add("-l");
             psi.ArgumentList.Add("targets");
 
+            if (environment is not null)
+            {
+                // ansible-playbook spawns its sibling tools and its interpreter by name;
+                // the environment's bin dir first makes those the environment's too.
+                psi.EnvironmentVariables["PATH"] = environment.BinDir + Path.PathSeparator
+                    + (psi.EnvironmentVariables["PATH"] ?? string.Empty);
+                psi.EnvironmentVariables["VIRTUAL_ENV"] = environment.Directory;
+            }
             psi.EnvironmentVariables["ANSIBLE_HOST_KEY_CHECKING"] = "False";
             psi.EnvironmentVariables["ANSIBLE_STDOUT_CALLBACK"] = "default";
             if (!string.IsNullOrWhiteSpace(sharedPassword))

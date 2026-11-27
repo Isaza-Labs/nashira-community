@@ -247,6 +247,7 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
             UseStructured = Bool(input, "use_structured", Bool(input, "structured", true)),
             TimeoutSeconds = Int(input, "timeout_seconds", 30),
             ExpectedFingerprint = device.ExpectedSshHostKeyFingerprint,
+            PythonEnvironmentId = device.PythonEnvironmentId,
         }, ct);
 
         if (!outcome.Ok || outcome.Result is null)
@@ -267,6 +268,9 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
                     host = device.IpAddress,
                     error = outcome.Error ?? "SSH execution failed",
                     error_kind = outcome.ErrorKind,
+                    python_environment = outcome.PythonEnvironment,
+                    ssh_env_fallback = outcome.SshEnvFallback,
+                    ssh_env_fallback_error = outcome.SshEnvFallbackError,
                 }),
                 Error = outcome.Error ?? "SSH execution failed",
                 ErrorCode = outcome.ErrorKind ?? "ssh_failed",
@@ -310,6 +314,12 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
                 // output in order, and an exit code a CLI session does not have.
                 stdout = string.Join("\n", rows.Select(r => r.output ?? string.Empty)),
                 exit_code = (int?)null,
+                // Which Python spoke to the device, and whether that was the automatic
+                // retry under the SSH fallback environment after paramiko refused the
+                // device's host key algorithm (the original error is kept beside it).
+                python_environment = outcome.PythonEnvironment,
+                ssh_env_fallback = outcome.SshEnvFallback,
+                ssh_env_fallback_error = outcome.SshEnvFallbackError,
             }),
             // "one or more commands failed" sent the reader into the payload to find
             // out which one and why, on a step whose whole point is the commands. Name
@@ -322,7 +332,10 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
             ErrorCode = allOk ? null : "command_failed",
             Logs = $"{device.DeviceName} ({device.IpAddress}, {result.DeviceType}): "
                    + $"ran {rows.Count} command(s), {failedRows.Count} failed, "
-                   + $"{rows.Sum(r => r.elapsed_ms)}ms total",
+                   + $"{rows.Sum(r => r.elapsed_ms)}ms total, python environment {outcome.PythonEnvironment}"
+                   + (outcome.SshEnvFallback
+                       ? $" (SSH fallback after: {Summarize(outcome.SshEnvFallbackError)})"
+                       : string.Empty),
         };
     }
 

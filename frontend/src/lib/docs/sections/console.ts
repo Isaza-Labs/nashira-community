@@ -313,7 +313,7 @@ export const consoleScreens: DocSection[] = [
 				title: 'The settings (default)',
 				rows: [
 					{ value: 'Ssh:AllowDestructiveCommands', desc: '`false`. When off, commands that erase or reload a device are refused before they reach it, whatever the workflow says. Fleet module.' },
-					{ value: 'Python:PackageProvisioningEnabled', desc: '`true`. Whether approved pip packages are installed; turning it off leaves them pending rather than failing them. Automation module.' },
+					{ value: 'Python:PackageProvisioningEnabled', desc: '`true`. Whether approved pip packages are installed, and whether Python environments are built; turning it off leaves them pending rather than failing them. Automation module.' },
 					{ value: 'Python:PipInstallTimeoutSeconds', desc: '`300`. How long one install may take; values below 30 count as 30. Automation module.' },
 					{ value: 'Git:MaxFileBytes', desc: '`5242880` (5 MB). Files above this are not read into memory by the git browser. Git module.' }
 				]

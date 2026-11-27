@@ -576,5 +576,56 @@ export const integrations: DocSection[] = [
 				]
 			}
 		]
+	},
+	{
+		slug: 'python-environments',
+		title: 'Python environments',
+		group: 'Integrations & AI',
+		module: 'core',
+		tagline: 'Pinned package sets, built with uv, for SSH sessions and Python snippets.',
+		uiPath: '/admin/python-environments',
+		apiBase: '/api/python-environments',
+		role: 'Admin',
+		purpose:
+			'The image ships one Python with one set of packages, and one set cannot suit every device: paramiko 5 removed the `ssh-rsa` host key algorithm, so a switch offering nothing else (Extreme EXOS on OpenSSH 8.1) fails with "Incompatible ssh peer (no acceptable host key)". An environment pins its own packages and is built at runtime — no image rebuild.',
+		keywords: 'uv venv virtualenv requirements paramiko netmiko ssh-rsa legacy fallback exos python version',
+		blocks: [
+			{ kind: 'prose', text: 'In the sidebar: **Govern → Python environments**.' },
+			{
+				kind: 'params',
+				title: 'Fields',
+				rows: [
+					{ name: 'name', type: 'string', required: true, desc: 'Slug, 3–50 characters: lowercase letters, digits and dashes. Unique among live environments; cannot be changed.' },
+					{ name: 'description', type: 'string | null', desc: 'Why it exists.' },
+					{ name: 'python_version', type: 'string | null', desc: 'Passed to `uv venv --python`, e.g. `3.12`. Empty uses the image\'s python3.' },
+					{ name: 'requirements', type: 'string', required: true, desc: 'requirements.txt format. Index URLs are allowed; `user:pass@` in them is masked in every response and audit entry, and sending the masked text back keeps the stored credentials. `-r`, `-c` and `-e` are refused — they would read other files on the server.' },
+					{ name: 'is_ssh_fallback', type: 'boolean', default: 'false', desc: 'At most one live environment. An SSH session failing with paramiko\'s incompatible host key error is retried once under it.' },
+					{ name: 'status', type: 'string', desc: 'Read-only. `pending` → `building` → `ready` or `failed`. Only `ready` is used. Editing `requirements` or `python_version`, or rebuilding, goes back to `pending`.' },
+					{ name: 'last_error / resolved_packages / built_at', type: 'string | null', desc: 'Read-only. Why the last build failed; the `uv pip freeze` of the last good build; when it finished.' }
+				]
+			},
+			{
+				kind: 'list',
+				items: [
+					'Null everywhere means the system Python — devices and snippets that pick nothing behave exactly as before.',
+					'A **device** picks one for its SSH sessions (the runner is started with that environment\'s interpreter). The workflow `ssh` step and the agent\'s `device_connect` both honour it, and both report `python_environment` (the name, or `system`) in their output.',
+					'**SSH fallback**: when a session fails with "Incompatible ssh peer" or "no acceptable host key", it is retried once under the fallback environment, and the output carries `ssh_env_fallback: true` with the original error in `ssh_env_fallback_error`.',
+					'A **python_snippet** or **ansible_playbook** snippet can pick one too. The sandbox is unchanged: same wrapper, isolation flags, scrubbed environment and timeouts, and a snippet still imports only what the Python modules allowlist permits.',
+					'`ssh-legacy` (netmiko 4, paramiko ≥ 3.5 and < 5, textfsm, ntc-templates) is seeded as the SSH fallback on a fresh install.',
+					'Builds run in the background with `uv venv` + `uv pip install` (wheels only while `Python:PipOnlyBinary` is on) and are swapped into place only when complete, so a running job never sees a half-built one. `Python:PackageProvisioningEnabled` switches building off.'
+				]
+			},
+			{
+				kind: 'endpoints',
+				rows: [
+					{ method: 'GET', path: '/api/python-environments', role: 'Operator', desc: 'List — the device and snippet pickers need it.' },
+					{ method: 'GET', path: '/api/python-environments/{id}', role: 'Operator', desc: 'One environment.' },
+					{ method: 'POST', path: '/api/python-environments', role: 'Admin', desc: 'Create; builds in the background.' },
+					{ method: 'PUT', path: '/api/python-environments/{id}', role: 'Admin', desc: 'Update. A changed definition rebuilds.' },
+					{ method: 'POST', path: '/api/python-environments/{id}/rebuild', role: 'Admin', desc: 'Queue another build.' },
+					{ method: 'DELETE', path: '/api/python-environments/{id}', role: 'Admin', desc: 'Soft delete — refused while a device or snippet still uses it.' }
+				]
+			}
+		]
 	}
 ];

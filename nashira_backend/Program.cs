@@ -371,6 +371,11 @@ try
 
     // SSH command execution (Phase 4): spawns the Python netmiko runner as a subprocess.
     builder.Services.AddSingleton<ISshCommandRunner, SshCommandRunner>();
+    // uv-built Python environments: the resolver is a singleton because the SSH runner
+    // is one (it opens its own scope per lookup); the service is the CRUD rules.
+    builder.Services.AddSingleton<nashira_backend.Services.Worker.Python.IPythonEnvironmentResolver,
+        nashira_backend.Services.Worker.Python.PythonEnvironmentResolver>();
+    builder.Services.AddScoped<nashira_backend.Services.Worker.Python.PythonEnvironmentService>();
     // Per-command SSH governance (Phase 5.5): classify + block destructive commands.
     builder.Services.AddSingleton<ISshCommandPolicy, SshCommandPolicy>();
 

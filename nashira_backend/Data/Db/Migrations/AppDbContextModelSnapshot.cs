@@ -706,6 +706,9 @@ namespace nashira_backend.Data.Db.Migrations
                     b.Property<JsonElement>("Properties")
                         .HasColumnType("jsonb");
 
+                    b.Property<Guid?>("PythonEnvironmentId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Role")
                         .IsRequired()
                         .HasColumnType("text");
@@ -2049,6 +2052,74 @@ namespace nashira_backend.Data.Db.Migrations
                     b.ToTable("profiles", (string)null);
                 });
 
+            modelBuilder.Entity("nashira_backend.Data.Models.PythonEnvironment", b =>
+                {
+                    b.Property<Guid>("PythonEnvironmentId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("BuiltAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ClaimedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ClaimedBy")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CreatedBy")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Description")
+                        .HasColumnType("text");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<bool>("IsSshFallback")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("LastError")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("PythonVersion")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Requirements")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("RequirementsHash")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResolvedPackages")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("PythonEnvironmentId");
+
+                    b.HasIndex("Name")
+                        .IsUnique()
+                        .HasFilter("\"IsActive\"");
+
+                    b.HasIndex("IsActive", "Status");
+
+                    b.ToTable("python_environments", (string)null);
+                });
+
             modelBuilder.Entity("nashira_backend.Data.Models.RefreshToken", b =>
                 {
                     b.Property<Guid>("RefreshTokenId")
@@ -2309,6 +2380,9 @@ namespace nashira_backend.Data.Db.Migrations
 
                     b.Property<string>("OutputSchemaJson")
                         .HasColumnType("text");
+
+                    b.Property<Guid?>("PythonEnvironmentId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("RetryPolicyJson")
                         .HasColumnType("text");

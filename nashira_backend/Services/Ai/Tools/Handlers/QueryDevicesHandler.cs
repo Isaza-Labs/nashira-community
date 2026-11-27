@@ -74,6 +74,9 @@ public sealed class QueryDevicesHandler : IToolHandler
                 allow_draft = d.AllowDraft,
                 allow_qa = d.AllowQa,
                 allow_production = d.AllowProduction,
+                // The Python environment the SSH runner uses for it; null is the system
+                // Python (device_connect may still retry under the SSH fallback).
+                python_environment_id = d.PythonEnvironmentId,
                 synced = d.SourceId != null,
                 last_sync_at = d.LastSyncAt,
             })
