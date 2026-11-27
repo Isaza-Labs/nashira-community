@@ -148,6 +148,69 @@ public static partial class PythonEnvironmentRules
                 : m.Value);
     }
 
+    // The comment line that separates an environment's own requirements from what the
+    // Python packages allowlist adds to them in the effective requirements.
+    public const string IncludedHeader = "# Included from the Python packages allowlist";
+
+    /// <summary>
+    /// The pip specs allowlist rows contribute to an environment, cleaned up:
+    /// trimmed, blanks dropped, deduplicated and sorted.
+    /// </summary>
+    /// <remarks>
+    /// Sorted so the effective requirements — and therefore the build hash — do not
+    /// depend on the order a query happened to return the rows in. Deduplicated on
+    /// <see cref="RequirementKey"/>, so <c>Netmiko==4.3.0</c> and <c>netmiko==4.3.0</c> are
+    /// one line.
+    /// </remarks>
+    public static IReadOnlyList<string> NormalizeIncluded(IEnumerable<string?> specs) =>
+        specs
+            .Select(s => s?.Trim())
+            .Where(s => !string.IsNullOrEmpty(s))
+            .Select(s => s!)
+            .DistinctBy(RequirementKey)
+            .OrderBy(RequirementKey, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// What a build of an environment installs: its own <c>Requirements</c>, then every
+    /// spec the allowlist contributes that the environment does not already list.
+    /// </summary>
+    /// <remarks>
+    /// With nothing to add the result is the environment's own requirements exactly, so
+    /// an environment no allowlist row targets keeps the hash it was built with before
+    /// install targets existed. A contributed spec that only overlaps an own line by
+    /// package name (<c>netmiko&gt;=4,&lt;5</c> here, <c>netmiko==4.3.0</c> from the allowlist)
+    /// is kept: uv intersects the two, and a contradiction fails the build visibly
+    /// instead of one side silently winning.
+    /// </remarks>
+    public static string EffectiveRequirements(string? own, IEnumerable<string?> included)
+    {
+        var ownText = (own ?? string.Empty).Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+        var ownKeys = ownText.Split('\n')
+            .Select(l => l.Trim())
+            .Where(l => l.Length > 0 && !l.StartsWith('#'))
+            .Select(RequirementKey)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var extra = NormalizeIncluded(included).Where(s => !ownKeys.Contains(RequirementKey(s))).ToList();
+        if (extra.Count == 0) return ownText;
+
+        var sb = new StringBuilder(ownText);
+        if (sb.Length > 0) sb.Append('\n');
+        sb.Append(IncludedHeader);
+        foreach (var spec in extra) sb.Append('\n').Append(spec);
+        return sb.ToString();
+    }
+
+    // The hash of a build of the effective requirements — what RequirementsHash holds.
+    public static string EffectiveHash(string? pythonVersion, string? own, IEnumerable<string?> included) =>
+        Hash(pythonVersion, EffectiveRequirements(own, included));
+
+    // Two requirement lines are the same line when they differ only in case and
+    // whitespace: `netmiko == 4.3.0` and `Netmiko==4.3.0` ask pip for the same thing.
+    private static string RequirementKey(string line) =>
+        new string(line.Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
+
     // What a build is keyed by. Line endings are normalised first, so the same file
     // saved from Windows and from Linux is the same environment.
     public static string Hash(string? pythonVersion, string requirements)

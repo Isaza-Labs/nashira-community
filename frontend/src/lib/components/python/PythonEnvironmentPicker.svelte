@@ -6,7 +6,7 @@
 		type PythonEnvironment
 	} from '$lib/api/python-environments.api';
 
-	// Picks a Python environment (Admin → Python environments) for a device or a snippet.
+	// Picks a Python environment (Admin → Python → Environments) for a device or a snippet.
 	// '' is "System default" — the image's python3, which is what everything used before
 	// environments existed. The list is readable by Operators, so whoever can edit the
 	// device or snippet can pick; if it cannot be loaded, the current choice is kept and

@@ -9,7 +9,10 @@ using nashira_backend.Services.Settings;
 
 namespace nashira_backend.BackgroundServices;
 
-// Installs the pip packages an admin approved on the python_snippet allowlist.
+// Installs the pip packages an admin approved on the python_snippet allowlist, for the
+// system interpreter. A row whose install targets leave the system Python out
+// (InstallInSystem = false) is not installed here — see PlanSystemInstall; the uv
+// environments it targets install it from their effective requirements instead.
 //
 // Without this, a `pip` row was a promise nobody kept: the allowlist said `netmiko`
 // was permitted, the interpreter had never heard of it, and the snippet failed with an
@@ -126,6 +129,24 @@ public sealed partial class PythonPackageProvisionerHostedService : BackgroundSe
 
         var spec = string.IsNullOrWhiteSpace(module.PipSpec) ? module.Module : module.PipSpec.Trim();
 
+        // A row whose install targets do not include the system Python has nothing to
+        // install here: the uv environments it targets get it through their effective
+        // requirements (PythonEnvironmentBuilderHostedService). It still passes through
+        // this queue so it reaches `ready` — the import allowlist is the gate for every
+        // interpreter, and it honours `ready` only.
+        var plan = PlanSystemInstall(module);
+        if (plan.Kind != SystemInstallKind.Install)
+        {
+            if (plan.Kind == SystemInstallKind.SkipReady)
+                await MarkReadyAsync(db, module.AllowedPythonModuleId, version: null, ct);
+            else
+                await MarkFailedAsync(db, module.AllowedPythonModuleId, plan.Error!, ct);
+            _logger.LogInformation(
+                "python.pkg.install.skipped id={Id} module={Module} reason=not_a_system_target outcome={Outcome}",
+                module.AllowedPythonModuleId, module.Module, plan.Kind);
+            return true;
+        }
+
         _logger.LogInformation(
             "python.pkg.install.begin id={Id} module={Module} spec={Spec} target={Target}",
             module.AllowedPythonModuleId, module.Module, spec, siteDir);
@@ -236,6 +257,34 @@ public sealed partial class PythonPackageProvisionerHostedService : BackgroundSe
             trace.Fail(ex.Message, new { module = module.Module, spec });
             return true;
         }
+    }
+
+    internal enum SystemInstallKind { Install, SkipReady, SkipFailed }
+
+    internal sealed record SystemInstallPlan(SystemInstallKind Kind, string? Error = null);
+
+    /// <summary>
+    /// What the provisioner does with a claimed row: install it into the system site dir,
+    /// or skip that because the row does not target the system Python.
+    /// </summary>
+    /// <remarks>
+    /// Skipping means no pip run, and so no import-name discovery either — that asks the
+    /// INSTALLED distribution. A skipped row must therefore already carry the name a
+    /// script imports (the API insists on it), and one that somehow does not fails here
+    /// rather than reaching the allowlist with a name nothing imports.
+    ///
+    /// Turning the system target off after an install leaves the package in the site
+    /// dir: there is no uninstall. That is deliberate and documented on the admin
+    /// screen; the import allowlist, not the files on disk, decides what may be imported.
+    /// </remarks>
+    internal static SystemInstallPlan PlanSystemInstall(AllowedPythonModule module)
+    {
+        if (module.InstallInSystem) return new(SystemInstallKind.Install);
+        if (!ImportNameRegex().IsMatch(module.Module))
+            return new(SystemInstallKind.SkipFailed,
+                $"'{module.Module}' is not installed in the system Python, so the name it imports as cannot be "
+                + "discovered — revoke it and add it again under the name a script writes after `import`");
+        return new(SystemInstallKind.SkipReady);
     }
 
     // Conditional UPDATE: only the process that flips a claimable row to `installing`

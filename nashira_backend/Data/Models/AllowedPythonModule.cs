@@ -59,5 +59,18 @@ public class AllowedPythonModule : BaseModel
     // Why the install failed, for the admin screen. pip's own output, tail-trimmed.
     public string? Error { get; set; }
 
+    // Install targets of a pip row. `InstallInSystem` is the system interpreter (the
+    // provisioner's `pip --target <PackagesDir>/site`); the uv environments it is also
+    // installed in live in python_module_environments (PythonModuleEnvironment) and
+    // reach those environments through their EFFECTIVE requirements — the builder
+    // installs them with the environment's own list, never ad hoc into a venv.
+    //
+    // True is the behaviour that existed before targets did, and the default for new
+    // rows. Turning it off later does NOT remove the package from the site dir — the
+    // provisioner has no uninstall — so a system-Python snippet may still find the
+    // files on disk; the import allowlist stays the gate either way. Meaningless for a
+    // stdlib row, which has nothing to install.
+    public bool InstallInSystem { get; set; } = true;
+
     public Guid? CreatedBy { get; set; }
 }

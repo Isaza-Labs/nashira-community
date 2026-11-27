@@ -249,7 +249,7 @@ export const platform: DocSection[] = [
 				items: [
 					'`Ctrl`/`⌘` + `K` opens the command palette: every destination, plus create actions that open the right form directly.',
 					'`g` then a letter jumps without opening anything — d devices, w workflows, s snippets, i integrations, k knowledge, r reports, o overview, c chat, h docs.',
-					'A listing with a create action opens its form when reached with `?new=1` — that is what the palette actions link to. That covers devices, pools, workflows (the Import dialog), snippets, knowledge, reports, the Vault (which opens its type picker), users, policies, integrations, MCP servers, AI providers, prompt skills, API specs, Python modules, vendor commands and the notification, messaging and email channels; other listings ignore it.'
+					'A listing with a create action opens its form when reached with `?new=1` — that is what the palette actions link to. That covers devices, pools, workflows (the Import dialog), snippets, knowledge, reports, the Vault (which opens its type picker), users, policies, integrations, MCP servers, AI providers, prompt skills, API specs, Python modules and Python environments (each on its tab of `/admin/python`), vendor commands and the notification, messaging and email channels; other listings ignore it.'
 				]
 			},
 			{

@@ -54,8 +54,7 @@ import {
 	Gauge,
 	Radar,
 	SlidersHorizontal,
-	PanelLeft,
-	Package
+	PanelLeft
 } from 'lucide-svelte';
 
 import type { ModuleAvailability, ModuleId } from '$lib/modules/manifest';
@@ -110,6 +109,29 @@ export interface NavPage {
 	action?: { label: string; keywords?: string; minRole?: NavRole };
 	/** Excluded from the hub index (already reachable, or not configuration). */
 	hub?: false;
+	/**
+	 * Tabs inside the page, addressed as `?tab=<value>` (the first is the default).
+	 * The palette lists each one under its own name, so a tab stays findable as the
+	 * page it used to be.
+	 */
+	tabs?: NavTab[];
+}
+
+export interface NavTab {
+	/** The `?tab=` value. */
+	value: string;
+	/** The label on the tab strip. */
+	label: string;
+	/** What the palette calls it, when the tab alone would be ambiguous. */
+	paletteLabel?: string;
+	desc: string;
+	keywords?: string;
+	/** A capability narrower than the page's own: without it the tab is not offered. */
+	module?: ModuleId;
+	/** The old page this tab replaced, whose stored navigation setting it inherits. */
+	predecessor?: string;
+	/** A create action; the tab opens with `?new=1`, as a page does. */
+	action?: { label: string; keywords?: string; minRole?: NavRole };
 }
 
 const NAVIGATION_PERMISSIONS_PATH = '/admin/navigation-permissions';
@@ -128,9 +150,37 @@ export const VAULT_PREDECESSORS = {
 	credentials: '/admin/credentials',
 	secrets: '/admin/secrets'
 } as const;
+export const PYTHON_PATH = '/admin/python';
+export const PYTHON_PREDECESSORS = {
+	packages: '/admin/python-modules',
+	environments: '/admin/python-environments'
+} as const;
 const PREDECESSORS: Readonly<Record<string, readonly string[]>> = {
-	[VAULT_PATH]: Object.values(VAULT_PREDECESSORS)
+	[VAULT_PATH]: Object.values(VAULT_PREDECESSORS),
+	[PYTHON_PATH]: Object.values(PYTHON_PREDECESSORS)
 };
+
+/**
+ * Where each old URL now lives, query included. The predecessors that became tabs
+ * land on their tab; the rest land on the page that replaced them.
+ */
+const REDIRECT_TARGETS: Readonly<Record<string, string>> = {
+	[PYTHON_PREDECESSORS.packages]: `${PYTHON_PATH}?tab=packages`,
+	[PYTHON_PREDECESSORS.environments]: `${PYTHON_PATH}?tab=environments`
+};
+
+/**
+ * The URL an old path redirects to, keeping the query it arrived with. The target's
+ * own parameters (the tab) win over any of the same name.
+ */
+export function redirectTarget(oldPath: string, search: string): string {
+	const target = REDIRECT_TARGETS[oldPath] ?? ROUTE_ALIASES[oldPath] ?? oldPath;
+	const [path, own = ''] = target.split('?');
+	const params = new URLSearchParams(search);
+	for (const [key, value] of new URLSearchParams(own)) params.set(key, value);
+	const query = params.toString();
+	return `${path}${query ? `?${query}` : ''}`;
+}
 
 /** Old URLs kept alive as redirects, and the page each one leads to. */
 const ROUTE_ALIASES: Readonly<Record<string, string>> = Object.fromEntries(
@@ -165,6 +215,33 @@ export function vaultStoreVisible(
 ): boolean {
 	if (visibility[VAULT_PATH] !== undefined) return visibility[VAULT_PATH];
 	return visibility[VAULT_PREDECESSORS[store]] !== false;
+}
+
+/**
+ * Whether a page may show one of its tabs: the tab's own capability, then its
+ * stored setting. An explicit setting on the page covers every tab; without one, a
+ * tab whose old page was hidden stays hidden, so the restriction still holds — the
+ * same rule the Vault applies to its two stores.
+ */
+export function tabVisible(
+	page: NavPage,
+	tab: NavTab,
+	availability: ModuleAvailability,
+	visibility: NavigationVisibility = {}
+): boolean {
+	if (tab.module && !availability.isEnabled(tab.module)) return false;
+	if (visibility[page.href] !== undefined) return visibility[page.href];
+	return tab.predecessor ? visibility[tab.predecessor] !== false : true;
+}
+
+/** The tabs of a page this deployment and these settings let it show, in order. */
+export function visibleTabs(
+	href: string,
+	availability: ModuleAvailability,
+	visibility: NavigationVisibility = {}
+): NavTab[] {
+	const page = BY_HREF.get(href);
+	return (page?.tabs ?? []).filter((t) => tabVisible(page!, t, availability, visibility));
 }
 
 /**
@@ -340,33 +417,46 @@ export const PAGES: NavPage[] = [
 		keywords: 'cli intent platform multivendor ios nxos eos junos',
 		action: { label: 'New vendor command', keywords: 'create command', minRole: 'operator' }
 	},
+	// One destination for both halves of the Python surface: what a python_snippet
+	// may import (and pip installs), and the uv environments SSH and snippets run
+	// under. They were two pages; they are edited together, so they sit as tabs.
 	{
-		href: '/admin/python-modules',
-		label: 'Python modules',
+		href: '/admin/python',
+		label: 'Python',
 		icon: Braces,
 		group: 'govern',
 		minRole: 'admin',
-		module: 'automation',
-		desc: 'The allowlist a python_snippet may import',
-		keywords: 'sandbox allowlist import security stdlib script',
-		action: { label: 'Allow a Python module', keywords: 'create python module', minRole: 'admin' }
-	},
-	{
-		href: '/admin/python-environments',
-		label: 'Python environments',
-		icon: Package,
-		group: 'govern',
-		minRole: 'admin',
-		// Core, like its API: both fleet (the SSH runner) and automation
-		// (python_snippet) run under these, and neither owns them alone.
+		// Core, like the environments API: fleet (the SSH runner) and automation
+		// (python_snippet) both run under these. The Packages tab narrows itself to
+		// automation below.
 		module: 'core',
-		desc: 'Pinned package sets built with uv, for SSH and snippets',
-		keywords: 'uv venv virtualenv pip paramiko netmiko ssh-rsa legacy fallback requirements',
-		action: {
-			label: 'New Python environment',
-			keywords: 'create python environment uv',
-			minRole: 'admin'
-		}
+		desc: 'Snippet import allowlist, pip packages and uv environments',
+		keywords: 'python pip uv sandbox allowlist import venv virtualenv packages',
+		tabs: [
+			{
+				value: 'packages',
+				label: 'Packages',
+				paletteLabel: 'Python modules',
+				module: 'automation',
+				predecessor: PYTHON_PREDECESSORS.packages,
+				desc: 'The allowlist a python_snippet may import',
+				keywords: 'sandbox allowlist import security stdlib script pip modules',
+				action: { label: 'Allow a Python module', keywords: 'create python module', minRole: 'admin' }
+			},
+			{
+				value: 'environments',
+				label: 'Environments',
+				paletteLabel: 'Python environments',
+				predecessor: PYTHON_PREDECESSORS.environments,
+				desc: 'Pinned package sets built with uv, for SSH and snippets',
+				keywords: 'uv venv virtualenv pip paramiko netmiko ssh-rsa legacy fallback requirements',
+				action: {
+					label: 'New Python environment',
+					keywords: 'create python environment uv',
+					minRole: 'admin'
+				}
+			}
+		]
 	},
 
 	// Intelligence — the agent's configuration surface.
@@ -765,8 +855,7 @@ export const SIDEBAR: SidebarGroup[] = [
 			{ kind: 'page', id: '/admin/policies' },
 			{ kind: 'page', id: '/admin/permissions' },
 			{ kind: 'page', id: '/admin/navigation-permissions' },
-			{ kind: 'page', id: '/admin/python-modules' },
-			{ kind: 'page', id: '/admin/python-environments' },
+			{ kind: 'page', id: '/admin/python' },
 			{ kind: 'page', id: '/admin/slo' },
 			{ kind: 'page', id: '/admin/audit' },
 			{ kind: 'page', id: '/admin/traces' },
@@ -845,6 +934,10 @@ const SPECIAL_ROUTES: Readonly<Record<string, ModuleId>> = {
 	// answers. They redirect to the Vault and belong to the same capability.
 	'/admin/credentials': 'secrets',
 	'/admin/secrets': 'secrets',
+	// The pre-merge Python pages, redirecting to their tab of /admin/python. Core,
+	// like the page: the Packages tab answers for automation itself.
+	'/admin/python-modules': 'core',
+	'/admin/python-environments': 'core',
 	// The component gallery. Core: it renders the design system and calls no API.
 	'/kitchen-sink': 'core'
 };
@@ -1054,6 +1147,28 @@ export function paletteEntries(
 				keywords: `${page.action.keywords ?? ''} ${page.label} new create add`,
 				isAction: true
 			});
+		}
+
+		// Each tab is findable under its own name, landing on that tab.
+		for (const tab of page.tabs ?? []) {
+			if (!tabVisible(page, tab, availability, visibility)) continue;
+			const href = `${page.href}?tab=${tab.value}`;
+			const label = tab.paletteLabel ?? `${page.label} · ${tab.label}`;
+			nav.push({
+				href,
+				label,
+				group: GROUP_LABEL[page.group],
+				keywords: `${tab.desc} ${tab.keywords ?? ''} ${page.label} ${tab.label} ${tab.predecessor ?? ''}`
+			});
+			if (tab.action && canSee(role, tab.action.minRole ?? page.minRole)) {
+				actions.push({
+					href: `${href}&new=1`,
+					label: tab.action.label,
+					group: 'Actions',
+					keywords: `${tab.action.keywords ?? ''} ${label} new create add`,
+					isAction: true
+				});
+			}
 		}
 	}
 

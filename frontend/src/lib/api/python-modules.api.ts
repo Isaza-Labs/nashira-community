@@ -11,11 +11,26 @@
 // `pip install` into the shared package directory, and only then does it become
 // `ready`. Until it does, the module is on the allowlist and still not importable —
 // which is why `status` belongs in the table rather than behind a detail view.
+//
+// A pip row also has INSTALL TARGETS: the system Python (`install_in_system`, the
+// default and what every row did before targets existed) and any number of uv
+// environments (`environment_ids`). An environment gets the package through its
+// effective requirements — it rebuilds with the spec added — so changing a row's
+// targets or pip spec, or revoking it, rebuilds every environment involved. Turning
+// the system target off does not uninstall anything already in the system site dir.
+// `status` and `installed_version` describe the system install only.
 
 import { api, type ListResponse } from '$lib/api/client';
 
 export type PythonModuleSource = 'stdlib' | 'pip';
 export type PythonModuleStatus = 'pending' | 'installing' | 'ready' | 'failed';
+
+/** A uv environment a pip row is installed in, with that environment's build status. */
+export type PythonModuleEnvironmentTarget = {
+	id: string;
+	name: string;
+	status: string;
+};
 
 export type PythonModule = {
 	id: string;
@@ -27,6 +42,10 @@ export type PythonModule = {
 	status: PythonModuleStatus;
 	installedVersion: string | null;
 	error: string | null;
+	/** Pip rows: whether the system Python is one of the install targets. */
+	installInSystem: boolean;
+	/** Pip rows: the uv environments it is installed in. Always empty for stdlib. */
+	environments: PythonModuleEnvironmentTarget[];
 	updatedAt: string;
 };
 
@@ -37,6 +56,10 @@ export interface PythonModulePayload {
 	source: PythonModuleSource;
 	/** Only meaningful for `pip`; blank means "same as the module name". */
 	pipSpec: string;
+	/** Only meaningful for `pip`. */
+	installInSystem: boolean;
+	/** Only meaningful for `pip`; the full set — an empty list removes every environment. */
+	environmentIds: string[];
 }
 
 interface ModuleShape {
@@ -49,6 +72,8 @@ interface ModuleShape {
 	status: PythonModuleStatus;
 	installed_version: string | null;
 	error: string | null;
+	install_in_system: boolean;
+	environments: { python_environment_id: string; name: string; status: string }[] | null;
 	updated_at: string;
 }
 
@@ -63,6 +88,12 @@ function toModule(m: ModuleShape): PythonModule {
 		status: m.status,
 		installedVersion: m.installed_version,
 		error: m.error,
+		installInSystem: m.install_in_system ?? true,
+		environments: (m.environments ?? []).map((e) => ({
+			id: e.python_environment_id,
+			name: e.name,
+			status: e.status
+		})),
 		updatedAt: m.updated_at
 	};
 }
@@ -75,7 +106,10 @@ function toBody(p: PythonModulePayload) {
 		source: p.source,
 		// Omitted for stdlib: sending a spec for a module nothing installs would read
 		// as though something were going to happen.
-		pip_spec: p.source === 'pip' ? p.pipSpec.trim() || null : null
+		pip_spec: p.source === 'pip' ? p.pipSpec.trim() || null : null,
+		// Likewise: a stdlib row has nothing to install and the API refuses targets for it.
+		install_in_system: p.source === 'pip' ? p.installInSystem : null,
+		environment_ids: p.source === 'pip' ? p.environmentIds : null
 	};
 }
 

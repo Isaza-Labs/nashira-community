@@ -16,7 +16,9 @@ namespace nashira_backend.Data.Models;
 // existed before environments did, so no existing row changes meaning.
 //
 // State machine: pending → building → ready | failed. Editing Requirements or
-// PythonVersion, or asking for a rebuild, puts the row back to pending. Only `ready`
+// PythonVersion, asking for a rebuild, or an allowlist change that alters what the
+// environment includes (a target, a pip spec, a revoked row) puts the row back to
+// pending. Only `ready`
 // is ever handed to an execution (see IPythonEnvironmentResolver).
 public class PythonEnvironment : BaseModel
 {
@@ -56,8 +58,10 @@ public class PythonEnvironment : BaseModel
     // opposed to what was asked for.
     public string? ResolvedPackages { get; set; }
 
-    // SHA-256 over (PythonVersion, Requirements) of the build that produced
-    // ResolvedPackages, so a stale ready row is detectable.
+    // SHA-256 over (PythonVersion, effective requirements) of the build that produced
+    // ResolvedPackages, so a stale ready row is detectable. The effective requirements
+    // are Requirements plus the pip specs of the allowlist rows installed in this
+    // environment (PythonModuleEnvironment); with none they are Requirements exactly.
     public string? RequirementsHash { get; set; }
 
     public DateTime? BuiltAt { get; set; }

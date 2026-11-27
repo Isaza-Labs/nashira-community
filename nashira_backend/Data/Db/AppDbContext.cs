@@ -43,6 +43,7 @@ public class AppDbContext : DbContext
     public DbSet<Policy> Policies => Set<Policy>();
     public DbSet<AllowedPythonModule> AllowedPythonModules => Set<AllowedPythonModule>();
     public DbSet<PythonEnvironment> PythonEnvironments => Set<PythonEnvironment>();
+    public DbSet<PythonModuleEnvironment> PythonModuleEnvironments => Set<PythonModuleEnvironment>();
     public DbSet<AuthEvent> AuthEvents => Set<AuthEvent>();
     public DbSet<SloTarget> SloTargets => Set<SloTarget>();
     public DbSet<TraceEvent> TraceEvents => Set<TraceEvent>();
@@ -517,6 +518,16 @@ public class AppDbContext : DbContext
             e.Property(x => x.Requirements).HasColumnType("text");
             e.Property(x => x.ResolvedPackages).HasColumnType("text");
             e.Property(x => x.LastError).HasColumnType("text");
+        });
+
+        modelBuilder.Entity<PythonModuleEnvironment>(e =>
+        {
+            e.ToTable("python_module_environments");
+            // One link per (module, environment): a package is either in an
+            // environment's effective requirements or it is not.
+            e.HasKey(x => new { x.AllowedPythonModuleId, x.PythonEnvironmentId });
+            // The builder's lookup — "what do the allowlist rows add to this env".
+            e.HasIndex(x => x.PythonEnvironmentId);
         });
 
         modelBuilder.Entity<Policy>(e =>

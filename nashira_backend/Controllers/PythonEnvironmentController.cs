@@ -42,9 +42,11 @@ public class PythonEnvironmentController : ControllerBase
     public async Task<ActionResult<ListResponse<PythonEnvironmentResponse>>> Get(CancellationToken ct)
     {
         var rows = await _service.ListAsync(ct);
+        var included = await _service.IncludedSpecsAsync(rows.Select(r => r.PythonEnvironmentId).ToList(), ct);
         return new OkObjectResult(new ListResponse<PythonEnvironmentResponse>
         {
-            Items = rows.Select(PythonEnvironmentResponse.From).ToList(),
+            Items = rows.Select(r => PythonEnvironmentResponse.From(r, included.GetValueOrDefault(r.PythonEnvironmentId)))
+                .ToList(),
             Total = rows.Count,
             Limit = rows.Count,
             Offset = 0,
@@ -53,7 +55,7 @@ public class PythonEnvironmentController : ControllerBase
 
     [HttpGet("{id:guid}")]
     public async Task<ActionResult<PythonEnvironmentResponse>> GetById(Guid id, CancellationToken ct) =>
-        PythonEnvironmentResponse.From(await _service.GetAsync(id, ct));
+        await ResponseAsync(await _service.GetAsync(id, ct), ct);
 
     [HttpPost]
     [Authorize(Policy = "Admin")]
@@ -63,7 +65,7 @@ public class PythonEnvironmentController : ControllerBase
         [FromBody] WritePythonEnvironment dto, CancellationToken ct)
     {
         var row = await _service.CreateAsync(dto.ToDraft(), ct);
-        var response = PythonEnvironmentResponse.From(row);
+        var response = await ResponseAsync(row, ct);
         await _audit.LogAsync(AuditEntity, row.PythonEnvironmentId, "create", after: AuditView(response), ct: ct);
         return new CreatedAtActionResult(nameof(GetById), "PythonEnvironment", new { id = row.PythonEnvironmentId }, response);
     }
@@ -75,9 +77,9 @@ public class PythonEnvironmentController : ControllerBase
     public async Task<ActionResult<PythonEnvironmentResponse>> Update(
         Guid id, [FromBody] WritePythonEnvironment dto, CancellationToken ct)
     {
-        var before = PythonEnvironmentResponse.From(await _service.GetAsync(id, ct));
+        var before = await ResponseAsync(await _service.GetAsync(id, ct), ct);
         var row = await _service.UpdateAsync(id, dto.ToDraft(), ct);
-        var response = PythonEnvironmentResponse.From(row);
+        var response = await ResponseAsync(row, ct);
         await _audit.LogAsync(AuditEntity, id, "update",
             before: AuditView(before), after: AuditView(response), ct: ct);
         return response;
@@ -92,7 +94,7 @@ public class PythonEnvironmentController : ControllerBase
     public async Task<ActionResult<PythonEnvironmentResponse>> Rebuild(Guid id, CancellationToken ct)
     {
         var row = await _service.RebuildAsync(id, ct);
-        var response = PythonEnvironmentResponse.From(row);
+        var response = await ResponseAsync(row, ct);
         await _audit.LogAsync(AuditEntity, id, "rebuild", after: AuditView(response), ct: ct);
         return response;
     }
@@ -103,11 +105,18 @@ public class PythonEnvironmentController : ControllerBase
     [SkipAudit]
     public async Task<ActionResult<PythonEnvironmentResponse>> Delete(Guid id, CancellationToken ct)
     {
+        // Read before the delete drops the environment's allowlist links, so the audit
+        // entry still says what it included.
+        var before = await ResponseAsync(await _service.GetAsync(id, ct), ct);
         var row = await _service.DeleteAsync(id, ct);
         var response = PythonEnvironmentResponse.From(row);
+        response.IncludedPackages = before.IncludedPackages;
         await _audit.LogAsync(AuditEntity, id, "delete", before: AuditView(response), ct: ct);
         return response;
     }
+
+    private async Task<PythonEnvironmentResponse> ResponseAsync(PythonEnvironment row, CancellationToken ct) =>
+        PythonEnvironmentResponse.From(row, await _service.IncludedSpecsAsync(row.PythonEnvironmentId, ct));
 
     // What an incident review needs: the definition, already masked. The freeze output
     // is left out — it is long, derivable from the definition and the build time, and
@@ -117,6 +126,7 @@ public class PythonEnvironmentController : ControllerBase
         r.Name,
         r.PythonVersion,
         r.Requirements,
+        r.IncludedPackages,
         r.IsSshFallback,
         r.Status,
         r.Description,

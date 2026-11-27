@@ -331,7 +331,7 @@
 				{/if}
 				<p class="text-xs text-surface-600-400">
 					Imports are limited to the allowlist —
-					<a class="underline hover:text-primary-700-300" href="/admin/python-modules">
+					<a class="underline hover:text-primary-700-300" href="/admin/python?tab=packages">
 						manage Python modules
 					</a>.
 				</p>

@@ -468,6 +468,21 @@ components:
             The pip requirement, for source=pip. Defaults to the module name; set it
             when the two differ (pip install pyyaml imports as yaml) or to pin a
             version. No spaces and no pip flags — one requirement per row.
+        install_in_system:
+          type: boolean
+          description: >
+            source=pip only. Install into the system Python (default true — what
+            every pip row did before install targets). False skips that install but
+            does not uninstall anything already there, and requires `module` to be the
+            import name. Null on update leaves it unchanged.
+        environment_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: >
+            source=pip only. uv Python environments to install the package in as well;
+            each must exist and be active. An environment gets it by rebuilding with
+            the spec added to its requirements. Null on update leaves the targets
+            unchanged; [] removes them all.
 
     PythonModule:
       type: object
@@ -491,4 +506,16 @@ components:
         error:
           type: [string, "null"]
           description: pip's own output, tail-trimmed, when status is failed.
+        install_in_system:
+          type: boolean
+          description: Whether the system Python is an install target. `status` describes that install.
+        environments:
+          type: array
+          description: The uv environments the package is installed in (always empty for stdlib).
+          items:
+            type: object
+            properties:
+              python_environment_id: { type: string, format: uuid }
+              name: { type: string }
+              status: { type: string, enum: [pending, building, ready, failed] }
         updated_at: { type: string, format: date-time }

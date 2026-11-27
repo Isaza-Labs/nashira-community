@@ -13,6 +13,11 @@
 // because building an environment installs and later runs third-party code. Index URL
 // credentials come back masked (`https://***@host`); sending the masked text back
 // unchanged keeps the stored credentials.
+//
+// `included_packages` are the pip specs the Python packages allowlist adds to an
+// environment (rows whose install targets include it). They are part of what is built —
+// the effective requirements are `requirements` plus these, deduplicated — and are
+// edited on the allowlist row, not here.
 
 import { api, type ListResponse } from '$lib/api/client';
 
@@ -29,6 +34,8 @@ export type PythonEnvironment = {
 	lastError: string | null;
 	resolvedPackages: string | null;
 	requirementsHash: string | null;
+	/** Pip specs the packages allowlist installs here too; read-only on this side. */
+	includedPackages: string[];
 	builtAt: string | null;
 	createdAt: string;
 	updatedAt: string;
@@ -54,6 +61,7 @@ interface EnvironmentShape {
 	last_error: string | null;
 	resolved_packages: string | null;
 	requirements_hash: string | null;
+	included_packages: string[] | null;
 	built_at: string | null;
 	created_at: string;
 	updated_at: string;
@@ -71,6 +79,7 @@ function toEnvironment(e: EnvironmentShape): PythonEnvironment {
 		lastError: e.last_error,
 		resolvedPackages: e.resolved_packages,
 		requirementsHash: e.requirements_hash,
+		includedPackages: e.included_packages ?? [],
 		builtAt: e.built_at,
 		createdAt: e.created_at,
 		updatedAt: e.updated_at

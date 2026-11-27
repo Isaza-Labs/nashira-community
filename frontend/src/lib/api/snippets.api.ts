@@ -29,8 +29,8 @@ export type Snippet = {
 	// Admin-only to enable: it widens which allowlist modules a python_snippet
 	// may import.
 	networkEnabled: boolean;
-	// python_snippet / ansible_playbook: the Python environment (Admin → Python
-	// environments) the code runs under. Null is the system Python.
+	// python_snippet / ansible_playbook: the Python environment (Admin → Python →
+	// Environments) the code runs under. Null is the system Python.
 	pythonEnvironmentId: string | null;
 	verified: boolean;
 	isActive: boolean;
