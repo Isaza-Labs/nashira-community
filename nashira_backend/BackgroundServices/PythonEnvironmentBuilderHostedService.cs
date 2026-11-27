@@ -19,7 +19,7 @@ namespace nashira_backend.BackgroundServices;
 // wheels-only default (Python:PipOnlyBinary), the same trace and timeout handling.
 //
 //     uv venv <envs>/<name>.<id>.tmp --python <version|python3> --relocatable
-//     uv pip install --python <tmp>/bin/python -r <requirements> [--only-binary :all:]
+//     uv pip install --python <tmp>/bin/python -r <effective requirements> [--only-binary :all:]
 //     uv pip freeze --python <tmp>/bin/python
 //
 // then the finished build is renamed to <envs>/<name>.<id> and the symlink
@@ -27,6 +27,11 @@ namespace nashira_backend.BackgroundServices;
 // to a concrete build before it starts (PythonEnvironmentResolver), so it never sees a
 // half-built environment, and a rebuild never pulls files out from under it: the
 // previous build is kept until the one after.
+//
+// The effective requirements are the row's own Requirements plus the pip specs of
+// the active allowlist rows that target the environment (python_module_environments),
+// deduplicated — see PythonEnvironmentRules.EffectiveRequirements. They are what is
+// installed and what RequirementsHash is computed over.
 //
 // A failed build marks the row `failed` and leaves the previous good build where it
 // was. The row itself is not usable while failed (only `ready` is), but rebuilding
@@ -146,15 +151,21 @@ public sealed class PythonEnvironmentBuilderHostedService : BackgroundService
             return true;
         }
 
-        var hash = PythonEnvironmentRules.Hash(env.PythonVersion, env.Requirements);
+        // The EFFECTIVE requirements: the environment's own list plus the pip specs of
+        // the allowlist rows that target it. One file, one install, one hash — so the
+        // build is reproducible from the definition and ResolvedPackages lists what the
+        // allowlist added, instead of packages pip-installed into the venv on the side.
+        var included = await PythonEnvironmentService.IncludedSpecsAsync(db, env.PythonEnvironmentId, ct);
+        var requirements = PythonEnvironmentRules.EffectiveRequirements(env.Requirements, included);
+        var hash = PythonEnvironmentRules.Hash(env.PythonVersion, requirements);
         var buildId = Guid.NewGuid().ToString("N")[..8];
         var finalDir = Path.Combine(envsDir, $"{env.Name}.{buildId}");
         var tmpDir = finalDir + ".tmp";
         var requirementsFile = Path.Combine(envsDir, $".{env.Name}.{buildId}.requirements.txt");
 
         _logger.LogInformation(
-            "python.env.build.begin id={Id} name={Name} python={Python} hash={Hash}",
-            env.PythonEnvironmentId, env.Name, env.PythonVersion ?? "system", hash[..12]);
+            "python.env.build.begin id={Id} name={Name} python={Python} hash={Hash} included={Included}",
+            env.PythonEnvironmentId, env.Name, env.PythonVersion ?? "system", hash[..12], included.Count);
 
         using var trace = _trace.Begin(TraceEvent.CategorySystem, "system.python.env_build",
             new { name = env.Name, python = env.PythonVersion ?? "system", hash });
@@ -162,7 +173,7 @@ public sealed class PythonEnvironmentBuilderHostedService : BackgroundService
         try
         {
             Directory.CreateDirectory(envsDir);
-            await File.WriteAllTextAsync(requirementsFile, env.Requirements + "\n", ct);
+            await File.WriteAllTextAsync(requirementsFile, requirements + "\n", ct);
 
             // --relocatable: entry-point scripts (ansible-playbook, netmiko's CLI tools)
             // get a shebang relative to themselves instead of the absolute .tmp path,
@@ -188,14 +199,20 @@ public sealed class PythonEnvironmentBuilderHostedService : BackgroundService
             if (freeze.Exit != 0)
                 return await FailBuildAsync(db, env, claimedAt, "uv pip freeze", freeze, tmpDir, trace, ct);
 
-            // Still ours? An edit or a rebuild while uv ran released the claim; that
-            // definition is built on the next sweep, and this build is thrown away rather
-            // than swapped in under a row that no longer describes it.
-            if (!await StillClaimedAsync(db, env.PythonEnvironmentId, claimedAt, ct))
+            // Still ours, and still what the row describes? An edit or a rebuild while uv
+            // ran released the claim; an allowlist change altered the effective
+            // requirements. Either way that definition is built on the next sweep, and this
+            // build is thrown away rather than swapped in under a row it no longer matches.
+            var state = await PythonEnvironmentService.CheckBuildClaimAsync(
+                db, env.PythonEnvironmentId, _claimant, claimedAt, hash, ct);
+            if (state != BuildClaimState.Current)
             {
                 TryDeleteDirectory(tmpDir);
+                if (state == BuildClaimState.DefinitionChanged)
+                    await RequeueAsync(db, env.PythonEnvironmentId, claimedAt, ct);
                 trace.Fail("superseded", new { name = env.Name });
-                _logger.LogInformation("python.env.build.superseded id={Id} name={Name}", env.PythonEnvironmentId, env.Name);
+                _logger.LogInformation("python.env.build.superseded id={Id} name={Name} reason={Reason}",
+                    env.PythonEnvironmentId, env.Name, state);
                 return true;
             }
 
@@ -307,11 +324,18 @@ public sealed class PythonEnvironmentBuilderHostedService : BackgroundService
         return null;
     }
 
-    private Task<bool> StillClaimedAsync(AppDbContext db, Guid id, DateTime claimedAt, CancellationToken ct) =>
-        db.PythonEnvironments.AsNoTracking().AnyAsync(e =>
-            e.PythonEnvironmentId == id && e.IsActive
-            && e.Status == PythonEnvironment.StatusBuilding
-            && e.ClaimedBy == _claimant && e.ClaimedAt == claimedAt, ct);
+    // The claim is still ours but the definition moved on underneath the build: hand
+    // the row back to the queue so the current definition is built next.
+    private Task RequeueAsync(AppDbContext db, Guid id, DateTime claimedAt, CancellationToken ct) =>
+        db.PythonEnvironments
+            .Where(e => e.PythonEnvironmentId == id
+                && e.Status == PythonEnvironment.StatusBuilding
+                && e.ClaimedBy == _claimant && e.ClaimedAt == claimedAt)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(e => e.Status, PythonEnvironment.StatusPending)
+                .SetProperty(e => e.ClaimedBy, (string?)null)
+                .SetProperty(e => e.ClaimedAt, (DateTime?)null)
+                .SetProperty(e => e.UpdatedAt, DateTime.UtcNow), ct);
 
     // Only while the claim is still ours: an edit that re-queued the row must not be
     // overwritten with the failure of the definition it replaced.

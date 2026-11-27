@@ -188,7 +188,7 @@ The plan would then promise a reversal that does not exist.
 The sandbox is the boundary, but imports are checked before it starts:
 
 - Every imported root module must be on the tenant's allowlist
-  (Admin → Python modules, `/api/python-modules`). The failure names the offending
+  (Admin → Python → Packages, `/api/python-modules`). The failure names the offending
   module — relay that name, it is the only actionable part.
 - A module marked `requires_network` is only available when the snippet has
   `network_enabled`. Otherwise the same error appears with "this snippet has not opted
@@ -269,7 +269,12 @@ to happen before a snippet can import it:
 | `stdlib` | Permission only — the module is already on the interpreter. | `ready` |
 | `pip` | Permission **and an install**. The platform runs `pip install` of `pip_spec` into a shared package directory. | `pending` |
 
-A pip row moves `pending` → `installing` → `ready` or `failed`. **Only `ready` is
+A pip row also has **install targets**: the system Python (`install_in_system`, on by
+default) and any uv environments in `environment_ids`. An environment gets the package
+by rebuilding with it added to its requirements, so a target change rebuilds it.
+
+A pip row moves `pending` → `installing` → `ready` or `failed` (for the system install;
+a row that skips it becomes `ready` without one). **Only `ready` is
 importable.** So there are three different answers to "why can't my snippet import
 this?", and the error text distinguishes them:
 

@@ -170,7 +170,9 @@ for (const file of readdirSync(docsDir).filter((f) => f.endsWith('.ts'))) {
 		);
 
 	for (const m of content.matchAll(/uiPath: '([^']+)'/g)) {
-		const path = m[1];
+		// A query selects a tab inside the destination (`/admin/python?tab=…`); the
+		// destination itself is the path before it.
+		const path = m[1].split('?')[0];
 		// Paths with a placeholder describe a detail screen, e.g. /workflows/{id}.
 		if (path.includes('{')) continue;
 		if (!path.startsWith('/')) continue;

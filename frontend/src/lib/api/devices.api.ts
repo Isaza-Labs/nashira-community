@@ -28,7 +28,7 @@ export type Device = {
 	allowQa: boolean;
 	allowProduction: boolean;
 	hasHostKeyFingerprint: boolean;
-	// The Python environment (Admin → Python environments) the SSH runner uses for
+	// The Python environment (Admin → Python → Environments) the SSH runner uses for
 	// this device. Null is the system Python.
 	pythonEnvironmentId: string | null;
 	createdAt: string;

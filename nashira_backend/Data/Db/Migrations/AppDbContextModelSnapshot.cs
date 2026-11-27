@@ -399,6 +399,9 @@ namespace nashira_backend.Data.Db.Migrations
                     b.Property<string>("Error")
                         .HasColumnType("text");
 
+                    b.Property<bool>("InstallInSystem")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("InstalledVersion")
                         .HasColumnType("text");
 
@@ -2118,6 +2121,24 @@ namespace nashira_backend.Data.Db.Migrations
                     b.HasIndex("IsActive", "Status");
 
                     b.ToTable("python_environments", (string)null);
+                });
+
+            modelBuilder.Entity("nashira_backend.Data.Models.PythonModuleEnvironment", b =>
+                {
+                    b.Property<Guid>("AllowedPythonModuleId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("PythonEnvironmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("AllowedPythonModuleId", "PythonEnvironmentId");
+
+                    b.HasIndex("PythonEnvironmentId");
+
+                    b.ToTable("python_module_environments", (string)null);
                 });
 
             modelBuilder.Entity("nashira_backend.Data.Models.RefreshToken", b =>

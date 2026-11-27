@@ -16,6 +16,17 @@ public sealed record PythonEnvironmentDraft(
     string? Requirements = null,
     bool? IsSshFallback = null);
 
+// What the builder finds when it is about to mark a build ready.
+public enum BuildClaimState
+{
+    // Still claimed, and the effective requirements are the ones that were built.
+    Current,
+    // The claim was released or taken over (an edit, a rebuild, a delete).
+    Lost,
+    // Still claimed, but the effective requirements changed while the build ran.
+    DefinitionChanged,
+}
+
 // The one place a PythonEnvironment row is validated and changed. The REST controller
 // delegates here so the rules — the name, the single SSH fallback, the status reset —
 // are enforced in one place and testable without HTTP.
@@ -131,6 +142,12 @@ public sealed class PythonEnvironmentService
         return row;
     }
 
+    public Task<Dictionary<Guid, IReadOnlyList<string>>> IncludedSpecsAsync(
+        IReadOnlyCollection<Guid> envIds, CancellationToken ct) => IncludedSpecsAsync(_db, envIds, ct);
+
+    public Task<IReadOnlyList<string>> IncludedSpecsAsync(Guid envId, CancellationToken ct) =>
+        IncludedSpecsAsync(_db, envId, ct);
+
     public async Task<PythonEnvironment> RebuildAsync(Guid id, CancellationToken ct)
     {
         var row = await GetAsync(id, ct);
@@ -166,8 +183,127 @@ public sealed class PythonEnvironmentService
         // fallback" true even if the row is ever restored.
         row.IsSshFallback = false;
         row.UpdatedAt = DateTime.UtcNow;
+
+        // Allowlist rows that also installed into this environment lose that target.
+        // Not a reason to refuse the delete: the package is still on the allowlist,
+        // and the system Python or other environments it targets are unaffected.
+        var links = await _db.PythonModuleEnvironments
+            .Where(l => l.PythonEnvironmentId == id)
+            .ToListAsync(ct);
+        _db.PythonModuleEnvironments.RemoveRange(links);
+
         await _db.SaveChangesAsync(ct);
         return row;
+    }
+
+    // ── effective requirements ─────────────────────────────────────────────
+
+    /// <summary>
+    /// The pip specs allowlist rows contribute to each environment, keyed by
+    /// environment id (normalised: deduplicated and sorted). <paramref name="envIds"/>
+    /// null means every environment.
+    /// </summary>
+    /// <remarks>
+    /// Every ACTIVE pip row that targets the environment counts, whatever its own
+    /// status: that status is the system-Python install, and a row that failed there
+    /// (or does not install there at all) can still belong in an environment. Rows are
+    /// created by an administrator, so an active row is an approved one.
+    /// </remarks>
+    public static async Task<Dictionary<Guid, IReadOnlyList<string>>> IncludedSpecsAsync(
+        AppDbContext db, IReadOnlyCollection<Guid>? envIds, CancellationToken ct)
+    {
+        var q = from l in db.PythonModuleEnvironments.AsNoTracking()
+                join m in db.AllowedPythonModules.AsNoTracking()
+                    on l.AllowedPythonModuleId equals m.AllowedPythonModuleId
+                where m.IsActive && m.Source == AllowedPythonModule.SourcePip
+                select new { l.PythonEnvironmentId, Spec = m.PipSpec ?? m.Module };
+        if (envIds is not null) q = q.Where(x => envIds.Contains(x.PythonEnvironmentId));
+
+        var rows = await q.ToListAsync(ct);
+        return rows
+            .GroupBy(r => r.PythonEnvironmentId)
+            .ToDictionary(g => g.Key, g => PythonEnvironmentRules.NormalizeIncluded(g.Select(r => r.Spec)));
+    }
+
+    public static async Task<IReadOnlyList<string>> IncludedSpecsAsync(
+        AppDbContext db, Guid envId, CancellationToken ct) =>
+        (await IncludedSpecsAsync(db, [envId], ct)).GetValueOrDefault(envId) ?? [];
+
+    /// <summary>The hash a build of <paramref name="env"/>'s current definition gets.</summary>
+    public static async Task<string> EffectiveHashAsync(AppDbContext db, PythonEnvironment env, CancellationToken ct) =>
+        PythonEnvironmentRules.EffectiveHash(
+            env.PythonVersion, env.Requirements, await IncludedSpecsAsync(db, env.PythonEnvironmentId, ct));
+
+    /// <summary>
+    /// Puts every active environment in <paramref name="envIds"/> back to pending, on the
+    /// caller's tracked context; the caller saves.
+    /// </summary>
+    /// <remarks>
+    /// Called whenever an allowlist change alters what an environment's effective
+    /// requirements would be — targets, pip spec, a deleted row. MarkPending also
+    /// releases a running build's claim, so that build is discarded rather than marked
+    /// ready with the packages of the definition it no longer matches.
+    /// </remarks>
+    public static async Task<int> MarkEnvironmentsPendingAsync(
+        AppDbContext db, IEnumerable<Guid> envIds, CancellationToken ct)
+    {
+        var ids = envIds.Distinct().ToList();
+        if (ids.Count == 0) return 0;
+        var rows = await db.PythonEnvironments
+            .Where(e => e.IsActive && ids.Contains(e.PythonEnvironmentId))
+            .ToListAsync(ct);
+        var now = DateTime.UtcNow;
+        foreach (var row in rows)
+        {
+            MarkPending(row);
+            row.UpdatedAt = now;
+        }
+        return rows.Count;
+    }
+
+    /// <summary>
+    /// Validates the environments an allowlist row is to be installed in: each must
+    /// exist and be active. Returns them, for the response.
+    /// </summary>
+    public static async Task<List<PythonEnvironment>> RequireActiveEnvironmentsAsync(
+        AppDbContext db, IReadOnlyCollection<Guid> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0) return [];
+        var found = await db.PythonEnvironments.AsNoTracking()
+            .Where(e => e.IsActive && ids.Contains(e.PythonEnvironmentId))
+            .ToListAsync(ct);
+        var missing = ids.Except(found.Select(e => e.PythonEnvironmentId)).ToList();
+        if (missing.Count > 0)
+            throw new ValidationException(
+                $"environment_ids: no active Python environment with id {string.Join(", ", missing)} — "
+                + "it may have been deleted",
+                "python_env_not_found");
+        return found;
+    }
+
+    /// <summary>
+    /// Whether a build may still be marked ready: the claim is still the builder's, AND
+    /// the environment's effective requirements still hash to what the build installed.
+    /// </summary>
+    /// <remarks>
+    /// The claim alone is not enough. Every path that changes an environment's
+    /// definition releases the claim, but the effective requirements also depend on
+    /// other tables (the allowlist and its targets), and comparing the hash makes the
+    /// guard hold even for a change that did not go through MarkPending — a build is
+    /// never marked ready with stale packages.
+    /// </remarks>
+    public static async Task<BuildClaimState> CheckBuildClaimAsync(
+        AppDbContext db, Guid id, string claimant, DateTime claimedAt, string builtHash, CancellationToken ct)
+    {
+        var row = await db.PythonEnvironments.AsNoTracking().FirstOrDefaultAsync(e =>
+            e.PythonEnvironmentId == id && e.IsActive
+            && e.Status == PythonEnvironment.StatusBuilding
+            && e.ClaimedBy == claimant && e.ClaimedAt == claimedAt, ct);
+        if (row is null) return BuildClaimState.Lost;
+        var current = await EffectiveHashAsync(db, row, ct);
+        return string.Equals(current, builtHash, StringComparison.Ordinal)
+            ? BuildClaimState.Current
+            : BuildClaimState.DefinitionChanged;
     }
 
     /// <summary>

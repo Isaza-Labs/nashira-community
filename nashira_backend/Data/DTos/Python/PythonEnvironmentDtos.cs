@@ -31,13 +31,22 @@ public class PythonEnvironmentResponse
     [JsonPropertyName("status")] public string Status { get; set; } = PythonEnvironment.StatusPending;
     [JsonPropertyName("last_error")] public string? LastError { get; set; }
     [JsonPropertyName("resolved_packages")] public string? ResolvedPackages { get; set; }
+    // Over the EFFECTIVE requirements of the last good build: Requirements plus
+    // included_packages.
     [JsonPropertyName("requirements_hash")] public string? RequirementsHash { get; set; }
+    // The pip specs the Python packages allowlist adds to this environment (rows whose
+    // install targets include it), deduplicated and sorted, masked like requirements.
+    // Read-only here: they are edited on the allowlist row.
+    [JsonPropertyName("included_packages")] public List<string> IncludedPackages { get; set; } = [];
     [JsonPropertyName("built_at")] public DateTime? BuiltAt { get; set; }
     [JsonPropertyName("created_at")] public DateTime CreatedAt { get; set; }
     [JsonPropertyName("updated_at")] public DateTime UpdatedAt { get; set; }
 
-    public static PythonEnvironmentResponse From(PythonEnvironment e) => new()
+    public static PythonEnvironmentResponse From(PythonEnvironment e, IEnumerable<string>? included = null) => new()
     {
+        IncludedPackages = (included ?? [])
+            .Select(s => PythonEnvironmentRules.MaskCredentials(s) ?? string.Empty)
+            .ToList(),
         PythonEnvironmentId = e.PythonEnvironmentId,
         Name = e.Name,
         Description = e.Description,

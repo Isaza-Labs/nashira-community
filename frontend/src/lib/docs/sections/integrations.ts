@@ -532,14 +532,14 @@ export const integrations: DocSection[] = [
 		group: 'Integrations & AI',
 		module: 'automation',
 		tagline: 'The allowlist a python_snippet may import.',
-		uiPath: '/admin/python-modules',
+		uiPath: '/admin/python?tab=packages',
 		apiBase: '/api/python-modules',
 		role: 'Admin',
 		purpose:
 			'Sandboxed Python is only as constrained as its imports. This is an allowlist — anything not on it cannot be imported, at authoring time or at runtime.',
 		keywords: 'sandbox allowlist import security stdlib script python',
 		blocks: [
-			{ kind: 'prose', text: 'In the sidebar: **Govern → Python modules**.' },
+			{ kind: 'prose', text: 'In the sidebar: **Govern → Python**, on the **Packages** tab.' },
 			{
 				kind: 'params',
 				title: 'Fields',
@@ -548,10 +548,17 @@ export const integrations: DocSection[] = [
 					{ name: 'description', type: 'string | null', desc: 'Why it is allowed.' },
 					{ name: 'requires_network', type: 'boolean', default: 'false', desc: 'Marks a module that can reach the network. Usable only by a snippet with `network_enabled`.' },
 					{ name: 'source', type: 'string', default: 'stdlib', desc: '`stdlib`, or `pip` for a third-party package installed on the runner. A pip module is someone else\'s code running with the snippet — allow it knowingly.' },
-					{ name: 'pip_spec', type: 'string | null', desc: 'What pip installs, e.g. `netaddr==1.3.0`. Defaults to the module name.' },
-					{ name: 'status', type: 'string', desc: 'Read-only. `pending` → `installing` → `ready` or `failed`. Only a `ready` module can be imported. A stdlib module is `ready` at once.' },
-					{ name: 'installed_version / error', type: 'string | null', desc: 'Read-only. What pip installed, or why it failed.' }
+					{ name: 'pip_spec', type: 'string | null', desc: 'What pip installs, e.g. `netaddr==1.3.0`. Defaults to the module name. Masked like environment requirements wherever it is echoed.' },
+					{ name: 'install_in_system', type: 'boolean', default: 'true', desc: 'Pip only. Install into the system Python (the provisioner\'s site directory) — what every pip row did before install targets. Turning it off skips that install but does not uninstall what is already there: the files stay, and the allowlist alone decides what may be imported. Off requires `module` to be the import name, since nothing installs the package to discover it.' },
+					{ name: 'environment_ids', type: 'uuid[] | null', desc: 'Pip only. uv environments to install it in as well; each must exist and be live. On update, null leaves the targets unchanged and `[]` removes them all. Refused for a stdlib module.' },
+					{ name: 'environments', type: 'object[]', desc: 'Read-only. The environment targets: `python_environment_id`, `name` and that environment\'s `status`.' },
+					{ name: 'status', type: 'string', desc: 'Read-only. `pending` → `installing` → `ready` or `failed`, for the system install. Only a `ready` module can be imported. A stdlib module is `ready` at once; a pip module that skips the system install becomes `ready` without one.' },
+					{ name: 'installed_version / error', type: 'string | null', desc: 'Read-only. What pip installed into the system Python, or why it failed.' }
 				]
+			},
+			{
+				kind: 'prose',
+				text: 'A pip module reaches an environment through that environment\'s **effective requirements** — its own `requirements` plus the specs of the pip modules that target it, deduplicated — never by a separate install into the venv. So adding or removing a target, changing `pip_spec`, or revoking the module rebuilds every environment involved, and the build hash and `resolved_packages` cover what the allowlist added.'
 			},
 			{
 				kind: 'prose',
@@ -583,14 +590,14 @@ export const integrations: DocSection[] = [
 		group: 'Integrations & AI',
 		module: 'core',
 		tagline: 'Pinned package sets, built with uv, for SSH sessions and Python snippets.',
-		uiPath: '/admin/python-environments',
+		uiPath: '/admin/python?tab=environments',
 		apiBase: '/api/python-environments',
 		role: 'Admin',
 		purpose:
 			'The image ships one Python with one set of packages, and one set cannot suit every device: paramiko 5 removed the `ssh-rsa` host key algorithm, so a switch offering nothing else (Extreme EXOS on OpenSSH 8.1) fails with "Incompatible ssh peer (no acceptable host key)". An environment pins its own packages and is built at runtime — no image rebuild.',
 		keywords: 'uv venv virtualenv requirements paramiko netmiko ssh-rsa legacy fallback exos python version',
 		blocks: [
-			{ kind: 'prose', text: 'In the sidebar: **Govern → Python environments**.' },
+			{ kind: 'prose', text: 'In the sidebar: **Govern → Python**, on the **Environments** tab.' },
 			{
 				kind: 'params',
 				title: 'Fields',
@@ -600,13 +607,15 @@ export const integrations: DocSection[] = [
 					{ name: 'python_version', type: 'string | null', desc: 'Passed to `uv venv --python`, e.g. `3.12`. Empty uses the image\'s python3.' },
 					{ name: 'requirements', type: 'string', required: true, desc: 'requirements.txt format. Index URLs are allowed; `user:pass@` in them is masked in every response and audit entry, and sending the masked text back keeps the stored credentials. `-r`, `-c` and `-e` are refused — they would read other files on the server.' },
 					{ name: 'is_ssh_fallback', type: 'boolean', default: 'false', desc: 'At most one live environment. An SSH session failing with paramiko\'s incompatible host key error is retried once under it.' },
-					{ name: 'status', type: 'string', desc: 'Read-only. `pending` → `building` → `ready` or `failed`. Only `ready` is used. Editing `requirements` or `python_version`, or rebuilding, goes back to `pending`.' },
+					{ name: 'included_packages', type: 'string[]', desc: 'Read-only. Pip specs the Python modules allowlist installs here too (modules whose install targets include this environment), masked like `requirements`. Edited on the module, under **Install in** on the Packages tab.' },
+					{ name: 'status', type: 'string', desc: 'Read-only. `pending` → `building` → `ready` or `failed`. Only `ready` is used. Editing `requirements` or `python_version`, rebuilding, or a Packages change that alters `included_packages` goes back to `pending`.' },
 					{ name: 'last_error / resolved_packages / built_at', type: 'string | null', desc: 'Read-only. Why the last build failed; the `uv pip freeze` of the last good build; when it finished.' }
 				]
 			},
 			{
 				kind: 'list',
 				items: [
+					'A build installs the **effective requirements**: `requirements` followed by `included_packages`, duplicates dropped. `requirements_hash` is computed over them, and a build whose effective requirements changed while it ran is discarded and queued again rather than marked `ready`.',
 					'Null everywhere means the system Python — devices and snippets that pick nothing behave exactly as before.',
 					'A **device** picks one for its SSH sessions (the runner is started with that environment\'s interpreter). The workflow `ssh` step and the agent\'s `device_connect` both honour it, and both report `python_environment` (the name, or `system`) in their output.',
 					'**SSH fallback**: when a session fails with "Incompatible ssh peer" or "no acceptable host key", it is retried once under the fallback environment, and the output carries `ssh_env_fallback: true` with the original error in `ssh_env_fallback_error`.',
@@ -623,7 +632,7 @@ export const integrations: DocSection[] = [
 					{ method: 'POST', path: '/api/python-environments', role: 'Admin', desc: 'Create; builds in the background.' },
 					{ method: 'PUT', path: '/api/python-environments/{id}', role: 'Admin', desc: 'Update. A changed definition rebuilds.' },
 					{ method: 'POST', path: '/api/python-environments/{id}/rebuild', role: 'Admin', desc: 'Queue another build.' },
-					{ method: 'DELETE', path: '/api/python-environments/{id}', role: 'Admin', desc: 'Soft delete — refused while a device or snippet still uses it.' }
+					{ method: 'DELETE', path: '/api/python-environments/{id}', role: 'Admin', desc: 'Soft delete — refused while a device or snippet still uses it. Allowlist modules that target it lose that target; they are not a reason to refuse.' }
 				]
 			}
 		]

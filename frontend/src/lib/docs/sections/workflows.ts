@@ -373,7 +373,7 @@ export const workflows: DocSection[] = [
 			{
 				kind: 'list',
 				items: [
-					'Modules are an **allowlist**, managed under Govern → Python modules. Nothing network-capable is seeded.',
+					'Modules are an **allowlist**, managed under Govern → Python (the Packages tab). Nothing network-capable is seeded.',
 					'The allowlist applies to the imports the snippet itself writes. An allowed module\'s own dependencies are not checked — the admin vetted the module, not how it is implemented.',
 					'The child process starts with a scrubbed environment — connection strings and signing keys are not there to read.',
 					'The interpreter runs isolated (`-I -B`), with an import hook enforcing the allowlist at runtime, not just a static scan.'
