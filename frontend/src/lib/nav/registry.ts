@@ -54,7 +54,8 @@ import {
 	Gauge,
 	Radar,
 	SlidersHorizontal,
-	PanelLeft
+	PanelLeft,
+	Package
 } from 'lucide-svelte';
 
 import type { ModuleAvailability, ModuleId } from '$lib/modules/manifest';
@@ -349,6 +350,23 @@ export const PAGES: NavPage[] = [
 		desc: 'The allowlist a python_snippet may import',
 		keywords: 'sandbox allowlist import security stdlib script',
 		action: { label: 'Allow a Python module', keywords: 'create python module', minRole: 'admin' }
+	},
+	{
+		href: '/admin/python-environments',
+		label: 'Python environments',
+		icon: Package,
+		group: 'govern',
+		minRole: 'admin',
+		// Core, like its API: both fleet (the SSH runner) and automation
+		// (python_snippet) run under these, and neither owns them alone.
+		module: 'core',
+		desc: 'Pinned package sets built with uv, for SSH and snippets',
+		keywords: 'uv venv virtualenv pip paramiko netmiko ssh-rsa legacy fallback requirements',
+		action: {
+			label: 'New Python environment',
+			keywords: 'create python environment uv',
+			minRole: 'admin'
+		}
 	},
 
 	// Intelligence — the agent's configuration surface.
@@ -748,6 +766,7 @@ export const SIDEBAR: SidebarGroup[] = [
 			{ kind: 'page', id: '/admin/permissions' },
 			{ kind: 'page', id: '/admin/navigation-permissions' },
 			{ kind: 'page', id: '/admin/python-modules' },
+			{ kind: 'page', id: '/admin/python-environments' },
 			{ kind: 'page', id: '/admin/slo' },
 			{ kind: 'page', id: '/admin/audit' },
 			{ kind: 'page', id: '/admin/traces' },

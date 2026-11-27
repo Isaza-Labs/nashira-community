@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { Input, Alert, Checkbox } from '$lib/components/ui';
 	import CredentialPicker from '$lib/components/credential/CredentialPicker.svelte';
+	import PythonEnvironmentPicker from '$lib/components/python/PythonEnvironmentPicker.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import type { Device, DevicePayload } from '$lib/api/devices.api';
 	import type { AssignableCredential } from '$lib/api/credentials.api';
@@ -29,6 +30,7 @@
 	let allowQa = $state(seed?.allowQa ?? false);
 	let allowProduction = $state(seed?.allowProduction ?? true);
 	let fingerprint = $state('');
+	let pythonEnvironmentId = $state(seed?.pythonEnvironmentId ?? '');
 	let error = $state('');
 
 	// The host-key pin is Admin-only. The credential link and the address of a device
@@ -77,7 +79,8 @@
 			allowDraft,
 			allowQa,
 			allowProduction,
-			fingerprint: fingerprint.trim()
+			fingerprint: fingerprint.trim(),
+			pythonEnvironmentId
 		});
 	}
 </script>
@@ -132,6 +135,11 @@
 			</Alert>
 		{/if}
 	</fieldset>
+
+	<PythonEnvironmentPicker
+		bind:value={pythonEnvironmentId}
+		hint="The Python the SSH runner uses for this device. System default suits most devices; pick an environment such as ssh-legacy for one whose SSH server only offers ssh-rsa."
+	/>
 
 	{#if initial?.sourceId}
 		<p class="text-xs text-surface-600-400">

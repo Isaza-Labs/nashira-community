@@ -92,3 +92,20 @@ pip install "netmiko>=4,<5" "paramiko>=3" "textfsm>=1.1" "ntc-templates>=4"
 then copies the runner + helpers to `/usr/local/lib/` and sets `PYTHONPATH`. For the
 **air-gapped** tier these dependencies are vendored (wheels) so the image builds and runs
 without internet.
+
+That install is the **system** environment. Admins can define others under
+**Admin → Python environments** — each a requirements list (and optionally a Python
+version) that the backend builds at runtime with `uv` (copied into the image, pinned) into
+`/app/pyenv/envs/<name>`, with `UV_CACHE_DIR` on the same volume. A device can pick one for
+its SSH sessions: the runner is then started with that environment's interpreter, and
+`PYTHONPATH` still points here so the sibling modules import.
+
+Why: paramiko 5 removed the `ssh-rsa` host key algorithm, so a device that offers nothing
+else (Extreme EXOS on OpenSSH 8.1) fails with
+`Incompatible ssh peer (no acceptable host key)`. The seeded `ssh-legacy` environment pins
+`netmiko>=4,<5`, `paramiko>=3.5,<5`, `textfsm>=1.1`, `ntc-templates>=4` and is the SSH
+fallback: a session failing with that error is retried once under it, and the output says
+so (`python_environment`, `ssh_env_fallback`, `ssh_env_fallback_error`).
+
+The runner works under paramiko 3, 4 and 5: `_load_pkey` no longer names `paramiko.DSSKey`
+(removed in 4.0) directly, which used to break every key-based credential.

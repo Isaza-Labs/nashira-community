@@ -4,6 +4,59 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 
+## 2026-11-27 — Python environments built with uv, and SSH to devices that only offer ssh-rsa
+
+Some switches only offer the `ssh-rsa` host key algorithm (an Extreme EXOS switch on
+OpenSSH 8.1, for one). paramiko 5 removed `ssh-rsa` entirely, and the image installs
+`paramiko>=3` with no upper bound, so it got 5.x and every connection to such a device failed
+with `IncompatiblePeer: Incompatible ssh peer (no acceptable host key)`. paramiko 3.5 and 4.0
+still negotiate it. Rather than downgrading paramiko for every device, admins can now define
+**Python environments**, each with its own pinned packages, and choose which one runs each
+Python execution.
+
+- **Admin → Python environments** (`/api/python-environments`): a name, a description, an
+  optional Python version and a requirements list. The backend builds each one at runtime with
+  `uv` (`uv venv` + `uv pip install`, wheels only while `Python:PipOnlyBinary` is on) into
+  `/app/pyenv/envs/<name>` and swaps it into place only when the build finishes, so a running
+  job never sees a half-built environment; a failed build keeps the previous one on disk. The
+  table shows each environment's status (`pending`, `building`, `ready`, `failed`), the
+  `uv pip freeze` of the last good build and the last error, and refreshes while a build runs.
+  Editing the requirements or the Python version, or pressing rebuild, builds it again.
+  `Python:PackageProvisioningEnabled` switches building off, as it does pip installs. Reads are
+  open to Operators, so the device and snippet pickers work; writes are Admin-only, because
+  building an environment runs third-party code on the server. Credentials in index URLs
+  (`https://user:pass@…`) are masked in every response and audit entry.
+- **Devices** have an optional Python environment. When set, the SSH runner (workflow `ssh`
+  steps and the agent's `device_connect`) starts with that environment's interpreter.
+- **SSH fallback**: one environment can be flagged as the SSH fallback. When an SSH session
+  fails with "Incompatible ssh peer" or "no acceptable host key", it is retried once under that
+  environment and logged. The output of both SSH paths now carries `python_environment` (the
+  environment's name, or `system`), `ssh_env_fallback` and `ssh_env_fallback_error` (the first
+  attempt's error).
+- **`ssh-legacy`** is seeded on a database with no environments at all: `netmiko>=4,<5`,
+  `paramiko>=3.5,<5`, `textfsm>=1.1`, `ntc-templates>=4`, flagged as the SSH fallback, so the
+  EXOS case works once its first build finishes. Deleting it is respected; it is not re-created.
+- **`python_snippet`** and **`ansible_playbook`** snippets can pick an environment too. A
+  python snippet's sandbox is unchanged — same wrapper, isolation flags, scrubbed environment,
+  timeouts — and it still imports only what the Python modules allowlist permits. An Ansible
+  snippet runs the environment's own `ansible-playbook`.
+- The image copies `uv` 0.13.8 from `ghcr.io/astral-sh/uv` and sets `UV_CACHE_DIR` and
+  `UV_PYTHON_INSTALL_DIR` under the persistent `/app/pyenv` volume.
+
+Fixes in the SSH runner, needed regardless of environments:
+
+- Every key-based credential failed with `AttributeError` under paramiko 4.0 and later, which
+  removed `paramiko.DSSKey`; the runner named it directly. Key classes are now looked up and the
+  missing one skipped.
+- A device saved with platform `exos` fell back to Netmiko's `generic` driver. `exos`,
+  `extremexos`, `extreme-exos` and `extreme exos` now map to `extreme_exos`, which also appears
+  in the platform list as "Extreme EXOS".
+
+Upgrade impact: migration `Phase21_PythonEnvironments` adds the `python_environments` table and a
+nullable `PythonEnvironmentId` to devices and snippets. Null means the system Python, so nothing
+changes for existing devices or snippets. With an OS sandbox wrapper in front of
+`python_snippet`, a snippet that picks an environment needs `/app/pyenv/envs` visible inside it.
+
 ## 2026-11-26 — Sessions that are not signed out by sign-in traffic
 
 The access token now lives 60 minutes (was 15) and the refresh token 30 days (was 7):

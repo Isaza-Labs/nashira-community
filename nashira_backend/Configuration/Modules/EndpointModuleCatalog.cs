@@ -25,6 +25,11 @@ public static class EndpointModuleCatalog
             // without them there is no way in and no way to configure what is there.
             [typeof(AuthController)] = [ModuleId.Core],
             [typeof(ModulesController)] = [ModuleId.Core],
+            // Python environments serve two capabilities at once — the SSH runner (fleet,
+            // and the agent's device_connect) and python_snippet (automation) — and the
+            // catalog cannot express "either". Core, so neither has to be enabled for the
+            // other's environments to be manageable.
+            [typeof(PythonEnvironmentController)] = [ModuleId.Core],
             [typeof(UsersController)] = [ModuleId.Core],
             [typeof(AdminSettingsController)] = [ModuleId.Core],
             [typeof(AdminSloController)] = [ModuleId.Core],

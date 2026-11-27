@@ -14,6 +14,14 @@ changing deployment environment variables.
 | `Python:Executable` | `Python__Executable` | `python3` |
 | `Python:AllowUnsandboxed` | `Python__AllowUnsandboxed` | `false` |
 
+A snippet may name a **Python environment** (Admin → Python environments). It then runs
+under that environment's interpreter, `/app/pyenv/envs/<name>/bin/python`, resolved by
+the backend — never from workflow input. Everything else above and below applies
+unchanged: the wrapper still goes in front, the isolation flags and scrubbed environment
+are the same, and the import allowlist still decides what the snippet may import. A
+wrapper must therefore make `/app/pyenv/envs` (read-only) and, for a pinned Python
+version, `/app/pyenv/python` visible to the child.
+
 Compose exposes the first and third via `PYTHON_SANDBOX_COMMAND` and
 `PYTHON_ALLOW_UNSANDBOXED`. SandboxCommand is a semicolon-delimited executable and
 argument list, without shell expansion. The first item must be an absolute path.

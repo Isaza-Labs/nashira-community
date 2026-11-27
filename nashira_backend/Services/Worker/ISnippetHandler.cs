@@ -27,6 +27,10 @@ public sealed class SnippetRequest
     // Snippet.NetworkEnabled.
     public bool NetworkEnabled { get; init; }
 
+    // python_snippet / ansible_playbook: the Python environment to run under. Mirrors
+    // Snippet.PythonEnvironmentId; null is the image's python3.
+    public Guid? PythonEnvironmentId { get; init; }
+
     // The workflow environment this run belongs to (draft/qa/production), so a
     // handler that reaches a device can enforce the device's allow trio.
     public string? Environment { get; init; }

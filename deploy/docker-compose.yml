@@ -74,7 +74,8 @@ services:
       # turn this off only for a package you need and have looked at.
       Python__PipOnlyBinary: ${PYTHON_PIP_ONLY_BINARY:-true}
       # Set false to refuse pip installs entirely; the allowlist then only ever
-      # grants stdlib modules.
+      # grants stdlib modules. Also stops the uv builder of Admin → Python
+      # environments (their builds live under the same volume, in envs/).
       Python__PackageProvisioningEnabled: ${PYTHON_PACKAGE_PROVISIONING:-true}
       # python_snippet needs an OS sandbox in front of the interpreter, or it is refused:
       # snippet code would otherwise run with this container's filesystem, including the

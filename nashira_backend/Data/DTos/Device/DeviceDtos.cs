@@ -21,6 +21,8 @@ public class CreateDevice
     [JsonPropertyName("allow_qa")] public bool? AllowQa { get; set; }
     [JsonPropertyName("allow_production")] public bool? AllowProduction { get; set; }
     [JsonPropertyName("expected_ssh_host_key_fingerprint")] public string? ExpectedSshHostKeyFingerprint { get; set; }
+    // The Python environment the SSH runner uses for this device; null is the image's python3.
+    [JsonPropertyName("python_environment_id")] public Guid? PythonEnvironmentId { get; set; }
 }
 
 public class UpdateDevice
@@ -41,6 +43,10 @@ public class UpdateDevice
     [JsonPropertyName("allow_qa")] public bool? AllowQa { get; set; }
     [JsonPropertyName("allow_production")] public bool? AllowProduction { get; set; }
     [JsonPropertyName("expected_ssh_host_key_fingerprint")] public string? ExpectedSshHostKeyFingerprint { get; set; }
+    [JsonPropertyName("python_environment_id")] public Guid? PythonEnvironmentId { get; set; }
+    // Back to the image's python3. A null python_environment_id means "unchanged" here,
+    // like every other field of an update, so clearing needs saying.
+    [JsonPropertyName("clear_python_environment")] public bool? ClearPythonEnvironment { get; set; }
 }
 
 // Aggregate view for dashboards: the true inventory size and status mix computed
@@ -71,6 +77,7 @@ public class DeviceResponse
     [JsonPropertyName("allow_qa")] public bool AllowQa { get; set; }
     [JsonPropertyName("allow_production")] public bool AllowProduction { get; set; }
     [JsonPropertyName("has_host_key_fingerprint")] public bool HasHostKeyFingerprint { get; set; }
+    [JsonPropertyName("python_environment_id")] public Guid? PythonEnvironmentId { get; set; }
     [JsonPropertyName("created_at")] public DateTime CreatedAt { get; set; }
     [JsonPropertyName("updated_at")] public DateTime UpdatedAt { get; set; }
 }

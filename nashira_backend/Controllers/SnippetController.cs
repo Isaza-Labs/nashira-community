@@ -9,6 +9,7 @@ using nashira_backend.Exceptions;
 using nashira_backend.Services.Common;
 using nashira_backend.Services.Identity;
 using nashira_backend.Services.Worker;
+using nashira_backend.Services.Worker.Python;
 using nashira_backend.Services.Workflow;
 using SnippetEntity = nashira_backend.Data.Models.Snippet;
 using Microsoft.AspNetCore.RateLimiting;
@@ -35,12 +36,18 @@ public class CreateSnippet
     [JsonPropertyName("changes_state")] public bool? ChangesState { get; set; }
     [JsonPropertyName("logic_diagram_mermaid")] public string? LogicDiagramMermaid { get; set; }
     [JsonPropertyName("network_enabled")] public bool? NetworkEnabled { get; set; }
+    // python_snippet / ansible_playbook: the Python environment to run under. Null (or
+    // absent) is the image's python3.
+    [JsonPropertyName("python_environment_id")] public Guid? PythonEnvironmentId { get; set; }
 }
 
 public class UpdateSnippet : CreateSnippet
 {
     [JsonPropertyName("verified")] public bool? Verified { get; set; }
     [JsonPropertyName("is_active")] public bool? IsActive { get; set; }
+    // Back to the image's python3. A null python_environment_id means "unchanged" on an
+    // update, like every other field, so clearing needs saying.
+    [JsonPropertyName("clear_python_environment")] public bool? ClearPythonEnvironment { get; set; }
 }
 
 public class SnippetResponse
@@ -67,6 +74,7 @@ public class SnippetResponse
     [JsonPropertyName("changes_state")] public bool? ChangesState { get; set; }
     [JsonPropertyName("logic_diagram_mermaid")] public string? LogicDiagramMermaid { get; set; }
     [JsonPropertyName("network_enabled")] public bool NetworkEnabled { get; set; }
+    [JsonPropertyName("python_environment_id")] public Guid? PythonEnvironmentId { get; set; }
     [JsonPropertyName("verified")] public bool Verified { get; set; }
     [JsonPropertyName("is_active")] public bool IsActive { get; set; }
     [JsonPropertyName("created_at")] public DateTime CreatedAt { get; set; }
@@ -161,7 +169,8 @@ public class SnippetController : ControllerBase
                 Idempotency: dto.Idempotency,
                 LogicDiagramMermaid: dto.LogicDiagramMermaid,
                 NetworkEnabled: dto.NetworkEnabled,
-                ChangesState: dto.ChangesState),
+                ChangesState: dto.ChangesState,
+                PythonEnvironmentId: dto.PythonEnvironmentId),
             ct);
         return new CreatedAtActionResult(nameof(GetById), "Snippet", new { id = row.SnippetId }, ToResponse(row));
     }
@@ -205,6 +214,18 @@ public class SnippetController : ControllerBase
         if (dto.LogicDiagramMermaid is not null) row.LogicDiagramMermaid = dto.LogicDiagramMermaid;
         if (dto.NetworkEnabled is not null)
             row.NetworkEnabled = _catalog.RequireAdminForNetwork(dto.NetworkEnabled.Value, row.NetworkEnabled);
+        if (dto.ClearPythonEnvironment == true && dto.PythonEnvironmentId is not null)
+            throw new ValidationException(
+                "send python_environment_id or clear_python_environment, not both", "python_env_conflicting");
+        if (dto.ClearPythonEnvironment == true) row.PythonEnvironmentId = null;
+        else if (dto.PythonEnvironmentId is not null)
+        {
+            await PythonEnvironmentService.RequireExistingAsync(_db, dto.PythonEnvironmentId, ct);
+            row.PythonEnvironmentId = dto.PythonEnvironmentId;
+        }
+        // Judged on the type as saved above, like the diagram: changing a python_snippet into an
+        // ssh snippet must not leave an environment behind that nothing would honour.
+        SnippetCatalog.RequireEnvironmentApplies(row.Type, row.PythonEnvironmentId);
         if (dto.Verified is not null) row.Verified = dto.Verified.Value;
         if (dto.IsActive is not null) row.IsActive = dto.IsActive.Value;
         row.UpdatedAt = DateTime.UtcNow;
@@ -273,6 +294,7 @@ public class SnippetController : ControllerBase
             ChangesState = s.ChangesState,
             LogicDiagramMermaid = s.LogicDiagramMermaid,
             NetworkEnabled = s.NetworkEnabled,
+            PythonEnvironmentId = s.PythonEnvironmentId,
             Verified = s.Verified,
             IsActive = s.IsActive,
             CreatedAt = s.CreatedAt,

@@ -34,7 +34,10 @@ public sealed record SnippetDraft(
     // Whether a step running this snippet changes anything, for the types whose CODE this
     // row carries — a python script, a playbook. Null means the author has not said, which
     // is only legal for types whose handler can answer for itself.
-    bool? ChangesState = null);
+    bool? ChangesState = null,
+    // python_snippet / ansible_playbook: the Python environment to run under; null is the
+    // image's python3.
+    Guid? PythonEnvironmentId = null);
 
 // The one place a snippet row is validated and built.
 //
@@ -88,6 +91,10 @@ public sealed class SnippetCatalog
         if (await _db.Snippets.AnyAsync(s => s.Name == name && s.IsActive, ct))
             throw new ConflictException("a snippet with this name already exists", "snippet_name_taken");
 
+        RequireEnvironmentApplies(type, draft.PythonEnvironmentId);
+        await nashira_backend.Services.Worker.Python.PythonEnvironmentService
+            .RequireExistingAsync(_db, draft.PythonEnvironmentId, ct);
+
         var taken = await TakenSlugsAsync(ct);
 
         var now = DateTime.UtcNow;
@@ -108,6 +115,7 @@ public sealed class SnippetCatalog
             ChangesState = draft.ChangesState,
             LogicDiagramMermaid = draft.LogicDiagramMermaid,
             NetworkEnabled = RequireAdminForNetwork(draft.NetworkEnabled ?? false, currentlyEnabled: false),
+            PythonEnvironmentId = draft.PythonEnvironmentId,
             CreatedBy = _user.IsAuthenticated ? _user.UserId : null,
             UpdatedBy = _user.IsAuthenticated ? _user.UserId : null,
             IsActive = true,
@@ -143,6 +151,21 @@ public sealed class SnippetCatalog
             throw new ValidationException(
                 $"unknown snippet type '{t}'. Known types: {string.Join(", ", _registry.KnownTypes.OrderBy(x => x))}");
         return t;
+    }
+
+    // The snippet types that start a Python interpreter, and so can be given one.
+    public static bool UsesPythonEnvironment(string? type) =>
+        type is SnippetEntity.TypePythonSnippet or SnippetEntity.TypeAnsiblePlaybook;
+
+    // Refused rather than stored and ignored: an `ssh` snippet carrying an environment
+    // would read as though it chose the SSH runner's Python, which is the DEVICE's call.
+    public static void RequireEnvironmentApplies(string? type, Guid? environmentId)
+    {
+        if (environmentId is not null && !UsesPythonEnvironment(type))
+            throw new ValidationException(
+                $"python_environment_id only applies to {SnippetEntity.TypePythonSnippet} and "
+                + $"{SnippetEntity.TypeAnsiblePlaybook} snippets — an SSH device's environment is set on the device",
+                "python_env_not_applicable");
     }
 
     public static string NormalizeTargetMode(string? raw)

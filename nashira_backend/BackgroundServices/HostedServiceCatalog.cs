@@ -34,6 +34,11 @@ public static class HostedServiceCatalog
             // Mixed by nature; see the note above. Guarded responsibility by
             // responsibility inside its own sweep.
             Own<RetentionHostedService>(ModuleId.Core),
+            // Builds the uv Python environments admins define. Mixed like retention:
+            // the SSH runner (fleet) and python_snippet (automation) both use them, and
+            // the catalog cannot say "either". Owned by core and guarded per sweep —
+            // it builds nothing unless fleet or automation is enabled.
+            Own<PythonEnvironmentBuilderHostedService>(ModuleId.Core),
 
             // ── automation ────────────────────────────────────────────────────
             // The job queue's two halves: cron firings re-base, the worker claims with

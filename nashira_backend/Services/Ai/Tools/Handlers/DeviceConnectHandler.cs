@@ -158,6 +158,7 @@ public sealed class DeviceConnectHandler : IToolHandler
             StopOnError = stopOnError,
             UseStructured = structured,
             ExpectedFingerprint = device.ExpectedSshHostKeyFingerprint,
+            PythonEnvironmentId = device.PythonEnvironmentId,
         };
 
         var outcome = await _runner.RunAsync(request, ct);
@@ -170,6 +171,9 @@ public sealed class DeviceConnectHandler : IToolHandler
                 error_kind = outcome.ErrorKind,
                 device = device.DeviceName,
                 host = device.IpAddress,
+                python_environment = outcome.PythonEnvironment,
+                ssh_env_fallback = outcome.SshEnvFallback,
+                ssh_env_fallback_error = outcome.SshEnvFallbackError,
             });
         }
 
@@ -194,6 +198,11 @@ public sealed class DeviceConnectHandler : IToolHandler
             device_type_fallback = result.DeviceTypeFallback,
             host_key_fingerprint = result.HostKeyFingerprint,
             results = rows,
+            // Which Python ran the session, and whether it was the automatic retry under
+            // the SSH fallback environment (paramiko 5 dropped `ssh-rsa`).
+            python_environment = outcome.PythonEnvironment,
+            ssh_env_fallback = outcome.SshEnvFallback,
+            ssh_env_fallback_error = outcome.SshEnvFallbackError,
         });
     }
 

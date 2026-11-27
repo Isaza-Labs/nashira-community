@@ -170,6 +170,25 @@ def _normalize_pin(fp: str) -> str:
     return s.rstrip("=")
 
 
+def _key_classes(paramiko_module) -> tuple:
+    """The private-key classes this paramiko provides, in parse order
+    (Ed25519 → ECDSA → RSA → DSS).
+
+    `DSSKey` was removed in paramiko 4.0. Naming it directly raised
+    AttributeError before any key was tried, so EVERY key-based credential
+    failed on paramiko >= 4 — including the Ed25519 and RSA keys that
+    paramiko still supports. Looked up with getattr and dropped when
+    absent, so the same runner works under the image's paramiko and under
+    a pinned Python environment's."""
+    candidates = (
+        getattr(paramiko_module, "Ed25519Key", None),
+        getattr(paramiko_module, "ECDSAKey", None),
+        getattr(paramiko_module, "RSAKey", None),
+        getattr(paramiko_module, "DSSKey", None),
+    )
+    return tuple(cls for cls in candidates if cls is not None)
+
+
 def _load_pkey(pem: str, passphrase: str | None):
     """Try every Paramiko key class in order (Ed25519 → ECDSA → RSA → DSS)
     because PEM headers don't always reveal the curve/key type reliably
@@ -177,20 +196,17 @@ def _load_pkey(pem: str, passphrase: str | None):
     import paramiko  # local import so import cost is paid once, at connect
 
     errors: list[str] = []
-    for KeyCls in (
-        paramiko.Ed25519Key,
-        paramiko.ECDSAKey,
-        paramiko.RSAKey,
-        paramiko.DSSKey,
-    ):
+    key_classes = _key_classes(paramiko)
+    for KeyCls in key_classes:
         buf = StringIO(pem)
         try:
             return KeyCls.from_private_key(buf, password=passphrase or None)
         except Exception as e:  # noqa: BLE001 — try next key class
             errors.append(f"{KeyCls.__name__}: {e}")
+    tried = "/".join(cls.__name__.replace("Key", "") for cls in key_classes)
     raise ValueError(
         "could not parse private_key as any supported format "
-        f"(tried Ed25519/ECDSA/RSA/DSS): {errors}"
+        f"(tried {tried}): {errors}"
     )
 
 

@@ -391,6 +391,7 @@ public sealed class SnippetNodeExecutor : INodeExecutor
             ScriptLanguage = snippet.ScriptLanguage,
             TimeoutSeconds = snippet.TimeoutSeconds <= 0 ? 60 : snippet.TimeoutSeconds,
             NetworkEnabled = snippet.NetworkEnabled,
+            PythonEnvironmentId = snippet.PythonEnvironmentId,
             Environment = _scope.Environment,
             WorkflowRunId = _scope.WorkflowRunId,
             TriggeredBy = _scope.TriggeredBy,

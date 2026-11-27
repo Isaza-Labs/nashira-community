@@ -26,16 +26,18 @@ public sealed class PythonSnippetHandler : ISnippetHandler
     private readonly ISecretResolver _secrets;
     private readonly IConfiguration _config;
     private readonly ILogger<PythonSnippetHandler> _logger;
+    private readonly IPythonEnvironmentResolver? _environments;
 
     public PythonSnippetHandler(
         AppDbContext db, IPythonSandbox sandbox, ISecretResolver secrets, IConfiguration config,
-        ILogger<PythonSnippetHandler> logger)
+        ILogger<PythonSnippetHandler> logger, IPythonEnvironmentResolver? environments = null)
     {
         _db = db;
         _sandbox = sandbox;
         _secrets = secrets;
         _config = config;
         _logger = logger;
+        _environments = environments;
     }
 
     public string Type => Data.Models.Snippet.TypePythonSnippet;
@@ -128,6 +130,39 @@ public sealed class PythonSnippetHandler : ISnippetHandler
             return SnippetResult.Fail($"module(s) {string.Join("; ", parts)}", "module_denied");
         }
 
+        // The snippet's Python environment, when it names one. Why this stays inside the
+        // sandbox's guarantees:
+        //   - It only chooses the interpreter binary. The path comes from the resolver —
+        //     a slug-named directory under the packages volume, set by an Admin — never
+        //     from the step's input, so a workflow cannot point the sandbox at a binary.
+        //   - The import allowlist above has already run and is enforced again inside the
+        //     interpreter by the harness. A package present in the environment but not on
+        //     the allowlist is exactly as unimportable as one that is not installed.
+        //   - PythonSandbox applies the same wrapper, `-I -B -u`, scrubbed environment,
+        //     per-run working directory, deadline and output caps to it. `-I` still keeps
+        //     PYTHONPATH and the user site out; the venv's own site-packages is part of the
+        //     interpreter's prefix, which is the point of choosing it.
+        //   - The approved-packages dir is appended to sys.path AFTER the environment's
+        //     site-packages, so the environment's pinned versions win and a pip-approved
+        //     module that is not in the environment still imports as before.
+        // Resolved before any secret is decrypted: an unusable environment fails the step
+        // without plaintext ever having existed.
+        string? interpreter = null;
+        if (request.PythonEnvironmentId is { } environmentId)
+        {
+            if (_environments is null)
+                return SnippetResult.Fail("Python environments are not available in this process",
+                    PythonEnvironmentUnavailableException.Code);
+            try
+            {
+                interpreter = (await _environments.ResolveAsync(environmentId, ct)).Interpreter;
+            }
+            catch (PythonEnvironmentUnavailableException ex)
+            {
+                return SnippetResult.Fail(ex.Message, PythonEnvironmentUnavailableException.Code);
+            }
+        }
+
         // The script needs plaintext to act, but its output cannot be trusted to
         // distinguish public data from encoded secrets. Track resolution, not just matches.
         var (scriptInput, secretValues) = await ResolveSecretsAsync(request.Input, ct);
@@ -142,7 +177,8 @@ public sealed class PythonSnippetHandler : ISnippetHandler
                     TimeoutSeconds: request.TimeoutSeconds,
                     NetworkEnabled: networkEnabled,
                     AllowedModules: allowed,
-                    PackagesDir: PythonPackagesLayout.ResolveSiteDirIfPopulated(_config)),
+                    PackagesDir: PythonPackagesLayout.ResolveSiteDirIfPopulated(_config),
+                    Interpreter: interpreter),
                 ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException &&

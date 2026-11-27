@@ -113,6 +113,13 @@ public class Snippet : BaseModel
     // jail; see PythonSandbox for what is and is not enforced.
     public bool NetworkEnabled { get; set; }
 
+    // python_snippet / ansible_playbook only: the Python environment the code runs under.
+    // Null means the image's python3, the behaviour before environments existed. The
+    // sandbox's protections are identical either way — the environment changes which
+    // interpreter starts, never what the snippet is allowed to import (see
+    // PythonSnippetHandler).
+    public Guid? PythonEnvironmentId { get; set; }
+
     public Guid? CreatedBy { get; set; }
 
     // Who last saved this snippet. A triggered run that reaches it never executes

@@ -17,6 +17,7 @@
 		type Snippet,
 		type SnippetPayload
 	} from '$lib/api/snippets.api';
+	import PythonEnvironmentPicker from '$lib/components/python/PythonEnvironmentPicker.svelte';
 	import {
 		Modal,
 		Button,
@@ -58,6 +59,8 @@
 	let fIdempotency = $state('');
 	let fDiagram = $state('');
 	let fNetworkEnabled = $state(false);
+	// '' is "System default" (the image's python3).
+	let fPythonEnvironmentId = $state('');
 	// Carried, not edited. The form has no control for either, but both have to
 	// survive a round trip — above all `changes_state`: for a python_snippet, null
 	// means "the author has not said" and every step using the row FAILS until a
@@ -78,6 +81,9 @@
 		fType === 'transform' || fType === 'python_snippet' || fType === 'ansible_playbook'
 	);
 	const isPython = $derived(fType === 'python_snippet');
+	// The types that start a Python interpreter, and so can run under an environment.
+	// The API refuses an environment on any other type.
+	const usesPythonEnvironment = $derived(fType === 'python_snippet' || fType === 'ansible_playbook');
 
 	// The API refuses these four without a diagram (SnippetCatalog.ValidateLogicDiagram),
 	// so the field says so before the save does. Mirrors the backend list rather than
@@ -113,6 +119,7 @@
 		fIdempotency = s?.idempotency ?? '';
 		fDiagram = s?.logicDiagramMermaid ?? '';
 		fNetworkEnabled = s?.networkEnabled ?? false;
+		fPythonEnvironmentId = s?.pythonEnvironmentId ?? '';
 		fScriptLanguage = s?.scriptLanguage ?? null;
 		fChangesState = s?.changesState ?? null;
 		sourceId = '';
@@ -168,6 +175,7 @@
 			fIdempotency = s.idempotency ?? '';
 			fDiagram = s.logicDiagramMermaid ?? '';
 			fNetworkEnabled = s.networkEnabled;
+			fPythonEnvironmentId = s.pythonEnvironmentId ?? '';
 			fScriptLanguage = s.scriptLanguage;
 			fChangesState = s.changesState;
 		} catch (e) {
@@ -202,6 +210,14 @@
 			idempotency: fIdempotency,
 			logicDiagramMermaid: fDiagram,
 			networkEnabled: fNetworkEnabled,
+			// Only the Python-starting types carry one. A snippet switched to another
+			// type drops the environment it had (null clears it); one that never had
+			// one sends nothing.
+			pythonEnvironmentId: usesPythonEnvironment
+				? fPythonEnvironmentId || null
+				: snippet?.pythonEnvironmentId
+					? null
+					: undefined,
 			scriptLanguage: fScriptLanguage,
 			changesState: fChangesState
 		};
@@ -293,6 +309,15 @@
 					hint={isPython
 						? 'Python. Reads `input`, sets `result`. Imports are limited to the admin allowlist.'
 						: 'JSON object of output name → path over the step input, e.g. {"ip":"device.ip"}'}
+				/>
+			{/if}
+
+			{#if usesPythonEnvironment}
+				<PythonEnvironmentPicker
+					bind:value={fPythonEnvironmentId}
+					hint={isPython
+						? 'The interpreter the script runs under. The import allowlist applies the same either way.'
+						: 'ansible-playbook comes from this environment (add ansible-core to its requirements).'}
 				/>
 			{/if}
 
