@@ -32,6 +32,7 @@
 		type Column
 	} from '$lib/components/ui';
 	import RoleGate from '$lib/components/auth/RoleGate.svelte';
+	import PythonEnvironmentMultiPicker from './PythonEnvironmentMultiPicker.svelte';
 	import { Plus, Pencil, Trash2, Globe, RotateCw } from 'lucide-svelte';
 
 	let items = $state<PythonModule[]>([]);
@@ -55,6 +56,9 @@
 	// The environments a pip row can be installed in. Loaded alongside the list; a
 	// failure here only hides the environment choices, it does not break the table.
 	let environments = $state<PythonEnvironment[]>([]);
+	// True when that list could not be loaded: the targets already on a row are then
+	// sent back as they are, rather than filtered against an empty list and lost.
+	let environmentsFailed = $state(false);
 
 	const columns: Column[] = [
 		{ key: 'module', header: 'Module' },
@@ -83,15 +87,27 @@
 		}
 		try {
 			environments = (await listPythonEnvironments()).items;
+			environmentsFailed = false;
 		} catch {
 			environments = [];
+			environmentsFailed = true;
 		}
 	}
 
-	function toggleEnvironment(id: string, on: boolean) {
-		fEnvironmentIds = on
-			? [...fEnvironmentIds.filter((x) => x !== id), id]
-			: fEnvironmentIds.filter((x) => x !== id);
+	// The "Installed in" cell shows this many environment badges; the rest collapse
+	// into a "+N" whose tooltip lists every target, so a row with many stays one line.
+	const MAX_TARGET_BADGES = 3;
+	// Rows whose "+N" was expanded in place.
+	let expandedTargets = $state<string[]>([]);
+
+	function toggleTargets(id: string) {
+		expandedTargets = expandedTargets.includes(id)
+			? expandedTargets.filter((x) => x !== id)
+			: [...expandedTargets, id];
+	}
+
+	function envTone(status: string) {
+		return status === 'ready' ? 'primary' : status === 'failed' ? 'error' : 'warning';
 	}
 
 	$effect(() => {
@@ -173,8 +189,11 @@
 			pipSpec: spec,
 			installInSystem: fInstallInSystem,
 			// Only environments that still exist: one deleted while the form was open
-			// would be refused by the server.
-			environmentIds: fEnvironmentIds.filter((id) => environments.some((e) => e.id === id))
+			// would be refused by the server. If the list never loaded there is nothing
+			// to check against, so the targets go back unchanged.
+			environmentIds: environmentsFailed
+				? fEnvironmentIds
+				: fEnvironmentIds.filter((id) => environments.some((e) => e.id === id))
 		};
 		try {
 			if (editing) await updatePythonModule(editing.id, payload);
@@ -287,17 +306,40 @@
 						{/if}
 					{:else if col.key === 'targets'}
 						{#if row.source === 'pip'}
+							{@const expanded = expandedTargets.includes(row.id)}
 							<div class="flex flex-wrap gap-1">
 								{#if row.installInSystem}
 									<Badge tone="neutral">System Python</Badge>
 								{/if}
-								{#each row.environments as env (env.id)}
+								{#each expanded ? row.environments : row.environments.slice(0, MAX_TARGET_BADGES) as env (env.id)}
 									<span title={`Environment ${env.name} — ${env.status}`}>
-										<Badge tone={env.status === 'ready' ? 'primary' : env.status === 'failed' ? 'error' : 'warning'}>
+										<Badge tone={envTone(env.status)}>
 											{env.name}{env.status === 'ready' ? '' : ` · ${env.status}`}
 										</Badge>
 									</span>
 								{/each}
+								{#if row.environments.length > MAX_TARGET_BADGES}
+									{@const all = [
+										...(row.installInSystem ? ['System Python'] : []),
+										...row.environments.map((e) => `${e.name} (${e.status})`)
+									].join('\n')}
+									<button
+										type="button"
+										class="rounded-full text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500/40"
+										title={expanded ? undefined : all}
+										aria-expanded={expanded}
+										aria-label={expanded
+											? 'Show fewer environments'
+											: `Show all ${row.environments.length} environments`}
+										onclick={() => toggleTargets(row.id)}
+									>
+										{#if expanded}
+											<span class="px-1 text-surface-600-400 underline">Show less</span>
+										{:else}
+											<Badge tone="neutral">+{row.environments.length - MAX_TARGET_BADGES}</Badge>
+										{/if}
+									</button>
+								{/if}
 								{#if !row.installInSystem && row.environments.length === 0}
 									<span class="text-xs text-surface-600-400">nowhere</span>
 								{/if}
@@ -371,16 +413,13 @@
 			<fieldset class="space-y-2">
 				<legend class="mb-1 text-sm font-medium text-surface-800-200">Install in</legend>
 				<Checkbox bind:checked={fInstallInSystem} label="System Python" />
-				{#each environments as env (env.id)}
-					<div class="flex items-center gap-2">
-						<Checkbox
-							bind:checked={() => fEnvironmentIds.includes(env.id), (on) => toggleEnvironment(env.id, on)}
-							label={env.name}
-						/>
-						<StatusBadge status={env.status} />
-					</div>
-				{/each}
-				{#if environments.length === 0}
+				<PythonEnvironmentMultiPicker bind:value={fEnvironmentIds} {environments} />
+				{#if environmentsFailed}
+					<p class="text-xs text-surface-600-400">
+						The environments couldn't be loaded, so they can't be chosen right now. The targets already
+						set are kept as they are when you save.
+					</p>
+				{:else if environments.length === 0}
 					<p class="text-xs text-surface-600-400">
 						No uv environments yet — create one on the
 						<a class="underline" href="/admin/python?tab=environments">Environments</a> tab to install

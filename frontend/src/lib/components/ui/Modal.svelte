@@ -23,6 +23,10 @@
 	} = $props();
 
 	let dialog = $state<HTMLDialogElement | undefined>(undefined);
+	// Per-instance id so a dialog stacked over another (a picker over a form) is
+	// named by its own title, never by the one underneath.
+	const uid = $props.id();
+	const titleId = `${uid}-title`;
 
 	$effect(() => {
 		const d = dialog;
@@ -56,6 +60,7 @@
 
 <dialog
 	bind:this={dialog}
+	aria-labelledby={title ? titleId : undefined}
 	class={`ui-surface m-auto w-[calc(100%-2rem)] ${widths[size]} p-0 text-surface-950-50 backdrop:bg-black/50`}
 	oncancel={(e) => {
 		e.preventDefault();
@@ -69,7 +74,7 @@
 		<div
 			class="flex items-center justify-between gap-4 border-b border-surface-200-800 px-5 py-3"
 		>
-			<h2 class="text-base font-semibold">{title}</h2>
+			<h2 id={titleId} class="text-base font-semibold">{title}</h2>
 			<button
 				type="button"
 				class="rounded-md px-1.5 text-xl leading-none text-surface-600-400 hover:bg-surface-100-900"

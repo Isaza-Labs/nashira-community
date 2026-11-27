@@ -541,6 +541,10 @@ export const integrations: DocSection[] = [
 		blocks: [
 			{ kind: 'prose', text: 'In the sidebar: **Govern → Python**, on the **Packages** tab.' },
 			{
+				kind: 'prose',
+				text: 'In the form, **Install in** has a **System Python** checkbox and a short summary of the chosen uv environments; **Choose environments…** opens a searchable list to pick them from, and only **Apply** changes the selection. In the table, **Installed in** shows the first few environments and a **+N** that expands the row in place to list them all (**Show less** folds it back).'
+			},
+			{
 				kind: 'params',
 				title: 'Fields',
 				rows: [
