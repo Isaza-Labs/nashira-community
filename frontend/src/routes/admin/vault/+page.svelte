@@ -43,6 +43,7 @@
 		Input,
 		Select,
 		Textarea,
+		Checkbox,
 		Alert,
 		ErrorState,
 		SearchInput,
@@ -148,6 +149,8 @@
 		// is named (IntegrationAuth, McpConnectionFactory).
 		if (kind === 'api_key') parts.push(c.apiKeyHeader ? `header ${c.apiKeyHeader}` : 'header X-API-Key (default)');
 		if (kind === 'oauth2' && c.clientId) parts.push(`client ${c.clientId}`);
+		if (c.allowedHosts) parts.push(`hosts ${c.allowedHosts.split('\n').join(', ')}`);
+		if (c.operatorAssignable) parts.push('Operators may assign');
 		return parts.join(' · ');
 	}
 
@@ -533,6 +536,13 @@
 	let fClientSecret = $state('');
 	let fTokenUrl = $state('');
 	let fScopes = $state('');
+	// Where device SSH may send the credential, and whether Operators may link it.
+	// Delegation needs a scope: the box unticks itself when the hosts are cleared.
+	let fAllowedHosts = $state('');
+	let fAssignable = $state(false);
+	$effect(() => {
+		if (!fAllowedHosts.trim() && fAssignable) fAssignable = false;
+	});
 	let fDescription = $state('');
 	let fValue = $state('');
 
@@ -568,6 +578,8 @@
 		fClientId = '';
 		fTokenUrl = '';
 		fScopes = '';
+		fAllowedHosts = '';
+		fAssignable = false;
 		fDescription = '';
 		formError = '';
 	}
@@ -637,6 +649,8 @@
 			fClientId = c.clientId ?? '';
 			fTokenUrl = c.tokenUrl ?? '';
 			fScopes = c.scopes ?? '';
+			fAllowedHosts = c.allowedHosts ?? '';
+			fAssignable = c.operatorAssignable;
 		} else if (e.secret) {
 			fDescription = e.secret.description ?? '';
 		}
@@ -876,7 +890,9 @@
 				clientId: fClientId.trim(),
 				clientSecret: fClientSecret,
 				tokenUrl: fTokenUrl.trim(),
-				scopes: fScopes.trim()
+				scopes: fScopes.trim(),
+				allowedHosts: fAllowedHosts.trim(),
+				operatorAssignable: fAssignable && !!fAllowedHosts.trim()
 			};
 			const c = entry?.credential;
 			run = c ? () => updateCredential(c.id, payload) : () => createCredential(payload);
@@ -1370,6 +1386,22 @@
 					</div>
 					<Input label="Token URL" bind:value={fTokenUrl} disabled={saving} placeholder="https://idp.example.com/oauth2/token" required />
 					<Input label="Scopes" bind:value={fScopes} disabled={saving} hint="Space-separated, e.g. read:devices write:configs" />
+				{/if}
+
+				{#if kind === 'login' || kind === 'ssh_key'}
+					<Textarea
+						label="Allowed hosts"
+						bind:value={fAllowedHosts}
+						disabled={saving}
+						rows={3}
+						placeholder={'10.0.0.0/24\ncore-sw.example.net'}
+						hint="One per line: IP addresses, CIDR networks or exact hostnames. Device SSH refuses to send this credential anywhere else. Blank = not restricted, and only Admins can link it."
+					/>
+					<Checkbox
+						label="Operators may assign this credential"
+						bind:checked={fAssignable}
+						disabled={saving || !fAllowedHosts.trim()}
+					/>
 				{/if}
 			{/if}
 		</div>

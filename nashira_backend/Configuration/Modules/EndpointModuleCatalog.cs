@@ -78,6 +78,7 @@ public static class EndpointModuleCatalog
             // ── secrets ───────────────────────────────────────────────────────
             [typeof(SecretsController)] = [ModuleId.Secrets],
             [typeof(CredentialController)] = [ModuleId.Secrets],
+            [typeof(AssignableCredentialController)] = [ModuleId.Secrets],
 
             // ── git ───────────────────────────────────────────────────────────
             [typeof(GitController)] = [ModuleId.Git],

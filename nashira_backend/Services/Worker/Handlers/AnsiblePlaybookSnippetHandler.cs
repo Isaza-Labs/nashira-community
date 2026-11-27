@@ -5,6 +5,8 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
+using nashira_backend.Services.Ai.Secrets;
+using nashira_backend.Services.Identity;
 using nashira_backend.Services.Security;
 using nashira_backend.Services.Workflow;
 
@@ -20,13 +22,17 @@ namespace nashira_backend.Services.Worker.Handlers;
 //   host    (A) — one literal address outside inventory
 //   targets (A) — same as `hosts`
 // Inventory devices get the run's environment gate (the same allow trio the ssh
-// snippet enforces) and their credential's password; a literal `host` gets neither.
+// snippet enforces) and their credential's password — refused outright when the
+// run's user is not an Admin (the playbook can read the password it is handed;
+// DeviceTrustPolicy R5), and when the credential has a scope that does not cover the
+// device's address; a literal `host` gets neither.
 // `hosts: all` means the run's target devices, which this handler is not handed —
 // it fails with `not_supported` and says so rather than guessing.
 //
-// The inventory written for the run lists every host; one shared password travels
-// over env (ANSIBLE_SSH_PASS, never argv), and only when hosts need different
-// passwords are they written per host into the inventory file — owner-only, in a
+// The inventory written for the run lists every host; a password EVERY host shares
+// travels over env (ANSIBLE_SSH_PASS, never argv), since that variable reaches every
+// host. Otherwise (different passwords, or some hosts without one, such as a literal
+// `host`) they are written per host into the inventory file — owner-only, in a
 // temp dir deleted when the run ends. The whole resolved input travels as
 // --extra-vars so playbooks read runtime parameters via `{{ key }}` lookups.
 // Key-based auth is not wired — matches the FlowWeaver handler's scope.
@@ -37,6 +43,7 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
 {
     private readonly AppDbContext _db;
     private readonly ISecretProtector _protector;
+    private readonly ICurrentUser _user;
     private readonly ILogger<AnsiblePlaybookSnippetHandler> _logger;
 
     /// <summary>
@@ -59,10 +66,12 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
         input.ValueKind == JsonValueKind.Object ? input.GetRawText() : "{}";
 
     public AnsiblePlaybookSnippetHandler(
-        AppDbContext db, ISecretProtector protector, ILogger<AnsiblePlaybookSnippetHandler> logger)
+        AppDbContext db, ISecretProtector protector, ICurrentUser user,
+        ILogger<AnsiblePlaybookSnippetHandler> logger)
     {
         _db = db;
         _protector = protector;
+        _user = user;
         _logger = logger;
     }
 
@@ -72,7 +81,7 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
     public IdempotencyKind DefaultIdempotency => IdempotencyKind.NonReversible;
 
     // One line of the inventory the run is given.
-    private sealed record Target(string Host, string? Username, string? Password);
+    internal sealed record Target(string Host, string? Username, string? Password);
 
     public async Task<SnippetResult> ExecuteAsync(SnippetRequest request, CancellationToken ct)
     {
@@ -91,62 +100,8 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
 
         var timeoutSec = Math.Clamp(request.TimeoutSeconds <= 0 ? 600 : request.TimeoutSeconds, 10, 3600);
 
-        var (deviceRefs, all) = HostRefs(input);
-        if (all)
-            return SnippetResult.Fail(
-                "`hosts: all` (the run's target devices) is not supported by this build — list the device names",
-                "not_supported");
-
-        // Resolve every inventory device: environment gate, then credential.
-        var targets = new List<Target>();
-        foreach (var deviceRef in deviceRefs)
-        {
-            var device = await _db.Devices.AsNoTracking().FirstOrDefaultAsync(
-                d => d.IsActive && (d.DeviceName == deviceRef || d.IpAddress == deviceRef), ct);
-            if (device is null)
-                return SnippetResult.Fail($"device '{deviceRef}' is not in inventory", "not_found");
-
-            if (DeviceEnvironmentPolicy.Refusal(device, request.Environment) is { } refusal)
-            {
-                _logger.LogWarning(
-                    "workflow.ansible.environment_refused device={Device} environment={Environment}",
-                    device.DeviceName, request.Environment);
-                return SnippetResult.Fail(refusal, "environment_denied");
-            }
-
-            string? username = null, password = null;
-            if (device.CredentialId is { } credId)
-            {
-                var credential = await _db.Credentials.AsNoTracking()
-                    .FirstOrDefaultAsync(c => c.IsActive && c.CredentialId == credId, ct);
-                if (credential is not null
-                    && credential.AuthMethod == Credential.AuthMethodPassword
-                    && !string.IsNullOrWhiteSpace(credential.Username))
-                {
-                    username = credential.Username;
-                    try
-                    {
-                        password = _protector.Decrypt(credential.EncryptedPassword);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "workflow.ansible.decrypt_failed credential={Credential}",
-                            credential.Name);
-                    }
-                }
-            }
-            targets.Add(new Target(device.IpAddress, username, password));
-        }
-
-        // `host` is a literal for machines outside inventory.
-        var literalHost = Str(input, "host");
-        if (!string.IsNullOrWhiteSpace(literalHost))
-            targets.Add(new Target(literalHost!.Trim(), null, null));
-
-        if (targets.Count == 0)
-            return SnippetResult.Fail(
-                "cannot resolve a target — give `hosts` (inventory names), `device` (inventory name or IP) or `host`",
-                "bad_input");
+        var (targets, failure) = await ResolveTargetsAsync(input, request.Environment, ct);
+        if (failure is not null) return failure;
 
         var extraVarsJson = ExtraVarsJson(input);
 
@@ -160,11 +115,11 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
             await File.WriteAllTextAsync(playbookFile, playbook, ct);
 
             // One password shared by every host travels as an env var rather than on
-            // the CLI, so it never appears in the process listing. Only when hosts
-            // need different passwords do they go per host into the inventory —
-            // owner-only, and gone with the temp dir.
+            // the CLI, so it never appears in the process listing. Otherwise they go
+            // per host into the inventory — owner-only, and gone with the temp dir —
+            // so a host with no credential is never handed another host's password.
             var passwords = targets.Select(t => t.Password).Where(p => !string.IsNullOrEmpty(p)).Distinct().ToList();
-            var sharedPassword = passwords.Count == 1 ? passwords[0] : null;
+            var sharedPassword = SharedPassword(targets);
 
             var inventory = new StringBuilder();
             inventory.AppendLine("[targets]");
@@ -178,7 +133,7 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
                 inventory.AppendLine();
             }
             await File.WriteAllTextAsync(inventoryFile, inventory.ToString(), ct);
-            if (sharedPassword is null && passwords.Count > 1)
+            if (sharedPassword is null && passwords.Count > 0)
                 File.SetUnixFileMode(inventoryFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
             var psi = new ProcessStartInfo
@@ -222,8 +177,10 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
                     retryable: true);
             }
 
-            var stdout = await stdoutTask;
-            var stderr = await stderrTask;
+            // Everything the step reports is redacted before it is used: the recap
+            // parsed below, the output, the logs and the error all derive from these.
+            var stdout = RedactPasswords(await stdoutTask, passwords);
+            var stderr = RedactPasswords(await stderrTask, passwords);
             var success = proc.ExitCode == 0;
             var recaps = targets.ToDictionary(t => t.Host, t => ParsePlayRecap(stdout, t.Host));
             var firstHost = targets[0].Host;
@@ -267,6 +224,130 @@ public sealed class AnsiblePlaybookSnippetHandler : ISnippetHandler
         {
             try { Directory.Delete(tmpDir, recursive: true); } catch { /* cleanup best effort */ }
         }
+    }
+
+    // Every target of the run, or the step's failure. Inventory devices get the
+    // environment gate and then their linked credential — whose scope must cover the
+    // device's address before anything is decrypted: an out-of-scope credential fails
+    // the step rather than letting the play run without it. A literal `host` gets
+    // neither. Internal so the gate is testable without a Linux worker.
+    internal async Task<(List<Target> Targets, SnippetResult? Failure)> ResolveTargetsAsync(
+        JsonElement input, string? environment, CancellationToken ct)
+    {
+        var targets = new List<Target>();
+        var (deviceRefs, all) = HostRefs(input);
+        if (all)
+            return (targets, SnippetResult.Fail(
+                "`hosts: all` (the run's target devices) is not supported by this build — list the device names",
+                "not_supported"));
+
+        foreach (var deviceRef in deviceRefs)
+        {
+            var device = await _db.Devices.AsNoTracking().FirstOrDefaultAsync(
+                d => d.IsActive && (d.DeviceName == deviceRef || d.IpAddress == deviceRef), ct);
+            if (device is null)
+                return (targets, SnippetResult.Fail($"device '{deviceRef}' is not in inventory", "not_found"));
+
+            if (DeviceEnvironmentPolicy.Refusal(device, environment) is { } refusal)
+            {
+                _logger.LogWarning(
+                    "workflow.ansible.environment_refused device={Device} environment={Environment}",
+                    device.DeviceName, environment);
+                return (targets, SnippetResult.Fail(refusal, "environment_denied"));
+            }
+
+            string? username = null, password = null;
+            if (device.CredentialId is { } credId)
+            {
+                var credential = await _db.Credentials.AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.IsActive && c.CredentialId == credId, ct);
+                // Admin first, before the scope: a non-Admin learns nothing about scopes.
+                // No OperatorAssignable delegation (unlike the ssh step): the playbook
+                // can read the password it is handed. See DeviceTrustPolicy R5.
+                if (DeviceTrustPolicy.PlaybookCredentialRefusal(_user, credential, device.DeviceName) is { } denied)
+                {
+                    _logger.LogWarning(
+                        "workflow.ansible.credential_access_denied device={Device}", device.DeviceName);
+                    return (targets, SnippetResult.Fail(denied, SecretResolver.AccessDeniedCode));
+                }
+                if (credential is not null && !CredentialScope.Permits(credential, device.IpAddress))
+                {
+                    _logger.LogWarning(
+                        "workflow.ansible.credential_out_of_scope device={Device} credential={Credential}",
+                        device.DeviceName, credential.Name);
+                    return (targets, SnippetResult.Fail(
+                        CredentialScope.OutOfScopeMessage(credential.Name, device.DeviceName),
+                        CredentialScope.OutOfScopeCode));
+                }
+                if (DeviceTrustPolicy.HandsPasswordToPlaybook(credential))
+                {
+                    username = credential!.Username;
+                    try
+                    {
+                        password = _protector.Decrypt(credential.EncryptedPassword);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "workflow.ansible.decrypt_failed credential={Credential}",
+                            credential.Name);
+                    }
+                }
+            }
+            targets.Add(new Target(device.IpAddress, username, password));
+        }
+
+        // `host` is a literal for machines outside inventory.
+        var literalHost = Str(input, "host");
+        if (!string.IsNullOrWhiteSpace(literalHost))
+            targets.Add(new Target(literalHost!.Trim(), null, null));
+
+        if (targets.Count == 0)
+            return (targets, SnippetResult.Fail(
+                "cannot resolve a target — give `hosts` (inventory names), `device` (inventory name or IP) or `host`",
+                "bad_input"));
+
+        return (targets, null);
+    }
+
+    /// <summary>
+    /// The one password every target shares, or null. Only when EVERY target carries
+    /// that same password may it travel as ANSIBLE_SSH_PASS: that variable applies to
+    /// every host in the run, so a target without a credential (a literal `host`, or a
+    /// device with none) must not receive another device's password through it.
+    /// </summary>
+    internal static string? SharedPassword(IReadOnlyList<Target> targets)
+    {
+        if (targets.Count == 0) return null;
+        var first = targets[0].Password;
+        if (string.IsNullOrEmpty(first)) return null;
+        return targets.All(t => t.Password == first) ? first : null;
+    }
+
+    public const string Redacted = "[redacted]";
+
+    /// <summary>
+    /// <paramref name="text"/> with every literal occurrence of each password replaced by
+    /// <c>[redacted]</c>; longest first, so a password containing another is not left
+    /// half-visible. Passwords shorter than 4 characters are skipped: replacing them would
+    /// shred the output.
+    /// </summary>
+    /// <remarks>
+    /// Defence in depth against accidental disclosure (a verbose module, a failed task
+    /// echoing its arguments). It does not stop a playbook that sets out to leak the
+    /// value: base64, splitting or reversing it gets through. That is what the Admin
+    /// requirement in <see cref="DeviceTrustPolicy.PlaybookCredentialRefusal"/> is for.
+    /// </remarks>
+    internal static string RedactPasswords(string? text, IEnumerable<string?> passwords)
+    {
+        if (string.IsNullOrEmpty(text)) return text ?? string.Empty;
+        foreach (var secret in passwords
+                     .Where(p => p is { Length: >= 4 })
+                     .Distinct(StringComparer.Ordinal)
+                     .OrderByDescending(p => p!.Length))
+        {
+            text = text.Replace(secret!, Redacted, StringComparison.Ordinal);
+        }
+        return text;
     }
 
     // The inventory references the payload names, and whether it asked for `all`.

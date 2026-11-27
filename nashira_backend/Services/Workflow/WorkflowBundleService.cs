@@ -775,6 +775,7 @@ public sealed class WorkflowBundleService : IWorkflowBundleService
                 LastSimulationId = null,
                 ChangeSummary = $"imported from bundle as a sub-workflow of '{bundle.Workflow.Name}'",
                 CreatedByUserId = createdBy,
+                UpdatedByUserId = createdBy,
                 IsActive = true,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -811,6 +812,9 @@ public sealed class WorkflowBundleService : IWorkflowBundleService
             LastSimulationId = null,
             ChangeSummary = changeSummary ?? "imported from bundle",
             CreatedByUserId = createdBy,
+            // The importer is the author here, whoever wrote the file: a triggered run
+            // of this workflow is capped to the importer's role (see RunAuthority).
+            UpdatedByUserId = createdBy,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,
@@ -873,6 +877,7 @@ public sealed class WorkflowBundleService : IWorkflowBundleService
                 AllowTargetOverride = wanted.AllowTargetOverride ?? false,
                 Enabled = false,
                 CreatedBy = createdBy,
+                UpdatedBy = createdBy,
                 IsActive = true,
                 CreatedAt = now,
                 UpdatedAt = now,
@@ -1071,6 +1076,7 @@ public sealed class WorkflowBundleService : IWorkflowBundleService
             // instance has not reviewed it and has not run it.
             Verified = false,
             CreatedBy = _user.IsAuthenticated ? _user.UserId : null,
+            UpdatedBy = _user.IsAuthenticated ? _user.UserId : null,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,

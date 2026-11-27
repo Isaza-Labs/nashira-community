@@ -561,7 +561,7 @@ public class SnippetAliasTests
     }
 
     private static async Task<(SshSnippetHandler Handler, FakeRunner Runner, FakeSecrets Secrets, AppDbContext Db)>
-        NewSsh(bool withCredential = true)
+        NewSsh(bool withCredential = true, string? role = "admin")
     {
         var db = Db();
         var protector = new FakeProtector();
@@ -599,7 +599,7 @@ public class SnippetAliasTests
         var runner = new FakeRunner();
         var secrets = new FakeSecrets();
         return (new SshSnippetHandler(db, protector, secrets, runner, new AllowAll(),
-            NullLogger<SshSnippetHandler>.Instance), runner, secrets, db);
+            new HardeningTestUser(role), NullLogger<SshSnippetHandler>.Instance), runner, secrets, db);
     }
 
     [Fact]

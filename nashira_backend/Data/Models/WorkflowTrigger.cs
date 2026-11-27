@@ -73,4 +73,9 @@ public class WorkflowTrigger : BaseModel
     public int FireCount { get; set; }
 
     public Guid? CreatedBy { get; set; }
+
+    // Who last changed this trigger. A run it fires never executes with a higher
+    // role than this user holds (see RunAuthority). Null on rows saved before the
+    // column existed; CreatedBy then stands in.
+    public Guid? UpdatedBy { get; set; }
 }

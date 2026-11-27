@@ -291,6 +291,9 @@ try
     // step executor (execution/SPEC.md §2).
     builder.Services.AddScoped<NodeTierResolver>();
     builder.Services.AddScoped<SnippetNodeExecutor>();
+    // Caps a trigger-fired run at the role of whoever last saved what it executes. The
+    // job worker arms it; everywhere else, HTTP requests included, it does nothing.
+    builder.Services.AddScoped<RunAuthority>();
     // A `subflow` node runs another workflow as a real run of its own; the runner opens
     // the child its own scope, because the child needs its own DbContext, its own step
     // outputs and its own run context (execution/SPEC.md §5).

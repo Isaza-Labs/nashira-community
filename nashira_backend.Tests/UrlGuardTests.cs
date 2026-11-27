@@ -120,6 +120,100 @@ public class UrlGuardTests
         Assert.Throws<InvalidOperationException>(() => Guard().EnsureSafe("http://[::ffff:127.0.0.1]", true));
     }
 
+    // NAT64 (64:ff9b::/96) is how every IPv4-only host looks on an IPv6-only network with
+    // DNS64, so the prefix itself passes; the IPv4 address it carries gets the IPv4 rules.
+    [Theory]
+    [InlineData("64:ff9b::127.0.0.1")]
+    [InlineData("64:ff9b::7f00:1")]
+    [InlineData("64:ff9b::169.254.169.254")]
+    [InlineData("64:ff9b::0.0.0.1")]
+    public void Nat64_addresses_embedding_loopback_metadata_or_reserved_ipv4_are_refused(string address)
+    {
+        foreach (var allowPrivate in new[] { false, true })
+        {
+            var error = Assert.Throws<InvalidOperationException>(
+                () => Guard().EnsureSafe($"http://[{address}]", allowPrivate));
+            Assert.Contains("SSRF blocked", error.Message);
+        }
+    }
+
+    [Theory]
+    [InlineData("64:ff9b::10.0.0.1")]
+    [InlineData("64:ff9b::172.16.0.1")]
+    [InlineData("64:ff9b::192.168.1.1")]
+    [InlineData("64:ff9b::100.64.0.1")]
+    public void Nat64_addresses_embedding_private_ipv4_follow_the_allow_private_rule(string address)
+    {
+        Assert.Throws<InvalidOperationException>(() => Guard().EnsureSafe($"http://[{address}]", false));
+        Guard().EnsureSafe($"http://[{address}]", true);
+    }
+
+    [Fact]
+    public void Nat64_addresses_embedding_a_public_ipv4_pass()
+    {
+        Guard().EnsureSafe("https://[64:ff9b::203.0.113.10]", false);
+        Guard().EnsureSafe("https://[64:ff9b::203.0.113.10]", true);
+    }
+
+    [Fact]
+    public void A_nat64_dns_answer_embedding_loopback_is_refused_even_after_a_public_one()
+    {
+        var guard = new UrlGuard(new ConfigurationBuilder().Build(), NullLogger<UrlGuard>.Instance,
+            _ => [IPAddress.Parse("64:ff9b::203.0.113.10"), IPAddress.Parse("64:ff9b::127.0.0.1")]);
+
+        var error = Assert.Throws<InvalidOperationException>(() => guard.EnsureSafe("https://test.invalid"));
+        Assert.Contains("SSRF blocked", error.Message);
+    }
+
+    // 6to4 and Teredo are deprecated tunnelling forms that carry an arbitrary IPv4 target
+    // for a relay to reach, so like IPv4-compatible they are refused outright.
+    [Theory]
+    [InlineData("2002:7f00:1::1")]
+    [InlineData("2002:a9fe:a9fe::1")]
+    [InlineData("2002:cb00:710a::1")]
+    [InlineData("2001::1")]
+    [InlineData("2001:0:4136:e378:8000:63bf:3fff:fdd2")]
+    public void Blocks_6to4_and_teredo_addresses_with_either_allow_private_value(string address)
+    {
+        foreach (var allowPrivate in new[] { false, true })
+        {
+            var error = Assert.Throws<InvalidOperationException>(
+                () => Guard().EnsureSafe($"http://[{address}]", allowPrivate));
+            Assert.Contains("SSRF blocked", error.Message);
+        }
+    }
+
+    // 100.64.0.0/10 is carrier-grade NAT space: private, so open only with the opt-in.
+    [Theory]
+    [InlineData("100.64.0.1")]
+    [InlineData("100.100.100.200")]
+    [InlineData("100.127.255.254")]
+    public void Cgnat_addresses_are_private(string address)
+    {
+        Assert.Throws<InvalidOperationException>(() => Guard().EnsureSafe($"http://{address}", false));
+        Guard().EnsureSafe($"http://{address}", true);
+    }
+
+    [Theory]
+    [InlineData("100.63.255.254")]
+    [InlineData("100.128.0.1")]
+    public void Addresses_just_outside_cgnat_are_not_private(string address)
+        => Guard().EnsureSafe($"http://{address}", false);
+
+    // The quiet path judges the same way and still writes nothing.
+    [Theory]
+    [InlineData("http://100.64.0.1")]
+    [InlineData("http://[64:ff9b::10.0.0.1]")]
+    [InlineData("http://[2002:7f00:1::1]")]
+    public void The_new_refusals_are_quiet_on_the_quiet_path(string url)
+    {
+        var log = new RedirectTargetRefusalTests.CapturingLogger<UrlGuard>();
+        var guard = new UrlGuard(new ConfigurationBuilder().Build(), log, _ => []);
+
+        Assert.False(guard.IsAllowedQuietly(url));
+        Assert.Equal("", log.Text);
+    }
+
     [Theory]
     [InlineData("2606:4700:4700::1111")]
     [InlineData("2001:db8::1")]

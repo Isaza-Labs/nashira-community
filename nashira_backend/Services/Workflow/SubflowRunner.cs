@@ -126,14 +126,17 @@ public sealed class SubflowRunner : ISubflowRunner
 {
     private readonly IServiceScopeFactory _scopes;
     private readonly ICurrentUser? _caller;
+    private readonly RunAuthority? _authority;
     private readonly ILogger<SubflowRunner> _logger;
 
     public SubflowRunner(
-        IServiceScopeFactory scopes, ILogger<SubflowRunner> logger, ICurrentUser? caller = null)
+        IServiceScopeFactory scopes, ILogger<SubflowRunner> logger, ICurrentUser? caller = null,
+        RunAuthority? authority = null)
     {
         _scopes = scopes;
         _logger = logger;
         _caller = caller;
+        _authority = authority;
     }
 
     public async Task<SubflowOutcome> RunAsync(
@@ -150,6 +153,11 @@ public sealed class SubflowRunner : ISubflowRunner
         // supplies its own fixed ICurrentUser has no MutableCurrentUser to bind.)
         if (_caller is { IsAuthenticated: true } caller)
             sp.GetService<MutableCurrentUser>()?.Bind(caller.UserId, caller.Username, caller.Roles);
+        // The roles just copied are the parent's CURRENT ones, already lowered by
+        // whatever the parent ran. The child scope has a RunAuthority of its own, so arm
+        // it too when the parent's is armed, or the child's rows would go unchecked.
+        var childAuthority = sp.GetService<RunAuthority>();
+        if (_authority is { Armed: true }) childAuthority?.Arm();
         var db = sp.GetRequiredService<AppDbContext>();
 
         // No version pinning: the CURRENT row is what runs (execution/SPEC.md §5).
@@ -162,6 +170,10 @@ public sealed class SubflowRunner : ISubflowRunner
             return SubflowOutcome.NotFound(
                 $"subflow workflow {childWorkflowId} does not exist on this instance. "
                 + "Nothing ran for this node.");
+
+        // The CURRENT child row runs, so whoever last saved it caps the child's role.
+        if (childAuthority is not null)
+            await childAuthority.ApplyAuthorAsync(RunAuthority.AuthorOf(child), $"subflow:{child.WorkflowId}", ct);
 
         var runs = sp.GetRequiredService<WorkflowRunService>();
         try

@@ -28,7 +28,9 @@ public sealed class UpdateCredentialHandler : IToolHandler
           "client_id":{"type":"string","description":"oauth2 only"},
           "client_secret":{"type":"string","description":"oauth2 only"},
           "token_url":{"type":"string","description":"oauth2 only: token endpoint URL"},
-          "scopes":{"type":"string","description":"oauth2 only: space-separated scopes"}
+          "scopes":{"type":"string","description":"oauth2 only: space-separated scopes"},
+          "allowed_hosts":{"type":"string","description":"Hosts device SSH may send this credential to: IPs, CIDR networks (10.0.0.0/24) or exact hostnames, comma/newline separated. Blank = unrestricted. Empty string clears it."},
+          "operator_assignable":{"type":"boolean","description":"Let Operators link this credential to devices within allowed_hosts. Requires allowed_hosts."}
         },"additionalProperties":false}
         """).RootElement.Clone();
 
@@ -67,10 +69,18 @@ public sealed class UpdateCredentialHandler : IToolHandler
         if (Str(args, "token_url") is { } tu) row.TokenUrl = Trimmed(tu);
         if (Str(args, "scopes") is { } sc) row.Scopes = Trimmed(sc);
         if (Str(args, "auth_method") is { } am) row.AuthMethod = CredentialRules.Normalize(am);
+        if (Str(args, "allowed_hosts") is { } ah)
+        {
+            if (!CredentialScope.TryNormalize(ah, out var scope, out var scopeError)) return Err(scopeError!);
+            row.AllowedHosts = scope;
+        }
+        if (Bool(args, "operator_assignable") is { } oa) row.OperatorAssignable = oa;
 
         // Final-state validation: the stored material must satisfy whatever
         // auth_method the row ends up with (updates may switch methods).
         if (CredentialRules.MissingMaterial(row) is { } missing) return Err(missing);
+        if (row.OperatorAssignable && !CredentialScope.IsScoped(row))
+            return Err("operator_assignable requires allowed_hosts");
 
         row.UpdatedAt = DateTime.UtcNow;
         await _db.SaveChangesAsync(ct);
@@ -83,6 +93,8 @@ public sealed class UpdateCredentialHandler : IToolHandler
             has_private_key = row.EncryptedPrivateKey is { Length: > 0 },
             has_token = row.EncryptedToken is { Length: > 0 },
             has_client_secret = row.EncryptedClientSecret is { Length: > 0 },
+            allowed_hosts = row.AllowedHosts,
+            operator_assignable = row.OperatorAssignable,
             updated = true,
         });
     }
@@ -103,6 +115,9 @@ public sealed class UpdateCredentialHandler : IToolHandler
 
     private static string? Str(JsonElement a, string k) =>
         a.TryGetProperty(k, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static bool? Bool(JsonElement a, string k) =>
+        a.TryGetProperty(k, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False ? v.GetBoolean() : null;
 
     private static JsonElement Err(string message) => JsonSerializer.SerializeToElement(new { error = message });
 }

@@ -105,8 +105,12 @@ public sealed class McpCallHandler : IToolHandler
             {
                 // The graph could not be inspected in full: no message from it, no exception object in the log
                 // (formatting one walks the whole graph), and a final code so nothing runs the call again.
+                // The outermost exception's type name is the one thing logged about it: it reads nothing
+                // from the graph and carries no upstream text, and without it a final, never-retried
+                // failure would leave nothing to diagnose it by.
                 _logger.LogWarning(
-                    "mcp.call.failed server={Server} tool={Tool} detail=withheld", serverName, toolName);
+                    "mcp.call.failed server={Server} tool={Tool} exception={ExceptionType} detail=withheld",
+                    serverName, toolName, ex.GetType().Name);
                 return JsonSerializer.SerializeToElement(new
                 {
                     error = RedirectSearch.IncompleteMessage,

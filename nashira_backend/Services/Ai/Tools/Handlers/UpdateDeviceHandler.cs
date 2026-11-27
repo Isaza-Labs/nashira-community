@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
 using nashira_backend.Services.Identity;
+using nashira_backend.Services.Security;
 
 namespace nashira_backend.Services.Ai.Tools.Handlers;
 
@@ -47,12 +48,28 @@ public sealed class UpdateDeviceHandler : IToolHandler
             d => d.IsActive && d.DeviceName == name, ct);
         if (row is null) return Err($"device '{name}' not found");
 
-        if (Str(args, "new_name")?.Trim() is { Length: > 0 } nn) row.DeviceName = nn;
-        if (Str(args, "ip_address")?.Trim() is { Length: > 0 } ip)
+        // Validated and checked before anything on the tracked row changes, so a
+        // refusal leaves the device as it was.
+        var ip = Str(args, "ip_address")?.Trim();
+        if (string.IsNullOrEmpty(ip)) ip = null;
+        if (ip is not null)
         {
             if (!IPAddress.TryParse(ip, out _)) return Err($"'{ip}' is not a valid IP address");
-            row.IpAddress = ip;
+            // R3: a non-Admin may move a device with a credential only within that
+            // credential's allowed hosts (DeviceTrustPolicy); nobody may move it
+            // outside them, since it could never connect there.
+            var linked = row.CredentialId is { } cid
+                ? await _db.Credentials.AsNoTracking().FirstOrDefaultAsync(c => c.IsActive && c.CredentialId == cid, ct)
+                : null;
+            if (DeviceTrustPolicy.AddressRefusal(_user, row.CredentialId, linked, row.IpAddress, ip) is { } refusal)
+                return Err($"{refusal}. Ask an Admin to change it.");
+            if (!string.Equals(row.IpAddress?.Trim(), ip, StringComparison.Ordinal)
+                && DeviceTrustPolicy.ScopeMismatch(linked, ip) is { } mismatch)
+                return Err(mismatch);
         }
+
+        if (Str(args, "new_name")?.Trim() is { Length: > 0 } nn) row.DeviceName = nn;
+        if (ip is not null) row.IpAddress = ip;
         if (Str(args, "platform") is { } pf) row.Platform = pf;
         if (Str(args, "vendor") is { } vd) row.Vendor = vd;
         if (Str(args, "os_version") is { } ov) row.OsVersion = ov;

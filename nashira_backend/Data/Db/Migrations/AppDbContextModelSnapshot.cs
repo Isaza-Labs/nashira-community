@@ -588,6 +588,9 @@ namespace nashira_backend.Data.Db.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<string>("AllowedHosts")
+                        .HasColumnType("text");
+
                     b.Property<string>("ApiKeyHeader")
                         .HasColumnType("text");
 
@@ -622,6 +625,9 @@ namespace nashira_backend.Data.Db.Migrations
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text");
+
+                    b.Property<bool>("OperatorAssignable")
+                        .HasColumnType("boolean");
 
                     b.Property<string>("Scopes")
                         .HasColumnType("text");
@@ -2328,6 +2334,9 @@ namespace nashira_backend.Data.Db.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
+
                     b.Property<bool>("Verified")
                         .HasColumnType("boolean");
 
@@ -2819,6 +2828,9 @@ namespace nashira_backend.Data.Db.Migrations
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("UpdatedByUserId")
+                        .HasColumnType("uuid");
+
                     b.Property<int>("Version")
                         .HasColumnType("integer");
 
@@ -3047,6 +3059,9 @@ namespace nashira_backend.Data.Db.Migrations
 
                     b.Property<DateTime>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("UpdatedBy")
+                        .HasColumnType("uuid");
 
                     b.Property<Guid>("WorkflowId")
                         .HasColumnType("uuid");

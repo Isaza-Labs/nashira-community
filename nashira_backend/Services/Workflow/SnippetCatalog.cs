@@ -109,6 +109,7 @@ public sealed class SnippetCatalog
             LogicDiagramMermaid = draft.LogicDiagramMermaid,
             NetworkEnabled = RequireAdminForNetwork(draft.NetworkEnabled ?? false, currentlyEnabled: false),
             CreatedBy = _user.IsAuthenticated ? _user.UserId : null,
+            UpdatedBy = _user.IsAuthenticated ? _user.UserId : null,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,

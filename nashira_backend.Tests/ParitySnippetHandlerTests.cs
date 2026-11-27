@@ -522,7 +522,7 @@ public class ParitySnippetHandlerTests
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux)) return;
 
         using var db = Db();
-        var handler = new AnsiblePlaybookSnippetHandler(db, new FakeProtector(),
+        var handler = new AnsiblePlaybookSnippetHandler(db, new FakeProtector(), new HardeningTestUser("admin"),
             NullLogger<AnsiblePlaybookSnippetHandler>.Instance);
 
         var result = await handler.ExecuteAsync(Request("""{"host":"10.0.0.1"}""", code: "---"), default);

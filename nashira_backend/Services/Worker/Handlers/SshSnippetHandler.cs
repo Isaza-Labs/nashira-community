@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using nashira_backend.Data.Db;
 using nashira_backend.Data.Models;
 using nashira_backend.Services.Ai.Secrets;
+using nashira_backend.Services.Identity;
 using nashira_backend.Services.Security;
 using nashira_backend.Services.Ssh;
 using nashira_backend.Services.Workflow;
@@ -23,7 +24,8 @@ namespace nashira_backend.Services.Worker.Handlers;
 //   commands (C) / command (A: one string)
 //   device (C: inventory name or IP) / host (A: IP, resolved to an inventory
 //     device — never an ad-hoc connection; no match is `not_found`)
-//   credential (C: credential NAME, overrides the device's own)
+//   credential (C: credential NAME, overrides the device's own — Admin, or an
+//     Operator-assignable scoped credential; the scope is enforced at send time)
 //   username, password, private_key, key_passphrase, enable_secret / enable —
 //     secret material is accepted only as a ${secret:…} reference, resolved right
 //     before the wire. A plain value is refused: it is not portable, it would land
@@ -48,17 +50,19 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
     private readonly ISecretResolver _secrets;
     private readonly ISshCommandRunner _runner;
     private readonly ISshCommandPolicy _policy;
+    private readonly ICurrentUser _user;
     private readonly ILogger<SshSnippetHandler> _logger;
 
     public SshSnippetHandler(
         AppDbContext db, ISecretProtector protector, ISecretResolver secrets, ISshCommandRunner runner,
-        ISshCommandPolicy policy, ILogger<SshSnippetHandler> logger)
+        ISshCommandPolicy policy, ICurrentUser user, ILogger<SshSnippetHandler> logger)
     {
         _db = db;
         _protector = protector;
         _secrets = secrets;
         _runner = runner;
         _policy = policy;
+        _user = user;
         _logger = logger;
     }
 
@@ -82,6 +86,25 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
             return SnippetResult.Fail(
                 "blocked by SSH command policy — destructive command(s) not permitted: " +
                 string.Join(", ", policy.Blocked), "policy_blocked");
+
+        // Naming a stored credential is using stored secret material: Admin only, as
+        // in SecretResolver, unless an Admin made that credential assignable and gave
+        // it a scope (DeviceTrustPolicy R4). A name that does not exist and one the
+        // caller may not use get the same refusal, so the answer does not say whether
+        // the name exists. The device's own linked credential needs no such check
+        // here — linking it is itself governed by DeviceTrustPolicy. Either way the
+        // scope check below applies before anything is decrypted.
+        var namedCredential = Str(input, "credential");
+        if (!string.IsNullOrWhiteSpace(namedCredential) && !DeviceTrustPolicy.IsAdmin(_user))
+        {
+            var namedRow = await _db.Credentials.AsNoTracking().FirstOrDefaultAsync(
+                c => c.IsActive && c.Name == namedCredential, ct);
+            if (DeviceTrustPolicy.StepCredentialRefusal(_user, namedCredential, namedRow) is { } credentialRefusal)
+            {
+                _logger.LogWarning("workflow.ssh.credential_override_refused");
+                return SnippetResult.Fail(credentialRefusal, SecretResolver.AccessDeniedCode);
+            }
+        }
 
         // `device` matches by name or IP; `host` is an address and matches by IP
         // only. Either way the target must be in inventory — the environment gate
@@ -157,6 +180,18 @@ public sealed partial class SshSnippetHandler : ISnippetHandler
                     c => c.IsActive && c.CredentialId == device.CredentialId, ct);
                 if (credential is null)
                     return SnippetResult.Fail($"the credential for '{device.DeviceName}' is missing or inactive", "no_credential");
+            }
+
+            // The credential's scope, checked against the address it is about to be
+            // sent to, before anything is decrypted. Applies to the named credential
+            // and the device's own alike, and to a credential used only for its
+            // username: that is still this credential being presented to the device.
+            if (!CredentialScope.Permits(credential, device.IpAddress))
+            {
+                _logger.LogWarning("workflow.ssh.credential_out_of_scope device={Device} credential={Credential}",
+                    device.DeviceName, credential.Name);
+                return SnippetResult.Fail(
+                    CredentialScope.OutOfScopeMessage(credential.Name, device.DeviceName), CredentialScope.OutOfScopeCode);
             }
 
             if (credential.AuthMethod is not (Credential.AuthMethodPassword or Credential.AuthMethodKey))

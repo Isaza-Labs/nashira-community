@@ -109,6 +109,7 @@ public class WorkflowController : ControllerBase
             SchemaHash = hash,
             ChangeSummary = dto.ChangeSummary ?? string.Empty,
             CreatedByUserId = _user.IsAuthenticated ? _user.UserId : (Guid?)null,
+            UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : (Guid?)null,
             ConversationId = dto.ConversationId,
             IsActive = true,
             CreatedAt = now,
@@ -163,6 +164,10 @@ public class WorkflowController : ControllerBase
         if (dto.Metadata is not null) row.MetadataJson = dto.Metadata.Value.GetRawText();
         if (dto.ChangeSummary is not null) row.ChangeSummary = dto.ChangeSummary;
         row.UpdatedAt = DateTime.UtcNow;
+        // Any save makes the caller the author a triggered run is capped to (see
+        // RunAuthority), not only a change to nodes: input_schema and metadata shape
+        // what a run does too, and guessing which fields matter is how one gets missed.
+        row.UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : null;
 
         await _db.SaveChangesAsync(ct);
         return ToResponse(row);
@@ -176,6 +181,7 @@ public class WorkflowController : ControllerBase
         var row = await Find(id, ct);
         row.IsActive = false;
         row.UpdatedAt = DateTime.UtcNow;
+        row.UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : null;
         await _db.SaveChangesAsync(ct);
         return ToResponse(row);
     }
@@ -297,6 +303,7 @@ public class WorkflowController : ControllerBase
             LastSimulationId = null,
             ChangeSummary = dto.ChangeSummary ?? "imported",
             CreatedByUserId = _user.IsAuthenticated ? _user.UserId : (Guid?)null,
+            UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : (Guid?)null,
             IsActive = true,
             CreatedAt = now,
             UpdatedAt = now,
@@ -449,6 +456,8 @@ public class WorkflowController : ControllerBase
             LastSimulationId = null,
             ChangeSummary = $"restored from version {v.Version} ({v.Environment})",
             CreatedByUserId = _user.IsAuthenticated ? _user.UserId : null,
+            // The restorer is the author of this draft, whoever wrote the snapshot.
+            UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : null,
             ConversationId = v.ConversationId,
             IsActive = true,
             CreatedAt = now,

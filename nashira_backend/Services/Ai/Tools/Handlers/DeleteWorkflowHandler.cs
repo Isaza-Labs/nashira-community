@@ -43,6 +43,7 @@ public sealed class DeleteWorkflowHandler : IToolHandler
 
         row.IsActive = false;
         row.UpdatedAt = DateTime.UtcNow;
+        row.UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : null;
         await _db.SaveChangesAsync(ct);
         return JsonSerializer.SerializeToElement(new { workflow_id = row.WorkflowId, deleted = true });
     }

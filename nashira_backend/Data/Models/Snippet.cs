@@ -114,4 +114,9 @@ public class Snippet : BaseModel
     public bool NetworkEnabled { get; set; }
 
     public Guid? CreatedBy { get; set; }
+
+    // Who last saved this snippet. A triggered run that reaches it never executes
+    // with a higher role than this user holds (see RunAuthority). Null on system
+    // snippets and on rows saved before the column existed; CreatedBy then stands in.
+    public Guid? UpdatedBy { get; set; }
 }

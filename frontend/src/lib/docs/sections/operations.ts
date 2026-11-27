@@ -125,7 +125,7 @@ export const operations: DocSection[] = [
 					{ name: 'site', type: 'string', desc: 'Location. Commonly used as a pool filter.' },
 					{ name: 'role', type: 'string', desc: 'core, edge, access… matched by the `device_role` policy clause.' },
 					{ name: 'status', type: 'string', desc: 'Reachability as last observed.' },
-					{ name: 'credential_id', type: 'uuid | null', desc: 'Which stored credential to connect with. The value itself never leaves the server.' },
+					{ name: 'credential_id', type: 'uuid | null', desc: 'Which stored credential to connect with. The value itself never leaves the server. Only an Admin may link a credential, except one an Admin made assignable, which an Operator may link to a device whose address is within its allowed hosts.' },
 					{ name: 'allow_draft', type: 'boolean', default: 'true', desc: 'May a draft workflow target this device?' },
 					{ name: 'allow_qa', type: 'boolean', default: 'false', desc: 'May a qa workflow target it? Off by default, so exposing a device to qa is a deliberate step — turn it on before promoting a workflow that targets it.' },
 					{ name: 'allow_production', type: 'boolean', default: 'true', desc: 'May a production workflow target it?' },
@@ -142,6 +142,12 @@ export const operations: DocSection[] = [
 				tone: 'warning',
 				title: 'Turning an allow flag off is a real control',
 				text: 'It does not filter the device out of a run — it makes the run refuse, naming the device. Use it to fence production hardware off from drafts, not to tidy up target lists.'
+			},
+			{
+				kind: 'note',
+				tone: 'primary',
+				title: 'Who decides where a device credential goes',
+				text: 'The credential link, the host-key pin and the address of a device with a credential linked decide where stored secret material is sent, so they are Admin decisions (403 `device_trust_admin_required` otherwise). The host-key pin stays Admin-only. An Operator may link a credential an Admin marked assignable, and may change the address of a device whose credential is scoped, as long as the address is within that credential\'s allowed hosts. Whoever makes the change, a scoped credential is never linked to, or sent to, an address outside its scope.'
 			},
 			{
 				kind: 'endpoints',

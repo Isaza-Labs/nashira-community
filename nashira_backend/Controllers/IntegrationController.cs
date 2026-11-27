@@ -32,10 +32,12 @@ public class IntegrationController : ControllerBase
     private readonly IIntegrationActionSync _sync;
     private readonly IIntegrationCatalog _catalog;
     private readonly IAuditLogger _audit;
+    private readonly IIntegrationOAuthTokenService _oauth;
 
     public IntegrationController(
         AppDbContext db, ICurrentUser user, IIntegrationHealthChecker health,
-        IIntegrationActionSync sync, IIntegrationCatalog catalog, IAuditLogger audit)
+        IIntegrationActionSync sync, IIntegrationCatalog catalog, IAuditLogger audit,
+        IIntegrationOAuthTokenService oauth)
     {
         _db = db;
         _user = user;
@@ -43,6 +45,7 @@ public class IntegrationController : ControllerBase
         _sync = sync;
         _catalog = catalog;
         _audit = audit;
+        _oauth = oauth;
     }
 
     [HttpGet]
@@ -286,6 +289,12 @@ public class IntegrationController : ControllerBase
 
         await _db.SaveChangesAsync(ct);
 
+        // After the save, not before: dropping it first would let a call that still read
+        // the old row cache a token under the old settings again. Any change is enough: a
+        // cached OAuth token is cheap to obtain again, and serving one granted for a
+        // rotated secret, an old token_url or another base URL is not.
+        _oauth.Invalidate(row.IntegrationId);
+
         // allow_private_network and verify_ssl are the two that matter most here: one
         // opts out of the SSRF guard, the other out of certificate checking, and both
         // are the kind of change nobody remembers making.
@@ -325,6 +334,9 @@ public class IntegrationController : ControllerBase
         foreach (var action in actions) { action.IsActive = false; action.UpdatedAt = now; }
 
         await _db.SaveChangesAsync(ct);
+
+        // A deleted integration's bearer has no reason to stay in memory until it expires.
+        _oauth.Invalidate(row.IntegrationId);
 
         await _audit.LogAsync("integration", row.IntegrationId, "delete",
             before: before,

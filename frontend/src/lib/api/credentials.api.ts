@@ -1,6 +1,10 @@
 // Credential CRUD (`/api/credential`, Admin). Secret material (password, private
 // key, token, client secret) is write-only — never returned, only has_* flags.
 // auth_method: password | key | token | api_key | oauth2.
+//
+// allowed_hosts / operator_assignable: an Admin may limit the hosts device SSH sends
+// a credential to and, once limited, let Operators link it. Operators read only
+// `/api/credential/assignable` (listAssignableCredentials).
 
 import { api, type ListResponse } from '$lib/api/client';
 
@@ -28,8 +32,19 @@ export type Credential = {
 	clientId: string | null;
 	tokenUrl: string | null;
 	scopes: string | null;
+	/** One entry per line (IP, CIDR network or exact hostname); null = not restricted. */
+	allowedHosts: string | null;
+	operatorAssignable: boolean;
 	createdAt: string;
 	updatedAt: string;
+};
+
+/** What a non-Admin may know about a credential it can link to a device. */
+export type AssignableCredential = {
+	id: string;
+	name: string;
+	authMethod: string;
+	allowedHosts: string;
 };
 
 export interface CredentialPayload {
@@ -46,6 +61,9 @@ export interface CredentialPayload {
 	clientSecret: string;
 	tokenUrl: string;
 	scopes: string;
+	/** Newline/comma separated; blank = not restricted (clears it on update). */
+	allowedHosts: string;
+	operatorAssignable: boolean;
 }
 
 interface CredShape {
@@ -62,8 +80,17 @@ interface CredShape {
 	client_id: string | null;
 	token_url: string | null;
 	scopes: string | null;
+	allowed_hosts: string | null;
+	operator_assignable: boolean;
 	created_at: string;
 	updated_at: string;
+}
+
+interface AssignableShape {
+	credential_id: string;
+	name: string;
+	auth_method: string;
+	allowed_hosts: string;
 }
 
 function toCredential(c: CredShape): Credential {
@@ -81,6 +108,8 @@ function toCredential(c: CredShape): Credential {
 		clientId: c.client_id,
 		tokenUrl: c.token_url,
 		scopes: c.scopes,
+		allowedHosts: c.allowed_hosts ?? null,
+		operatorAssignable: !!c.operator_assignable,
 		createdAt: c.created_at,
 		updatedAt: c.updated_at
 	};
@@ -89,6 +118,18 @@ function toCredential(c: CredShape): Credential {
 export async function listCredentials(limit = 100, offset = 0): Promise<ListResponse<Credential>> {
 	const res = await api<ListResponse<CredShape>>(`/credential?limit=${limit}&offset=${offset}`);
 	return { total: res.total, limit: res.limit, offset: res.offset, items: res.items.map(toCredential) };
+}
+
+// Active credentials an Admin made assignable and scoped: the device form's picker
+// for Operators. Id, name, method and scope only.
+export async function listAssignableCredentials(): Promise<AssignableCredential[]> {
+	const rows = await api<AssignableShape[]>('/credential/assignable');
+	return rows.map((c) => ({
+		id: c.credential_id,
+		name: c.name,
+		authMethod: c.auth_method,
+		allowedHosts: c.allowed_hosts
+	}));
 }
 
 export async function createCredential(p: CredentialPayload): Promise<Credential> {
@@ -108,7 +149,9 @@ export async function createCredential(p: CredentialPayload): Promise<Credential
 				client_id: p.clientId || null,
 				client_secret: p.clientSecret || null,
 				token_url: p.tokenUrl || null,
-				scopes: p.scopes || null
+				scopes: p.scopes || null,
+				allowed_hosts: p.allowedHosts || null,
+				operator_assignable: p.operatorAssignable
 			})
 		})
 	);
@@ -125,7 +168,11 @@ export async function updateCredential(id: string, p: CredentialPayload): Promis
 		api_key_header: p.apiKeyHeader,
 		client_id: p.clientId,
 		token_url: p.tokenUrl,
-		scopes: p.scopes
+		scopes: p.scopes,
+		// Same WYSIWYG rule: a blank scope clears it (the server then refuses
+		// operator_assignable without one, so the form unticks it first).
+		allowed_hosts: p.allowedHosts,
+		operator_assignable: p.operatorAssignable
 	};
 	// Secret fields: only sent when provided; blank keeps what's stored.
 	if (p.password) body.password = p.password;

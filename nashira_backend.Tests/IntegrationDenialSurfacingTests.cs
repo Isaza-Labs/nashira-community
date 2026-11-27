@@ -63,7 +63,7 @@ public class IntegrationHealthDenialTests
         db.Integrations.Add(row);
         await db.SaveChangesAsync();
         var controller = new IntegrationController(
-            db, new Operator(), Checker(new ThrowingApplier(Denial)), null!, null!, null!);
+            db, new Operator(), Checker(new ThrowingApplier(Denial)), null!, null!, null!, null!);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => controller.Check(row.IntegrationId, default));
 

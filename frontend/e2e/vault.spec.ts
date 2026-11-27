@@ -32,6 +32,8 @@ function cred(id: string, name: string, type: string, username: string | null, a
 		client_id: null,
 		token_url: null,
 		scopes: null,
+		allowed_hosts: null,
+		operator_assignable: false,
 		created_at: TS,
 		updated_at: TS,
 		...extra
@@ -841,7 +843,9 @@ test.describe('the entry form', () => {
 			api_key_header: '',
 			client_id: '',
 			token_url: '',
-			scopes: ''
+			scopes: '',
+			allowed_hosts: '',
+			operator_assignable: false
 		});
 	});
 

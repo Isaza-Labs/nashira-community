@@ -191,7 +191,19 @@ public sealed class JobWorkerHostedService : BackgroundService
             // identity to mint a token from and goes out with the marker literal —
             // the manual-vs-scheduled 401. Binding CreatedBy also caps the run at
             // that user's own permissions, same as running it by hand.
-            await BindTriggerCreatorAsync(scope.ServiceProvider, db, job, ct);
+            //
+            // The creator is only who the run is AS, not who wrote what it does: an
+            // Operator may have edited the trigger, the workflow or a snippet since. So
+            // the run is then capped at the role of each row's last editor (RunAuthority),
+            // starting with the trigger and the workflow and continuing per snippet and
+            // per subflow as the run reaches them.
+            if (await BindTriggerCreatorAsync(scope.ServiceProvider, db, job, ct) is { } bound)
+            {
+                var authority = scope.ServiceProvider.GetRequiredService<RunAuthority>();
+                authority.Arm();
+                await authority.ApplyAuthorAsync(bound.TriggerAuthor, $"trigger:{bound.TriggerId}", ct);
+                await authority.ApplyAuthorAsync(RunAuthority.AuthorOf(workflow), $"workflow:{workflow.WorkflowId}", ct);
+            }
 
             var runs = scope.ServiceProvider.GetRequiredService<WorkflowRunService>();
             var run = await runs.RunAsync(workflow, payload.Input, payload.TargetDevices, ct, payload.Trigger);
@@ -239,23 +251,26 @@ public sealed class JobWorkerHostedService : BackgroundService
     // or disabled all leave the scope anonymous, and any self-call in the workflow
     // fails with a 401 exactly as it would for a signed-out user — rather than the
     // run silently escalating to an invented identity.
-    private async Task BindTriggerCreatorAsync(
+    //
+    // Returns the trigger and its author (last editor, else creator) when a creator was
+    // bound, so the caller can cap the run; null when the scope was left anonymous.
+    private async Task<BoundTrigger?> BindTriggerCreatorAsync(
         IServiceProvider services, AppDbContext db, Job job, CancellationToken ct)
     {
-        if (job.WorkflowTriggerId is not { } triggerId) return;
+        if (job.WorkflowTriggerId is not { } triggerId) return null;
 
         var creator = await db.WorkflowTriggers.AsNoTracking()
             .Where(t => t.WorkflowTriggerId == triggerId && t.CreatedBy != null)
             .Join(db.Users.AsNoTracking().Where(u => u.IsActive),
                 t => t.CreatedBy, u => u.UserId,
-                (t, u) => new { u.UserId, u.Username, u.Role })
+                (t, u) => new { u.UserId, u.Username, u.Role, Author = t.UpdatedBy ?? t.CreatedBy })
             .FirstOrDefaultAsync(ct);
         if (creator is null)
         {
             _logger.LogWarning(
                 "jobs.worker.run_as_anonymous job={Job} trigger={Trigger} — the trigger has no active " +
                 "creator to run as; self-API steps in this run will be unauthenticated", job.JobId, triggerId);
-            return;
+            return null;
         }
 
         // In a background scope ICurrentUser resolves to this same instance.
@@ -263,7 +278,10 @@ public sealed class JobWorkerHostedService : BackgroundService
             .Bind(creator.UserId, creator.Username, [creator.Role]);
         _logger.LogInformation(
             "jobs.worker.run_as job={Job} user={User}", job.JobId, creator.Username);
+        return new BoundTrigger(triggerId, creator.Author);
     }
+
+    private sealed record BoundTrigger(Guid TriggerId, Guid? TriggerAuthor);
 
     // The trigger's last-run bookkeeping used to be written by whoever fired it;
     // now that firing and running are decoupled, the worker is the only place that

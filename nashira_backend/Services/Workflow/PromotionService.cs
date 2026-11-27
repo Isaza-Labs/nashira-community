@@ -96,6 +96,11 @@ public sealed class PromotionService
             ChangeSummary = changeSummary ?? source.ChangeSummary,
             PromotedAt = now,
             CreatedByUserId = _user.IsAuthenticated ? _user.UserId : null,
+            // The promoter vouches for this copy, so a triggered run of it is capped to
+            // the promoter's role (see RunAuthority). Never carried over from the
+            // source: an Operator promoting an Admin's draft must not hand the copy the
+            // Admin's authority.
+            UpdatedByUserId = _user.IsAuthenticated ? _user.UserId : null,
             // Provenance follows the promotion: a production workflow still points at
             // the conversation that authored its draft.
             ConversationId = source.ConversationId,

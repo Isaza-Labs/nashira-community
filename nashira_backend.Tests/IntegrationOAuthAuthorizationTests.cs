@@ -31,6 +31,7 @@ public class IntegrationOAuthAuthorizationTests
     private const string Token = "example-api-token-0001";
     private const string ClientSecretRef = "${secret:secret:oauth-client:value}";
     private const string ExpectedCredentials = "example-client:example-client-secret";
+    private const string RotatedCredentials = "example-client:example-client-secret-rotated";
 
     // ---- secret-derived tokens: admin only, cold or warm -------------------------------
 
@@ -177,6 +178,56 @@ public class IntegrationOAuthAuthorizationTests
         Assert.True(marked);
     }
 
+    // ---- a cached token belongs to the settings it was granted under --------------------
+
+    [Fact]
+    public async Task A_cached_token_is_not_reused_after_the_client_secret_changes()
+    {
+        using var h = new Harness();
+        await h.SeedAsync(Config.Literal);
+        await h.ApplyAsync("operator");
+        Assert.Equal(1, h.TokenRequests);
+
+        await h.ReconfigureAsync(Config.RotatedLiteral);
+        var (header, marked) = await h.ApplyAsync("operator");
+
+        Assert.Equal($"Bearer {Token}", header);
+        Assert.Equal(2, h.TokenRequests);
+        Assert.Equal(RotatedCredentials, h.LastTokenRequestCredentials);
+        Assert.False(marked);
+    }
+
+    [Fact]
+    public async Task A_cached_token_is_not_reused_after_the_base_url_changes()
+    {
+        using var h = new Harness();
+        await h.SeedAsync(Config.Literal);
+        await h.ApplyAsync("operator");
+        Assert.Equal(1, h.TokenRequests);
+
+        await h.ChangeBaseUrlAsync("https://203.0.113.20");
+        var (header, _) = await h.ApplyAsync("operator");
+
+        Assert.Equal($"Bearer {Token}", header);
+        Assert.Equal(2, h.TokenRequests);
+    }
+
+    [Fact]
+    public async Task Invalidate_forces_a_new_grant()
+    {
+        using var h = new Harness();
+        await h.SeedAsync(Config.Literal);
+        await h.ApplyAsync("operator");
+        await h.ApplyAsync("operator");
+        Assert.Equal(1, h.TokenRequests);
+
+        h.Invalidate();
+        var (header, _) = await h.ApplyAsync("operator");
+
+        Assert.Equal($"Bearer {Token}", header);
+        Assert.Equal(2, h.TokenRequests);
+    }
+
     // ---- background callers -------------------------------------------------------------
 
     [Fact]
@@ -205,7 +256,7 @@ public class IntegrationOAuthAuthorizationTests
         Assert.Equal(0, h.TokenRequests);
     }
 
-    private enum Config { Literal, StoredSecretRef, CredentialLinked }
+    private enum Config { Literal, StoredSecretRef, CredentialLinked, RotatedLiteral }
 
     private sealed class Harness : IDisposable
     {
@@ -213,6 +264,8 @@ public class IntegrationOAuthAuthorizationTests
         private readonly Guid _integrationId = Guid.NewGuid();
         private readonly Guid _credentialId = Guid.NewGuid();
         private readonly StubTokenEndpoint _endpoint = new();
+        private Config _config;
+        private string _baseUrl = "https://203.0.113.10";
 
         public int TokenRequests => _endpoint.Requests;
         public string? LastTokenRequestCredentials => _endpoint.LastCredentials;
@@ -249,6 +302,7 @@ public class IntegrationOAuthAuthorizationTests
 
         public async Task SeedAsync(Config config)
         {
+            _config = config;
             using var scope = _root.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             db.Secrets.Add(new Secret
@@ -264,7 +318,7 @@ public class IntegrationOAuthAuthorizationTests
             db.Integrations.Add(new Integration
             {
                 IntegrationId = _integrationId, Name = "example-api", Slug = "example-api", Type = "generic",
-                BaseUrl = "https://203.0.113.10",
+                BaseUrl = _baseUrl,
                 AuthConfig = AuthConfigFor(config),
                 AuthCredentialId = config == Config.CredentialLinked ? _credentialId : null,
             });
@@ -274,12 +328,27 @@ public class IntegrationOAuthAuthorizationTests
         // Changes only the integration's settings, leaving anything already cached in place.
         public async Task ReconfigureAsync(Config config)
         {
+            _config = config;
             using var scope = _root.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var row = await db.Integrations.SingleAsync(i => i.IntegrationId == _integrationId);
             row.AuthConfig = AuthConfigFor(config);
             await db.SaveChangesAsync();
         }
+
+        // Changes only the integration's base URL, leaving anything already cached in place.
+        public async Task ChangeBaseUrlAsync(string baseUrl)
+        {
+            _baseUrl = baseUrl;
+            using var scope = _root.CreateScope();
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var row = await db.Integrations.SingleAsync(i => i.IntegrationId == _integrationId);
+            row.BaseUrl = baseUrl;
+            await db.SaveChangesAsync();
+        }
+
+        public void Invalidate() =>
+            _root.GetRequiredService<IIntegrationOAuthTokenService>().Invalidate(_integrationId);
 
         private static string AuthConfigFor(Config config) => config == Config.CredentialLinked
             ? System.Text.Json.JsonSerializer.Serialize(new { method = "oauth2_client_credentials" })
@@ -288,20 +357,31 @@ public class IntegrationOAuthAuthorizationTests
                 method = "oauth2_client_credentials",
                 token_url = "https://203.0.113.10/oauth/token",
                 client_id = "example-client",
-                client_secret = config == Config.Literal ? "example-client-secret" : ClientSecretRef,
+                client_secret = config switch
+                {
+                    Config.Literal => "example-client-secret",
+                    Config.RotatedLiteral => "example-client-secret-rotated",
+                    _ => ClientSecretRef,
+                },
             });
 
         // Puts an entry in the token cache whose origin was never recorded, the way an entry
-        // from before provenance existed (or from a future code path) would look.
+        // from before provenance existed (or from a future code path) would look. It carries
+        // the fingerprint of the current settings, so it is a hit rather than a stale entry.
+        // The settings are the parsed auth_config as stored, which is what the service sees
+        // for every configuration here except CredentialLinked (merged with the credential).
         public void CacheTokenWithUnknownOrigin(string token)
         {
+            Assert.NotEqual(Config.CredentialLinked, _config);
+            var fingerprint = IntegrationOAuthTokenService.SettingsFingerprint(
+                new Integration { BaseUrl = _baseUrl }, IntegrationAuthConfig.TryParse(AuthConfigFor(_config))!);
             var type = typeof(IntegrationOAuthTokenService);
             var entryType = type.GetNestedType("CacheEntry", System.Reflection.BindingFlags.NonPublic);
             var originType = type.GetNestedType("Provenance", System.Reflection.BindingFlags.NonPublic);
             Assert.NotNull(entryType);
             Assert.NotNull(originType);
             var entry = Activator.CreateInstance(
-                entryType!, token, DateTime.UtcNow.AddHours(1), Enum.ToObject(originType!, 0));
+                entryType!, token, DateTime.UtcNow.AddHours(1), Enum.ToObject(originType!, 0), fingerprint);
             var service = _root.GetRequiredService<IIntegrationOAuthTokenService>();
             var cache = type.GetField("_cache", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
                 .GetValue(service)!;
